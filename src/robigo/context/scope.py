@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 from robigo.adapters.base import Adapter, Diagnostic
 
@@ -52,6 +53,28 @@ def resolve(
                 if path not in full and path not in signatures:
                     signatures.append(path)
     return Scope(anchor=anchor, full=tuple(full), signatures=tuple(signatures))
+
+
+def explicit(diag: Diagnostic, root: Path, paths: Sequence[Path]) -> Scope:
+    """Scope drawn by the user rather than traced. The anchor still comes
+    from the diagnostic — the failing test is what the run is about — but
+    nothing is inferred beyond the paths given."""
+    if not diag.file:
+        raise ScopeError(
+            "--scope needs a failing test to anchor on, and the test output "
+            "named no file."
+        )
+    anchor = (root / diag.file).resolve()
+    full: list[Path] = [anchor]
+    for given in paths:
+        target = (root / given).resolve()
+        if not target.is_relative_to(root.resolve()):
+            raise ScopeError(f"--scope path {given} is outside {root}")
+        found = sorted(target.rglob("*.py")) if target.is_dir() else [target]
+        for path in found:
+            if path.is_file() and path not in full:
+                full.append(path)
+    return Scope(anchor=anchor, full=tuple(full), signatures=())
 
 
 def signatures_of(text: str) -> str:

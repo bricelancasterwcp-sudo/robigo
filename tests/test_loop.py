@@ -217,6 +217,44 @@ def test_a_failure_after_branching_reports_the_branch(repo: Path, monkeypatch):
     assert result.branch is not None and result.branch.startswith("robigo/")
 
 
+def test_scope_paths_use_explicit_scope_instead_of_import_tracing(repo: Path, monkeypatch):
+    import robigo.loop as loop_module
+
+    calls: list = []
+
+    def fake_explicit(diag, root, paths):
+        calls.append(paths)
+        return loop_module.Scope(
+            anchor=repo / "tests" / "test_fog.py",
+            full=(repo / "tests" / "test_fog.py", repo / "src" / "fog.py"),
+            signatures=(),
+        )
+
+    def fail_resolve(*args, **kwargs):
+        raise AssertionError("resolve must not run when scope_paths is given")
+
+    monkeypatch.setattr(loop_module, "explicit", fake_explicit)
+    monkeypatch.setattr(loop_module, "resolve", fail_resolve)
+    given = [Path("src/fog.py")]
+    result = run("fix", repo, _ScriptedClient(FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace",
+                 scope_paths=given)
+    assert result.outcome == "pass"
+    assert calls == [given]
+
+
+def test_no_scope_paths_falls_back_to_import_traced_scope(repo: Path, monkeypatch):
+    import robigo.loop as loop_module
+
+    def fail_explicit(*args, **kwargs):
+        raise AssertionError("explicit must not run when scope_paths is absent")
+
+    monkeypatch.setattr(loop_module, "explicit", fail_explicit)
+    result = run("fix", repo, _ScriptedClient(FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert result.outcome == "pass"
+
+
 def test_a_mid_loop_adapter_failure_is_infrastructure(repo: Path):
     from robigo.adapters.base import AdapterError
 

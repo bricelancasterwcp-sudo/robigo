@@ -5,6 +5,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 from robigo.action.codec import PatchError
 from robigo.action.verbs import ActionParseError, parse
@@ -19,7 +20,7 @@ from robigo.apply.safety import (
     start_branch,
 )
 from robigo.context.render import Turn, render
-from robigo.context.scope import Scope, ScopeError, resolve
+from robigo.context.scope import Scope, ScopeError, explicit, resolve
 from robigo.model.client import ContextOverflowError, Generation, ModelClient, ModelError
 
 _READ_CAP = 4000
@@ -58,6 +59,7 @@ def run(
     allow_test_edits: bool = False,
     use_git: bool = True,
     stall_cap: int = 3,
+    scope_paths: Sequence[Path] | None = None,
 ) -> RunResult:
     branch: str | None = None
     try:
@@ -70,7 +72,10 @@ def run(
                 "anchor on. Write the failing test first: that is the "
                 "interface."
             )
-        scope = resolve(diag, adapter, root)
+        scope = (
+            explicit(diag, root, scope_paths) if scope_paths
+            else resolve(diag, adapter, root)
+        )
         if use_git:
             # Checked before a branch exists: an ignored scope file is a
             # refusal, not an infrastructure failure, and it must not leave

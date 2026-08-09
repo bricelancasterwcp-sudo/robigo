@@ -7,7 +7,7 @@ import pytest
 
 from robigo.adapters.base import Diagnostic
 from robigo.adapters.python_ import PythonAdapter
-from robigo.context.scope import Scope, ScopeError, resolve, signatures_of
+from robigo.context.scope import Scope, ScopeError, explicit, resolve, signatures_of
 
 
 @pytest.fixture
@@ -90,3 +90,36 @@ def test_a_missing_anchor_says_what_to_do(repo: Path):
     with pytest.raises(ScopeError) as e:
         resolve(_diag("tests/nope.py"), PythonAdapter(), repo)
     assert "--scope" in str(e.value)
+
+
+def test_explicit_anchors_on_the_diagnostic_and_keeps_only_named_paths(repo: Path):
+    scope = explicit(_diag("tests/test_fog.py"), repo, [Path("src/fog.py")])
+    assert scope.anchor == repo / "tests" / "test_fog.py"
+    assert scope.full == (repo / "tests" / "test_fog.py", repo / "src" / "fog.py")
+    assert scope.signatures == ()
+
+
+def test_explicit_does_not_infer_signature_hops(repo: Path):
+    # grid.py is reachable by import-tracing from fog.py but was not named;
+    # the user drew the box, so nothing beyond it is added.
+    scope = explicit(_diag("tests/test_fog.py"), repo, [Path("src/fog.py")])
+    assert repo / "src" / "grid.py" not in scope.full
+    assert scope.signatures == ()
+
+
+def test_explicit_expands_a_directory_to_its_python_files(repo: Path):
+    scope = explicit(_diag("tests/test_fog.py"), repo, [Path("src")])
+    assert repo / "src" / "fog.py" in scope.full
+    assert repo / "src" / "grid.py" in scope.full
+
+
+def test_explicit_refuses_a_path_outside_the_repo(repo: Path):
+    (repo.parent / "escape.py").write_text("x = 1\n")
+    with pytest.raises(ScopeError) as e:
+        explicit(_diag("tests/test_fog.py"), repo, [Path("../escape.py")])
+    assert "outside" in str(e.value)
+
+
+def test_explicit_without_a_diagnostic_file_is_refused(repo: Path):
+    with pytest.raises(ScopeError):
+        explicit(Diagnostic(False, None, None, "tests failed", "raw"), repo, [Path("src")])
