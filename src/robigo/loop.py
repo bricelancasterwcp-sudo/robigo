@@ -28,6 +28,12 @@ from robigo.paths import OutsideRepo, contain
 from robigo.record import RunRecorder, new_recorder, slug
 
 _READ_CAP = 4000
+_HISTORY_TURNS = 2
+"""How many recent turns `history` keeps below -- see the `[-_HISTORY_TURNS:]`
+slice. Named rather than left as the literal `2` in that slice: `context.
+budget.Budget`'s default `history` reserve is derived from this constant and
+`_READ_CAP` together (ruled 2026-08-09), so a change to either number here
+must not be able to silently under-reserve there."""
 _SKIP = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__", ".robigo"})
 
 OUTCOMES: dict[str, int] = {
@@ -187,7 +193,7 @@ def _execute(
             gen, root, scope, adapter, codec, allow_test_edits
         )
         recorder.turn(prompt, gen.text, diag.raw)
-        history = (history + (Turn(action_text, result_text),))[-2:]
+        history = (history + (Turn(action_text, result_text),))[-_HISTORY_TURNS:]
 
         if applied:
             try:

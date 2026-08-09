@@ -13,7 +13,7 @@ from robigo.context.budget import (
     fit,
     reserve_for,
 )
-from robigo.context.render import render
+from robigo.context.render import Turn, render
 from robigo.context.scope import Scope
 
 # Fixture per amendment (ruled 2026-08-09, "the ladder's rung 4 is dead, and
@@ -92,10 +92,73 @@ def test_reserve_for_whole_file_covers_the_file_plus_margin():
     assert reserve_for("udiff", file_tokens=1000) == 384
 
 
-def test_estimate_tokens_is_conservative_for_code():
-    # Deliberately crude and deliberately NOT authoritative: the server's
-    # tokenizer always outranks it (spec 3.3).
-    assert estimate_tokens("x" * 36) == 11
+def test_the_default_history_reserve_covers_two_real_capped_reads(
+    scope: Scope, diag: Diagnostic, tmp_path: Path
+):
+    # Item 5 (Important, ruled 2026-08-09): `history=200` under-reserved by
+    # 12x against loop.py's real shape -- `_READ_CAP` (4000 chars) capped
+    # reads, `_HISTORY_TURNS` (2) kept -- so `fit()` accepted prompts that
+    # then overflowed the window by over a thousand tokens at a comfortable
+    # 4096-token window. This reproduces the real shape end to end: an
+    # actual over-cap file, read through loop.py's own `_read` (so the
+    # exact truncation suffix is not re-typed here), rendered twice via the
+    # real `render()` to measure the REAL marginal cost history adds to a
+    # prompt, and checks the DEFAULT reserves at least that much.
+    from robigo.loop import _HISTORY_TURNS, _READ_CAP, _read
+
+    big = tmp_path / "big.py"
+    big.write_text("x" * (_READ_CAP + 500))
+    capped = _read(tmp_path, "big.py")
+    assert len(capped) > _READ_CAP  # sanity: this really was a capped read
+
+    turn = Turn("read big.py", capped)
+    history = (turn,) * _HISTORY_TURNS
+
+    bare = render(scope, diag, (), "search_replace", tmp_path)
+    with_history = render(scope, diag, history, "search_replace", tmp_path)
+    real_history_cost = estimate_tokens(with_history) - estimate_tokens(bare)
+
+    default_history = Budget(window=1, reserve_out=0).history
+    assert default_history >= real_history_cost
+    # And it does not do so by reverting to the OLD, already-refuted 200:
+    # that number is what this test exists to fail against.
+    assert default_history > 200
+
+
+def test_estimate_tokens_does_not_undercount_a_real_functions_lexical_tokens():
+    # Whole-branch review, item 7 (ruled 2026-08-09): the old version of
+    # this test asserted `estimate_tokens("x" * 36) == 11`, which is just
+    # `int(36 / CHARS_PER_TOKEN) + 1` restated -- it would still pass if
+    # CHARS_PER_TOKEN were recalibrated to something that genuinely
+    # undercounts real code, as long as the magic number 11 were updated to
+    # match, because nothing in it is compared to anything outside the
+    # formula itself. It verified the arithmetic, never the "conservative
+    # for code" the name claimed.
+    #
+    # This instead compares against Python's own stdlib `tokenize` module:
+    # a real, independent lexical token count for a real function's source
+    # (this file's own `fit`, imported already above). A genuinely
+    # conservative code-token estimate must never fall below it -- a
+    # BPE/subword tokenizer never needs FEWER tokens than the lexical
+    # count, since every identifier, operator, and literal is at least one
+    # subword token, often several. Fails today's `estimate_tokens` (239
+    # for `fit`'s 135 lexical tokens) if CHARS_PER_TOKEN is ever loosened
+    # to 6 or higher -- verified by mutation, see the fix-wave report.
+    import inspect
+    import io
+    import tokenize
+
+    source = inspect.getsource(fit)
+    skip = {
+        tokenize.ENCODING, tokenize.ENDMARKER, tokenize.NEWLINE,
+        tokenize.NL, tokenize.INDENT, tokenize.DEDENT, tokenize.COMMENT,
+    }
+    lexical_tokens = sum(
+        1
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline)
+        if tok.type not in skip
+    )
+    assert estimate_tokens(source) >= lexical_tokens
 
 
 def test_a_generous_window_keeps_the_full_scope(scope: Scope, tmp_path: Path):
@@ -141,6 +204,40 @@ def test_an_impossible_window_refuses_and_prints_the_arithmetic(scope: Scope, tm
         assert token in message
 
 
+def test_the_refusals_printed_terms_reconcile_to_the_printed_total(
+    scope: Scope, tmp_path: Path
+):
+    # Item 3 (Important, ruled 2026-08-09): `history` was subtracted from
+    # `scope_budget` but never printed, so the printed terms did not sum to
+    # the printed total -- "window 800 / system 60 / reserve 128 /
+    # diagnostic 60" against "available for scope 352" is short by exactly
+    # the unprinted history=200. The pre-fix test for this message passed
+    # history=0, so the missing term contributed nothing either way and the
+    # bug was invisible to it. This one uses a non-zero history and checks
+    # the arithmetic actually reconciles, not just that "history" appears
+    # as a substring.
+    budget = Budget(window=800, reserve_out=128, system=60, diagnostic=60,
+                    history=200)
+    with pytest.raises(BudgetExhausted) as e:
+        fit(scope, budget, tmp_path)
+    message = str(e.value)
+    assert "history 200" in message
+    assert f"available for scope {budget.scope_budget}" in message
+    assert budget.scope_budget == 800 - 60 - 128 - 60 - 200 == 352
+    # Every subtracted term named in the message must actually reconcile to
+    # the printed total, not merely co-occur with it as separate strings.
+    terms = {
+        "window": budget.window, "system": budget.system,
+        "reserve": budget.reserve_out, "diagnostic": budget.diagnostic,
+        "history": budget.history,
+    }
+    for label, value in terms.items():
+        assert f"{label} {value}" in message
+    reconciled = terms["window"] - terms["system"] - terms["reserve"] \
+        - terms["diagnostic"] - terms["history"]
+    assert reconciled == budget.scope_budget
+
+
 def test_degrade_step_three_reduces_hop_one_to_signatures(scope: Scope):
     reduced = scope.degrade(3)
     assert reduced.full == (scope.anchor,)
@@ -166,6 +263,20 @@ def test_degrade_rejects_a_step_beyond_the_ladder(scope: Scope):
     # short of what it asked for.
     with pytest.raises(ValueError):
         scope.degrade(5)
+
+
+def test_degrade_rejects_a_step_of_zero(scope: Scope):
+    # Whole-branch review, item 7 (ruled 2026-08-09): `step <= 1` used to
+    # return rung 1's scope for 0 too -- the same plausible-looking wrong
+    # answer amendment 2 refused to hand back above the ladder, just below
+    # it instead. There is no rung 0.
+    with pytest.raises(ValueError):
+        scope.degrade(0)
+
+
+def test_degrade_rejects_a_negative_step(scope: Scope):
+    with pytest.raises(ValueError):
+        scope.degrade(-1)
 
 
 def test_windowing_the_anchor_is_what_shrinks_step_four(scope: Scope, diag: Diagnostic, tmp_path: Path):
@@ -229,20 +340,34 @@ def test_a_windowed_scope_with_no_known_line_is_labelled_honestly(tmp_path: Path
     assert "windowed around the file's midpoint" in out
 
 
-def test_the_estimate_equals_the_cost_of_what_render_emits(scope: Scope, tmp_path: Path):
-    # Invariant 2, made structural per amendment 2: not "close to" -- two
-    # implementations of the same text drift, and the drift is invisible
-    # until a prompt the arithmetic called safe comes back truncated.
-    # Exercises all four rungs, since each has a different shape (whole
-    # files, dropped signatures, hop-one-as-signature, windowed anchor).
+def test_the_estimate_equals_the_cost_of_what_render_actually_emits(
+    scope: Scope, diag: Diagnostic, tmp_path: Path
+):
+    # Item 4 (Important, ruled 2026-08-09): the old version of this test
+    # asserted `_cost(scope, root) == estimate_tokens(_scope_section(scope,
+    # root))`, but `_cost` IS that exact expression (see `budget._cost`'s
+    # own body) -- both sides are one call, and `render`, the function that
+    # actually builds the prompt a model sees, was never invoked. Proven by
+    # mutation: giving `render` a private copy of `_scope_section` that
+    # differs only in the header delimiter ("=== label ===" instead of
+    # "--- label ---") left the whole suite, including the old version of
+    # this test, green (see the fix-wave report for the mutation run).
+    #
+    # This version calls `render` for real and asserts the text `_cost`
+    # charges for is verbatim inside what `render` actually emits, so a
+    # `render` that diverges from `_scope_section` -- however slightly --
+    # fails this test where the old one could not. Exercises all four
+    # rungs, since each has a different shape (whole files, dropped
+    # signatures, hop-one-as-signature, windowed anchor).
     from robigo.context.budget import _cost
     from robigo.context.render import _scope_section
 
     for step in (1, 2, 3, 4):
         candidate = scope.degrade(step)
-        assert _cost(candidate, tmp_path) == estimate_tokens(
-            _scope_section(candidate, tmp_path)
-        )
+        section = _scope_section(candidate, tmp_path)
+        prompt = render(candidate, diag, (), "search_replace", tmp_path)
+        assert section in prompt
+        assert _cost(candidate, tmp_path) == estimate_tokens(section)
 
 
 def test_an_unreadable_file_is_costed_the_way_it_is_rendered(scope: Scope, tmp_path: Path):

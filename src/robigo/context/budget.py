@@ -15,6 +15,42 @@ DIAGNOSTIC_TOKENS = 600
 MAX_STEP = 5
 
 
+def estimate_tokens(text: str) -> int:
+    return int(len(text) / CHARS_PER_TOKEN) + 1
+
+
+def _default_history_tokens() -> int:
+    """The worst case `loop.py` can actually hand `render` as history, not a
+    round number a second module can silently contradict (ruled
+    2026-08-09): a fixed `history=200` measured against `loop.py`'s real
+    `_READ_CAP` (4000 chars) and `_HISTORY_TURNS` (2) under-reserved by
+    12x -- two capped `read` results render to ~2449 tokens, so `fit()`
+    accepted prompts that then overflowed the window.
+
+    Reproduces the exact shape `render` prints for a turn
+    (`f"you: {action}\\nresult: {result}"`) and the exact suffix `loop.py`'s
+    `_read` appends to a capped result, so this tracks both constants for
+    real rather than restating them. Rounded UP to the nearest 100 -- the
+    over-reserving direction the invariant requires -- rather than kept as
+    the precise, fragile-looking token count.
+
+    Imported from `robigo.loop` inside this function, not at module level:
+    `context` is the lower layer here (`robigo.loop` is the orchestrator
+    that will eventually call `fit()`), and a deferred import keeps that
+    direction from becoming a hard dependency every time `context.budget`
+    is imported, the same reason `_section` below imports `render` lazily
+    rather than at the top of this file."""
+    from robigo.loop import _HISTORY_TURNS, _READ_CAP
+
+    capped_read = "x" * _READ_CAP + "\n<truncated>\n"
+    turn_text = f"you: read <path>\nresult: {capped_read}"
+    worst_case = estimate_tokens("\n".join([turn_text] * _HISTORY_TURNS))
+    return -(-worst_case // 100) * 100
+
+
+DEFAULT_HISTORY_TOKENS = _default_history_tokens()
+
+
 class BudgetExhausted(Exception):
     """Scope cannot fit after every degradation step. Raised BEFORE any
     generation: with no evidence yet, a refusal is honest and a truncated
@@ -27,7 +63,7 @@ class Budget:
     reserve_out: int
     system: int = SYSTEM_TOKENS
     diagnostic: int = DIAGNOSTIC_TOKENS
-    history: int = 200
+    history: int = DEFAULT_HISTORY_TOKENS
 
     @property
     def scope_budget(self) -> int:
@@ -35,10 +71,6 @@ class Budget:
             self.window - self.reserve_out - self.system
             - self.diagnostic - self.history
         )
-
-
-def estimate_tokens(text: str) -> int:
-    return int(len(text) / CHARS_PER_TOKEN) + 1
 
 
 def reserve_for(codec: str, file_tokens: int) -> int:
@@ -57,7 +89,8 @@ def fit(scope: Scope, budget: Budget, root: Path) -> tuple[Scope, int]:
         f"scope cannot fit the window after all {MAX_STEP - 1} degradation "
         f"steps.\n"
         f"  window {budget.window}   system {budget.system}   "
-        f"reserve {budget.reserve_out}   diagnostic {budget.diagnostic}\n"
+        f"reserve {budget.reserve_out}   diagnostic {budget.diagnostic}   "
+        f"history {budget.history}\n"
         f"  available for scope {budget.scope_budget}   "
         f"smallest scope {_cost(scope.degrade(MAX_STEP - 1), root)}\n"
         f"Narrow it with --scope, or use a model with a larger window."

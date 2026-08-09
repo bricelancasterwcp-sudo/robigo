@@ -37,18 +37,23 @@ class Scope:
         (rungs 1-4, then refusal), and a caller that miscomputes a step
         beyond 4 gets a ValueError rather than rung 4's scope handed back
         silently as if it were something further down the ladder
-        (amendment 2, ruled 2026-08-09)."""
-        if step <= 1:
+        (amendment 2, ruled 2026-08-09). The same reasoning applies BELOW
+        the ladder: 0 and every negative step used to fall through to
+        `step <= 1` and silently return rung 1's scope, the identical
+        plausible-looking wrong answer a caller that miscomputes upward
+        used to get -- there is no rung 0 or rung -1 to hand back either
+        (ruled 2026-08-09, whole-branch review)."""
+        if step < 1 or step > 4:
+            raise ValueError(f"degrade() step must be between 1 and 4, got {step}")
+        if step == 1:
             return self
         if step == 2:
             return Scope(self.anchor, self.full, (), self.anchor_window, self.anchor_line)
         if step == 3:
             return Scope(self.anchor, (self.anchor,), self.full[1:], None, self.anchor_line)
-        if step == 4:
-            return Scope(
-                self.anchor, (self.anchor,), self.full[1:], (-60, 60), self.anchor_line
-            )
-        raise ValueError(f"degrade() step must be between 1 and 4, got {step}")
+        return Scope(
+            self.anchor, (self.anchor,), self.full[1:], (-60, 60), self.anchor_line
+        )
 
 
 def _anchor(diag_file: str, root: Path) -> Path:
