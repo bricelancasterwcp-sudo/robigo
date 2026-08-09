@@ -3869,6 +3869,173 @@ git add src/robigo/record.py src/robigo/loop.py tests/test_record.py
 git commit -m "feat: verbatim run records that double as corpus candidates"
 ```
 
+#### Amendment 2 (ruled 2026-08-09): records must not enter the user's history
+
+**Critical.** `.robigo/runs/<id>/` is written inside the repo, and `snapshot`
+does `git add -A`. So from the second run onward, the commit whose whole
+purpose is preserving the *user's* pre-patch state contains robigo's own
+transcripts — and merging a `robigo/*` branch carries them into the user's
+history. Reproduced. It is invisible in this repository because its own
+`.gitignore` covers `.robigo/`, the one place the leak cannot appear.
+
+`.robigo/` must ignore itself, using pytest's cachedir trick. Combined with
+two other fixes, `RunRecorder` becomes:
+
+```python
+_IGNORE_ALL = "*\n"
+
+
+class RunRecorder:
+    """Prompts, raw replies, and adapter output, verbatim.
+
+    Verbatim is the point: trailing whitespace and line endings are exactly
+    what break a SEARCH block, so normalising here would erase the evidence.
+    These records are also corpus candidates.
+
+    Nothing is created until something is written, so a run refused before it
+    starts leaves no directory behind — the same law `safety.py` applies to
+    branches. Once `error` is set, no further file is written, including
+    `meta.json`.
+    """
+
+    def __init__(self, root: Path, run_id: str) -> None:
+        self.dir = root / ".robigo" / "runs" / run_id
+        self.error: str | None = None
+        self._turns = 0
+        self._ready = False
+
+    def _ensure(self) -> bool:
+        """Create the tree on first write, and make `.robigo/` ignore itself
+        so `snapshot`'s `git add -A` can never commit robigo's transcripts
+        into the user's repository."""
+        if self._ready or self.error is not None:
+            return self.error is None
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            marker = self.dir.parent.parent / ".gitignore"
+            if not marker.exists():
+                marker.write_text(_IGNORE_ALL, encoding="utf-8")
+        except OSError as exc:
+            self.error = f"cannot create {self.dir}: {exc}"
+            return False
+        self._ready = True
+        return True
+
+    def _write(self, name: str, text: str) -> None:
+        """A write failure is remembered, not raised: losing the transcript
+        is bad, failing a completed repair because the transcript could not
+        be saved is worse. `UnicodeError` is caught alongside `OSError`
+        because a lone surrogate in a model reply raises
+        `UnicodeEncodeError` — a `ValueError`, not an `OSError` — which
+        would otherwise escape `run()` *after* the repair had landed."""
+        if not self._ensure():
+            return
+        try:
+            (self.dir / name).write_text(text, encoding="utf-8", newline="")
+        except (OSError, UnicodeError) as exc:
+            self.error = f"cannot write {name}: {exc}"
+```
+
+**One owner for run naming.** `slug` moves from `loop.py` to `record.py`,
+which already owns run-id naming, and a public factory replaces the
+duplicated construction expression in both callers:
+
+```python
+def slug(task: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", task.lower()).strip("-")[:24] or "run"
+
+
+def new_recorder(root: Path, task: str) -> RunRecorder:
+    """The single place a run id is named, so `cli` and `loop` cannot drift."""
+    return RunRecorder(root, next_run_id(root, slug(task)))
+```
+
+`loop.py` imports `slug` for the branch name and `new_recorder` for its
+default; `cli.py` imports `new_recorder` only. The private cross-module
+import disappears.
+
+**`finish`'s `result` gets annotated** via a `TYPE_CHECKING` guard importing
+`RunResult` from `robigo.loop` — the runtime dependency is one-way
+(`loop → record`), so no cycle appears.
+
+**The overflowing prompt gets recorded.** `recorder.turn(...)` sits after
+`_take_turn`, so the two handlers that return before it record nothing — and
+the prompt that blew the window is the single most useful artifact for exit
+code 2. Both handlers record it first:
+
+```python
+        except ContextOverflowError as exc:
+            recorder.turn(prompt, f"<no reply: {exc}>", diag.raw)
+            outcome = "budget_exhausted" if turn > 1 else "refused"
+            return _result(outcome, turn, branch, str(exc))
+        except (ModelError, AdapterError) as exc:
+            recorder.turn(prompt, f"<no reply: {exc}>", diag.raw)
+            return _result("infrastructure", turn, branch, str(exc))
+```
+
+**`main` refuses a `--root` that does not exist**, before constructing
+anything — a typo'd path was being created from nothing and then refused:
+
+```python
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        print(f"--root {args.root} is not a directory")
+        return OUTCOMES["refused"]
+```
+
+**Five tests.** The unwritable-root test must now trigger a write, since the
+mkdir is lazy; and the verbatim assertion moves to `read_bytes` so the
+`newline=""` mechanism is actually pinned (on POSIX a default-newline write
+produces identical bytes, so the old assertion could not fail here).
+
+```python
+def test_records_never_enter_the_users_history(tmp_path: Path):
+    # The Critical: snapshot does `git add -A`, so a record written inside
+    # the repo would be committed into the user's own history from run 2 on.
+    recorder = RunRecorder(tmp_path, "fog-1")
+    recorder.turn("p", "r", "a")
+    assert (tmp_path / ".robigo" / ".gitignore").read_text() == "*\n"
+
+
+def test_a_surrogate_in_a_reply_does_not_crash(tmp_path: Path):
+    recorder = RunRecorder(tmp_path, "fog-1")
+    recorder.turn("p", "bad \ud800 reply", "a")   # must not raise
+    assert recorder.error is not None
+    assert "cannot write" in recorder.error
+
+
+def test_nothing_is_created_until_something_is_written(tmp_path: Path):
+    RunRecorder(tmp_path, "fog-1")
+    assert not (tmp_path / ".robigo").exists()
+
+
+def test_an_unwritable_root_is_remembered_not_raised(tmp_path: Path):
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    blocked.chmod(0o500)
+    try:
+        recorder = RunRecorder(blocked, "fog-1")
+        recorder.turn("p", "r", "a")              # must not raise
+        assert recorder.error is not None
+        assert "cannot create" in recorder.error
+    finally:
+        blocked.chmod(0o700)
+
+
+def test_a_refused_run_still_leaves_a_meta_json(repo: Path):
+    # The wrapper's whole purpose, previously unguarded by any test.
+    (repo / "src" / "fog.py").write_text("def radius(t):\n    return t * 2\n")
+    result = run("fix", repo, _ScriptedClient(FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert result.outcome == "refused"
+    metas = list((repo / ".robigo" / "runs").glob("*/meta.json"))
+    assert len(metas) == 1
+    assert json.loads(metas[0].read_text())["outcome"] == "refused"
+```
+
+The last one belongs in `tests/test_loop.py`, where `repo`, `_ScriptedClient`
+and `FIX` already exist.
+
 ---
 
 ## Done when
