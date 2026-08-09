@@ -1155,6 +1155,36 @@ git add src/robigo/model/geometry.py tests/test_geometry.py
 git commit -m "feat: usable window from geometry, free VRAM, and training ctx"
 ```
 
+#### Verified before execution (2026-08-09)
+
+`nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits` was run on
+the target box before this task was dispatched. It exits 0 and prints a bare
+integer in MiB on one line — `14571` — so the parse in `free_vram_bytes` is
+correct as written, and `nounits` does mean MiB.
+
+Two facts from that run that the code must reflect rather than discover later:
+
+- **The machine is the target hardware, and "16 GB" is not 16 GiB of headroom.**
+  Total is 16303 MiB, used 1269 MiB, **free 14571 MiB**, with no model loaded —
+  the desktop and compositor hold ~1.7 GiB before robigo asks for anything.
+  This is precisely why the window comes from *measured free* VRAM and never
+  from `memory.total`, and it is the number the degradation ladder in Task 4
+  will actually be working against.
+- **`split("\n")[0]` takes GPU 0 deliberately, not accidentally.** This box has
+  one GPU, so the behaviour is unobservable here, but on a multi-GPU machine
+  the command prints one line per GPU. robigo loads one model on one device,
+  so GPU 0 is the choice; say so in a comment at that line, because an
+  unexplained `[0]` reads as a bug that silently ignores the other cards.
+
+**`free_vram` must be read before the model is resident.** `usable_window`
+subtracts `weights_bytes` from `free_vram`, which is right only when the
+weights are not yet loaded. If the model is already resident — Ollama keeps
+one hot for five minutes by default — `memory.free` already excludes those
+bytes and subtracting them again understates the window by roughly the size
+of the model. Task 5 owns that ordering; state the precondition in
+`usable_window`'s docstring here so the caller cannot get it wrong silently.
+```
+
 ---
 
 ### Task 4: The budget and the degradation ladder
