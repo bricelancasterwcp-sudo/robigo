@@ -343,6 +343,107 @@ def test_a_malformed_field_raises_geometry_error_not_a_raw_type_error():
     assert "malformed" in str(e.value)
 ```
 
+#### Amendment 2 (ruled 2026-08-09): guard every conversion, and name the field
+
+Amendment 1's `try` block was placed wrong — it starts *after* `heads` and
+`key_dim` are computed, so two conversions sit outside it. Three escapes
+reproduced, all still bypassing Task 5's `GeometryError` fallback:
+
+| input | escapes as |
+|---|---|
+| `attention.head_count: "not-a-number"` | raw `ValueError` |
+| `embedding_length` malformed, `key_length` absent | raw `ValueError` |
+| `attention.head_count: 0`, `key_length` absent | **`ZeroDivisionError`** |
+
+The third is the instructive one: `ZeroDivisionError` is an `ArithmeticError`,
+so the chosen `except (TypeError, ValueError)` would not have caught it even
+with the lines moved inside. And the message embeds the raw exception text
+rather than naming the offending field, which is weaker than every `need()`
+message beside it.
+
+Replace the blanket `try` with a per-field converter, so every conversion is
+guarded and every message names its own key:
+
+```python
+def _as_int(key: str, value: object) -> int:
+    """Convert one metadata field, naming it if it is malformed. Task 5
+    catches GeometryError to fall back to an explicit --window, so a raw
+    TypeError or ValueError escaping here would defeat that fallback."""
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise GeometryError(
+            f"{key} is malformed ({value!r}); the KV cache size cannot be "
+            f"computed, so the usable window is unknown. Pass --window "
+            f"explicitly."
+        ) from exc
+```
+
+and use it for every field, guarding the division explicitly rather than
+catching its exception:
+
+```python
+    kv_heads = need("attention.head_count_kv")
+    if isinstance(kv_heads, list):
+        kv_heads = max(kv_heads) if kv_heads else None
+    key_dim = info.get(f"{arch}.attention.key_length")
+    if key_dim is None:
+        heads = _as_int(f"{arch}.attention.head_count", need("attention.head_count"))
+        if heads <= 0:
+            raise GeometryError(
+                f"{arch}.attention.head_count is {heads}, so the head "
+                f"dimension cannot be derived from embedding_length. Pass "
+                f"--window explicitly."
+            )
+        key_dim = _as_int(f"{arch}.embedding_length", need("embedding_length")) // heads
+    value_dim = info.get(f"{arch}.attention.value_length", key_dim)
+    return Geometry(
+        arch=arch,
+        layers=_as_int(f"{arch}.block_count", need("block_count")),
+        kv_heads=_as_int(f"{arch}.attention.head_count_kv", kv_heads),
+        key_dim=_as_int(f"{arch}.attention.key_length", key_dim),
+        value_dim=_as_int(f"{arch}.attention.value_length", value_dim),
+        training_ctx=_as_int(f"{arch}.context_length", need("context_length")),
+    )
+```
+
+`max(kv_heads) if kv_heads else None` handles an empty list, which would
+otherwise raise `ValueError` from `max()` outside any guard.
+
+Four tests. The existing malformed-field test also gains a field-name
+assertion, since naming the field is the point:
+
+```python
+def test_a_malformed_head_count_raises_geometry_error(): 
+    info = dict(QWEN7B, **{"qwen2.attention.head_count": "not-a-number"})
+    del info["qwen2.attention.key_length"]
+    with pytest.raises(GeometryError) as e:
+        from_model_info(info)
+    assert "attention.head_count" in str(e.value)
+
+
+def test_a_malformed_embedding_length_on_the_fallback_path_is_named():
+    info = dict(QWEN7B, **{"qwen2.embedding_length": None})
+    del info["qwen2.attention.key_length"]
+    with pytest.raises(GeometryError) as e:
+        from_model_info(info)
+    assert "embedding_length" in str(e.value)
+
+
+def test_a_zero_head_count_does_not_divide_by_zero():
+    info = dict(QWEN7B, **{"qwen2.attention.head_count": 0})
+    del info["qwen2.attention.key_length"]
+    with pytest.raises(GeometryError) as e:
+        from_model_info(info)
+    assert "--window" in str(e.value)
+
+
+def test_an_empty_kv_head_list_is_geometry_error_not_a_max_failure():
+    info = dict(QWEN7B, **{"qwen2.attention.head_count_kv": []})
+    with pytest.raises(GeometryError):
+        from_model_info(info)
+```
+
 ---
 
 ### Task 2: GGUF metadata reader
