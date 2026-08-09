@@ -92,3 +92,34 @@ def test_a_malformed_field_raises_geometry_error_not_a_raw_type_error():
     with pytest.raises(GeometryError) as e:
         from_model_info(info)
     assert "malformed" in str(e.value)
+    assert "attention.head_count_kv" in str(e.value)
+
+
+def test_a_malformed_head_count_raises_geometry_error():
+    info = dict(QWEN7B, **{"qwen2.attention.head_count": "not-a-number"})
+    del info["qwen2.attention.key_length"]
+    with pytest.raises(GeometryError) as e:
+        from_model_info(info)
+    assert "attention.head_count" in str(e.value)
+
+
+def test_a_malformed_embedding_length_on_the_fallback_path_is_named():
+    info = dict(QWEN7B, **{"qwen2.embedding_length": None})
+    del info["qwen2.attention.key_length"]
+    with pytest.raises(GeometryError) as e:
+        from_model_info(info)
+    assert "embedding_length" in str(e.value)
+
+
+def test_a_zero_head_count_does_not_divide_by_zero():
+    info = dict(QWEN7B, **{"qwen2.attention.head_count": 0})
+    del info["qwen2.attention.key_length"]
+    with pytest.raises(GeometryError) as e:
+        from_model_info(info)
+    assert "--window" in str(e.value)
+
+
+def test_an_empty_kv_head_list_is_geometry_error_not_a_max_failure():
+    info = dict(QWEN7B, **{"qwen2.attention.head_count_kv": []})
+    with pytest.raises(GeometryError):
+        from_model_info(info)
