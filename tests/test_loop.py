@@ -1,0 +1,170 @@
+# tests/test_loop.py
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from robigo.adapters.python_ import PythonAdapter
+from robigo.loop import OUTCOMES, run
+from robigo.model.client import Generation
+
+
+class _ScriptedClient:
+    """A model whose replies are fixed. The loop must be testable with no
+    GPU, or it cannot be tested at all."""
+
+    def __init__(self, *replies: str, truncated: bool = False) -> None:
+        self.replies = list(replies)
+        self.truncated = truncated
+        self.prompts: list[str] = []
+
+    def generate(self, prompt: str, *, seed: int) -> Generation:
+        self.prompts.append(prompt)
+        text = self.replies.pop(0) if self.replies else "done nothing left"
+        return Generation(text, 10, 5, self.truncated)
+
+
+FIX = """patch src/fog.py
+```python
+<<<<<<< SEARCH
+    return t
+=======
+    return t * 2
+>>>>>>> REPLACE
+```
+"""
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "fog.py").write_text("def radius(t):\n    return t\n")
+    (tmp_path / "tests" / "test_fog.py").write_text(
+        "import sys\nsys.path.insert(0, 'src')\nfrom fog import radius\n\n"
+        "def test_radius():\n    assert radius(2) == 4\n"
+    )
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    return tmp_path
+
+
+def test_a_correct_patch_reaches_pass(repo: Path):
+    result = run("make the failing test pass", repo,
+                 _ScriptedClient(FIX), PythonAdapter(python=sys.executable),
+                 codec="search_replace")
+    assert (result.outcome, result.exit_code) == ("pass", 0)
+    assert result.turns == 1
+    assert (repo / "src" / "fog.py").read_text().endswith("return t * 2\n")
+
+
+def test_a_truncated_generation_is_never_applied(repo: Path):
+    before = (repo / "src" / "fog.py").read_text()
+    client = _ScriptedClient(FIX, FIX, FIX, truncated=True)
+    result = run("fix", repo, client, PythonAdapter(python=sys.executable),
+                 codec="search_replace", turn_cap=3)
+    assert result.outcome == "stalled"
+    assert (repo / "src" / "fog.py").read_text() == before
+
+
+def test_a_parse_failure_is_fed_back_and_costs_a_turn(repo: Path):
+    client = _ScriptedClient("edit src/fog.py", FIX)
+    result = run("fix", repo, client, PythonAdapter(python=sys.executable),
+                 codec="search_replace")
+    assert result.outcome == "pass"
+    assert result.turns == 2
+    # The diagnostic must reach the model, or it repairs blind.
+    assert "not a verb" in client.prompts[1]
+
+
+def test_repeating_an_identical_failing_patch_stalls(repo: Path):
+    miss = FIX.replace("    return t\n", "    return t;\n")
+    result = run("fix", repo, _ScriptedClient(miss, miss, miss, miss),
+                 PythonAdapter(python=sys.executable),
+                 codec="search_replace", stall_cap=3)
+    assert (result.outcome, result.exit_code) == ("stalled", OUTCOMES["stalled"])
+
+
+def test_the_turn_cap_ends_the_run(repo: Path):
+    result = run("fix", repo, _ScriptedClient("run", "run", "run", "run"),
+                 PythonAdapter(python=sys.executable),
+                 codec="search_replace", turn_cap=2)
+    assert result.turns == 2
+    assert result.outcome == "stalled"
+
+
+def test_a_passing_suite_refuses_before_any_generation(repo: Path):
+    (repo / "src" / "fog.py").write_text("def radius(t):\n    return t * 2\n")
+    client = _ScriptedClient(FIX)
+    result = run("fix", repo, client, PythonAdapter(python=sys.executable),
+                 codec="search_replace")
+    assert (result.outcome, result.exit_code) == ("refused", OUTCOMES["refused"])
+    assert "failing test" in result.detail
+    assert client.prompts == []
+
+
+def test_overflow_with_evidence_is_budget_exhausted_not_infrastructure(repo: Path):
+    # Law 3: with at least one attempt already made, running out of window
+    # is a SESSION RESULT with the work preserved -- not an abort. Mapping
+    # it to infrastructure would discard real evidence and misreport a
+    # model-side limit as a broken daemon.
+    from robigo.model.client import ServerContextOverflowError
+
+    class _OverflowsOnTurnTwo(_ScriptedClient):
+        def generate(self, prompt: str, *, seed: int) -> Generation:
+            if seed > 1:
+                raise ServerContextOverflowError("prompt exceeds the window")
+            return super().generate(prompt, seed=seed)
+
+    result = run("fix", repo, _OverflowsOnTurnTwo("read src/fog.py"),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert (result.outcome, result.exit_code) == ("budget_exhausted", 2)
+    assert result.turns == 2
+
+
+def test_overflow_with_no_evidence_is_refused(repo: Path):
+    # Zero attempts submitted: nothing to preserve, so it is a loud
+    # refusal rather than a fabricated result (law 3, other branch).
+    from robigo.model.client import ServerContextOverflowError
+
+    class _OverflowsImmediately(_ScriptedClient):
+        def generate(self, prompt: str, *, seed: int) -> Generation:
+            raise ServerContextOverflowError("prompt exceeds the window")
+
+    result = run("fix", repo, _OverflowsImmediately(),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert (result.outcome, result.exit_code) == ("refused", 3)
+
+
+def test_a_run_is_branch_scoped_and_snapshots_first(repo: Path):
+    result = run("fix", repo, _ScriptedClient(FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert result.branch is not None and result.branch.startswith("robigo/")
+    log = subprocess.run(["git", "log", "--oneline"], cwd=repo,
+                         capture_output=True, text=True).stdout
+    assert "snapshot" in log
+
+
+def test_a_git_failure_is_infrastructure_not_a_crash(repo: Path, monkeypatch):
+    import robigo.loop as loop_module
+
+    def boom(*args, **kwargs):
+        raise subprocess.CalledProcessError(128, "git")
+
+    monkeypatch.setattr(loop_module, "start_branch", boom)
+    result = run("fix", repo, _ScriptedClient(FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert (result.outcome, result.exit_code) == ("infrastructure", 4)
+
+
+def test_only_the_patched_file_is_committed(repo: Path):
+    (repo / "unrelated.py").write_text("y = 999\n")
+    run("fix", repo, _ScriptedClient(FIX), PythonAdapter(python=sys.executable),
+        codec="search_replace")
+    changed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=repo, capture_output=True, text=True,
+    ).stdout.split()
+    assert changed == ["src/fog.py"]
