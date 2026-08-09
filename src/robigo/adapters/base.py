@@ -19,6 +19,11 @@ class Diagnostic:
     raw: str
 
 
+class AdapterError(Exception):
+    """The adapter cannot run the project's tests at all. Infrastructure,
+    never a model result: it maps to exit code 4 (spec section 6.1)."""
+
+
 class Adapter(Protocol):
     name: str
     test_command: str
