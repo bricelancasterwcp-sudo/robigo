@@ -2625,6 +2625,90 @@ git add src/robigo/model tests/test_client.py
 git commit -m "feat: model clients with mandatory top-level truncate:false"
 ```
 
+#### Amendment (ruled 2026-08-09): `LlamaCppClient` needs tests, and the guard has two halves
+
+The test list above covers `OllamaClient` only. Two gaps follow from that:
+
+1. **`LlamaCppClient` has no test evidence at all** — not even offline, though
+   the same `_FakeHTTP` monkeypatch pattern would exercise it with no network.
+   It is one of the two clients this task delivers.
+2. **The malformed-200 guard is an OR**, `not isinstance(content, str) or
+   body.get("error")`, and only the first half is tested.
+
+The fixtures below are **captured verbatim from a real `llama-server`**
+(build `b1-4988f6e`) rather than invented, including the token counts — the
+shape and the `finish_reason` values were both confirmed against a live
+daemon, `"stop"` normally and `"length"` when a generation is cut at
+`max_tokens`. That flag vetoes a patch, so it is load-bearing.
+
+```python
+def _llama_reply(content="OK", finish_reason="stop", prompt=32, completion=2):
+    """A real llama-server /v1/chat/completions body, trimmed of `timings`."""
+    return {
+        "choices": [{"finish_reason": finish_reason, "index": 0,
+                     "message": {"role": "assistant", "content": content}}],
+        "created": 1786273256, "model": "local", "object": "chat.completion",
+        "system_fingerprint": "b1-4988f6e", "id": "chatcmpl-test",
+        "usage": {"completion_tokens": completion, "prompt_tokens": prompt,
+                  "total_tokens": prompt + completion},
+    }
+
+
+def _llama(monkeypatch, http) -> LlamaCppClient:
+    monkeypatch.setattr("robigo.model.client._request", http)
+    return LlamaCppClient("local", window=2048, sleep=lambda _s: None)
+
+
+def test_llamacpp_returns_a_populated_generation(monkeypatch):
+    gen = _llama(monkeypatch, _FakeHTTP(_llama_reply("hello"))).generate("hi", seed=1)
+    assert gen == Generation(text="hello", tokens_in=32, tokens_out=2, truncated=False)
+
+
+def test_llamacpp_marks_a_length_stop_as_truncated(monkeypatch):
+    # Verified live: a generation cut at max_tokens reports "length".
+    gen = _llama(monkeypatch, _FakeHTTP(_llama_reply(
+        "Count slowly from one", finish_reason="length", prompt=38, completion=4
+    ))).generate("hi", seed=1)
+    assert gen.truncated is True
+
+
+def test_llamacpp_sends_stop_top_level_and_max_tokens(monkeypatch):
+    http = _FakeHTTP(_llama_reply())
+    monkeypatch.setattr("robigo.model.client._request", http)
+    LlamaCppClient("local", window=2048, num_predict=64, stop=("\nread ",),
+                   sleep=lambda _s: None).generate("hi", seed=7)
+    payload = http.calls[0][1]
+    assert payload["stop"] == ["\nread "]
+    assert payload["max_tokens"] == 64
+    assert payload["seed"] == 7
+
+
+@pytest.mark.parametrize("body", [
+    {"choices": []},
+    {"choices": [{"message": None}]},
+    {"choices": [{"message": "just a string"}]},
+    {"object": "chat.completion"},
+])
+def test_llamacpp_refuses_a_malformed_200(monkeypatch, body):
+    with pytest.raises(ModelError):
+        _llama(monkeypatch, _FakeHTTP(body)).generate("hi", seed=1)
+
+
+def test_an_overflow_400_from_llamacpp_raises_without_retrying(monkeypatch):
+    # llama.cpp nests the error object directly; Ollama adds a layer.
+    http = _FakeHTTP(_http_error(OVERFLOW))
+    with pytest.raises(ServerContextOverflowError):
+        _llama(monkeypatch, http).generate("hi", seed=1)
+    assert len(http.calls) == 1
+
+
+def test_a_200_carrying_a_top_level_error_is_infrastructure(monkeypatch):
+    # The other half of the OR guard: valid content beside a truthy error.
+    body = {"message": {"content": "looks fine"}, "error": "model unloaded"}
+    with pytest.raises(ModelError):
+        _client(monkeypatch, _FakeHTTP(body)).generate("hi", seed=1)
+```
+
 ---
 
 ### Task 10: The turn loop and its terminal states
