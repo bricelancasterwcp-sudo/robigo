@@ -481,6 +481,13 @@ def test_an_empty_per_layer_kv_list_says_it_is_empty():
     assert "empty list" in str(e.value)
 ```
 
+**The four tests below belong to Amendment 2**, not to Amendment 3 above —
+Amendment 3 was inserted at the point it corrects, which split this block from
+its heading. They were already added in fix round 2; do not add them twice.
+The last of them, `test_an_empty_kv_head_list_is_geometry_error_not_a_max_failure`,
+is **superseded** by Amendment 3's `test_an_empty_per_layer_kv_list_says_it_is_empty`,
+which asserts the same behaviour and additionally pins the message.
+
 Four tests. The existing malformed-field test also gains a field-name
 assertion, since naming the field is the point:
 
