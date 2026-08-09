@@ -410,6 +410,77 @@ catching its exception:
 `max(kv_heads) if kv_heads else None` handles an empty list, which would
 otherwise raise `ValueError` from `max()` outside any guard.
 
+#### Amendment 3 (ruled 2026-08-09): the `max()` is a conversion too
+
+Amendment 2 reasoned about the *empty* list and stopped there. A non-empty
+list with a malformed element still escapes, because `max()` compares before
+`_as_int` ever sees the values:
+
+| input | escapes as |
+|---|---|
+| `head_count_kv: [4, None]` | raw `TypeError: '>' not supported between …` |
+| `head_count_kv: [4, "x"]` | raw `TypeError: '>' not supported between …` |
+
+This is a **regression against fix round 1**, whose blanket `try` covered the
+`max()` incidentally; replacing it with per-field guards dropped that cover.
+It is the original finding relocated from a scalar field to a list element,
+and it is reachable: this metadata arrives JSON-decoded from Ollama's
+`/api/show` as well as from GGUF, and a JSON array can hold `null` or a string
+where a GGUF typed array cannot.
+
+Reduce the list through a converter of its own, so no comparison ever sees a
+non-int, and replace both the `isinstance` branch and the later `_as_int` on
+`kv_heads`:
+
+```python
+def _kv_head_count(key: str, value: object) -> int:
+    """Reduce `head_count_kv` — which some architectures report per layer —
+    to its largest value. `max()` is a conversion like any other and must not
+    escape as a raw TypeError, so every element goes through `_as_int` first
+    and the comparison only ever sees ints."""
+    if not isinstance(value, list):
+        return _as_int(key, value)
+    if not value:
+        raise GeometryError(
+            f"{key} is an empty list, so the number of key/value heads is "
+            f"unknown and the KV cache size cannot be computed. Pass "
+            f"--window explicitly."
+        )
+    return max(_as_int(key, element) for element in value)
+```
+
+```python
+    kv_heads = _kv_head_count(
+        f"{arch}.attention.head_count_kv", need("attention.head_count_kv")
+    )
+```
+
+with `kv_heads=kv_heads,` in the `Geometry(...)` call — the field is already
+an `int` by then, and a second `_as_int` on it would be dead.
+
+This also sharpens the empty-list message, which previously normalised `[]` to
+`None` and then reported `head_count_kv is malformed (None)` — telling a user
+debugging an empty list that they had passed nothing at all.
+
+Two tests, and the existing valid-per-layer-list test must keep passing:
+
+```python
+def test_a_malformed_element_of_a_per_layer_kv_list_is_named_not_raw():
+    """A JSON null inside the list is the same defect as a malformed scalar
+    field, and Task 5's --window fallback catches only GeometryError."""
+    info = dict(QWEN7B, **{"qwen2.attention.head_count_kv": [4, None]})
+    with pytest.raises(GeometryError) as e:
+        from_model_info(info)
+    assert "attention.head_count_kv" in str(e.value)
+
+
+def test_an_empty_per_layer_kv_list_says_it_is_empty():
+    info = dict(QWEN7B, **{"qwen2.attention.head_count_kv": []})
+    with pytest.raises(GeometryError) as e:
+        from_model_info(info)
+    assert "empty list" in str(e.value)
+```
+
 Four tests. The existing malformed-field test also gains a field-name
 assertion, since naming the field is the point:
 
