@@ -1095,6 +1095,94 @@ def test_the_summary_is_paired_with_the_anchor_not_the_first_failure():
     )
 ```
 
+#### Amendment 4 (ruled 2026-08-09): delete the captured-output state machine
+
+Amendment 3's `_anchor` state machine is wrong and cannot be fixed by
+tuning. pytest emits its `--tb=line` one-liner **directly after** a
+`Captured ... call` section with **zero** separator lines when there is one
+line of captured content, so `captured` never resets and the real anchor is
+skipped — a false negative. Two layout-shaped heuristics have now failed, and
+pytest offers no reliable delimiter for the end of captured output.
+
+The empirical finding that settles it: `_in_repo`'s existence check already
+rejects the fabricated path on its own. The state machine was never what
+protected the anchor.
+
+**So: remove `_CAPTURED` and the captured tracking entirely**, and bound the
+location instead — a file the model merely *printed* is not a failure site,
+so the file must exist and the line must be inside it. `_in_repo` takes the
+line number:
+
+```python
+    def _anchor(self, lines: list[str], root: Path) -> tuple[int, str, int, str] | None:
+        for index, line in enumerate(lines):
+            match = _FAIL_LINE.match(line.strip())
+            if not match:
+                continue
+            number = int(match.group("line"))
+            rel = self._in_repo(match.group("file"), root, number)
+            if rel is not None:
+                return index, rel, number, match.group("msg")
+        return None
+
+    def _in_repo(self, candidate: str, root: Path, number: int) -> str | None:
+        """Repo-relative path for a location that could plausibly be a real
+        failure site, or None.
+
+        An anchor the model cannot edit is worse than none, and a location
+        the model merely PRINTED is not a failure site — so the file must
+        exist and the line must fall inside it.
+
+        Residual, accepted: a model that prints "src/real.py:12: ..." —
+        naming a real file at a plausible line — can still misdirect the
+        anchor. Bounding captured output by layout was tried twice and
+        failed twice; the cost here is one wasted turn, and Task 5 refuses
+        an anchor that is not a real file.
+        """
+        if any(fragment in candidate for fragment in _EXCLUDED):
+            return None
+        path = Path(candidate)
+        resolved = path if path.is_absolute() else root / path
+        try:
+            resolved = resolved.resolve()
+            relative = resolved.relative_to(root)
+            if not resolved.is_file():
+                return None
+            body = resolved.read_text(encoding="utf-8", errors="replace")
+            if number < 1 or number > len(body.splitlines()):
+                return None
+        except (ValueError, OSError):
+            return None
+        return str(relative)
+```
+
+Tests: keep the paired-summary test; rewrite the hijack test to assert the
+fabricated path is rejected and the real test file wins; update the
+existence test for the new signature; add the line-bound case.
+
+```python
+def test_model_authored_stdout_cannot_hijack_the_anchor(repo: Path):
+    (repo / "tests" / "test_fog.py").write_text(
+        "def test_x():\n"
+        "    print('nonexistent_config.py:999: totally unrelated fake path')\n"
+        "    assert 1 == 2, 'the real failure'\n"
+    )
+    diag = PythonAdapter(python=sys.executable).run(repo, None)
+    assert diag.file == "tests/test_fog.py"
+    assert "nonexistent_config" not in (diag.file or "")
+
+
+def test_a_path_that_does_not_exist_is_not_an_anchor(tmp_path: Path):
+    assert PythonAdapter()._in_repo("nonexistent_config.py", tmp_path, 1) is None
+
+
+def test_a_real_file_at_an_impossible_line_is_not_an_anchor(tmp_path: Path):
+    (tmp_path / "short.py").write_text("x = 1\n")
+    adapter = PythonAdapter()
+    assert adapter._in_repo("short.py", tmp_path, 1) == "short.py"
+    assert adapter._in_repo("short.py", tmp_path, 999) is None
+```
+
 ---
 
 ### Task 5: Test-anchored scope resolution
