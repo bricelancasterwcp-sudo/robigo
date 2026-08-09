@@ -1249,6 +1249,80 @@ check and the exhausted-VRAM zero-window case. Both cover constraints this plan
 states in prose and never tested, which is the gap that has cost this plan the
 most.
 
+#### Amendment 2 (ruled 2026-08-09): harden the model layer before Task 4 builds on it
+
+Task 3's review approved the task and raised two Important robustness gaps,
+judging them unreachable through the call sites this plan currently wires up.
+One of them is reachable from a **file**, which changes the calculus:
+
+`from_model_info({..., "qwen2.block_count": 0, ...})` returns a `Geometry`
+whose `kv_bytes_per_token` is `0`, because `_as_int` validates *type* and not
+*value*. `usable_window` then divides by it and raises an uncaught
+`ZeroDivisionError` — escaping the `except GeometryError` fallback that Task 5
+depends on, from ordinary malformed metadata rather than programmer error.
+Task 1 already guards `heads <= 0` for exactly this reason; it simply never
+generalised to the other fields.
+
+Fix that at the source, in `from_model_info`, where every other malformed-field
+refusal already lives. A `Geometry` should not be constructible in a state that
+makes the window planner crash:
+
+```python
+def _positive(key: str, value: int) -> int:
+    """Reject a non-positive dimension. `_as_int` checks that a field is an
+    integer; this checks it is a usable one. A zero here is not a harmless
+    edge case: it makes `kv_bytes_per_token` zero, and `usable_window` then
+    divides by it and raises a bare ZeroDivisionError that Task 5's
+    `except GeometryError` fallback cannot catch."""
+    if value <= 0:
+        raise GeometryError(
+            f"{key} is {value}; a model cannot have a non-positive value "
+            f"there, so the KV cache size cannot be computed and the usable "
+            f"window is unknown. Pass --window explicitly."
+        )
+    return value
+```
+
+Apply it to every dimension `Geometry` carries — `block_count`,
+`head_count_kv`, `key_length`, `value_length`, `context_length` — by wrapping
+each `_as_int(...)` result at the constructor call. The existing `heads <= 0`
+guard stays where it is: it must fire *before* the division that derives
+`key_dim`, which is earlier than this check.
+
+Second, guard the division in `usable_window`. `kv_bits <= 0` is the worse of
+the two failures the review found, because a negative `kv_bits` yields a
+**negative window with no error at all** — observed `window=-126391,
+limited_by='vram'`. Silent wrong data beats a crash for damage:
+
+```python
+    if kv_bits <= 0:
+        raise ValueError(f"kv_bits must be positive, got {kv_bits}")
+```
+
+`ValueError` rather than `GeometryError` is deliberate: a bad `kv_bits` is a
+caller's programming error, not a property of the model file, and it should not
+be swallowed by a fallback meant for unreadable metadata.
+
+Two carried Minors close in the same pass, since both touch these files:
+
+- **`_as_int` does not catch `OverflowError`.** `int(float('inf'))` raises it,
+  and stdlib `json.loads` accepts the `Infinity` token by default, so it is
+  reachable from a hostile `/api/show` response. Add `OverflowError` to the
+  except tuple — one word, same message.
+- **Both `_string` call sites in `gguf.py` pass the default `what`**, so a
+  corrupt-file message cannot say whether the key or the value was bad. Pass
+  `"key"` at the key site and `"string value"` at the value site.
+
+Tests: a non-positive `block_count` and a non-positive `head_count_kv` each
+raise `GeometryError` naming the field; `kv_bits=0` and `kv_bits=-16` each raise
+`ValueError`; `float('inf')` in a metadata field raises `GeometryError`; and a
+corrupt key versus a corrupt value produce distinguishable messages.
+
+**Re-run the real-blob check afterwards.** Positivity validation sits on the
+path every real file takes. All 20 blobs measured earlier derive geometry with
+positive dimensions throughout, so nothing real should be rejected — if
+something is, that is a finding, not a reason to loosen the guard.
+
 ---
 
 ### Task 4: The budget and the degradation ladder
