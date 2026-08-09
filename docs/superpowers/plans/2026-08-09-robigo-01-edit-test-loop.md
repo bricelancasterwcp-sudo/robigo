@@ -3492,6 +3492,41 @@ git add src/robigo/cli.py tests/test_cli.py
 git commit -m "feat: cli with distinct exit codes and a live smoke test"
 ```
 
+#### Amendment (ruled 2026-08-09): `--python` must actually exist too
+
+The same defect as `--scope`, found the same way. `PythonAdapter._preflight`
+refuses with *"Activate the project's virtualenv, or pass `--python <path>` to
+name the interpreter that has the project's test dependencies"* — and the CLI
+never defined `--python`.
+
+It is not cosmetic. A fixture repo under `tmp_path` has no `.venv`, so the
+adapter falls back to bare `python` from `PATH`, which on this machine has no
+pytest. Consequences observed:
+
+- `test_exit_code_is_3_when_the_suite_already_passes` fails with `4`, because
+  the adapter refuses before the already-passing check is reached.
+- The live smoke test "passes" with exit `4` **without ever reaching the
+  model** — a false positive that would have shipped as evidence the loop works.
+
+```python
+    parser.add_argument("--python", type=Path, default=None,
+                        help="interpreter holding the project's test "
+                             "dependencies; defaults to the project's "
+                             ".venv/bin/python, then venv/bin/python, then PATH")
+```
+
+threaded through to the adapter:
+
+```python
+    adapter = PythonAdapter(python=str(args.python) if args.python else None)
+```
+
+Every CLI test that runs against a `tmp_path` fixture repo passes
+`"--python", sys.executable`, including the live smoke test — which is what
+makes that test exercise the model instead of the preflight refusal. With the
+interpreter supplied, the live run reaches the model and returns 0, 1, or 4 on
+its own merits.
+
 #### Amendment (ruled 2026-08-09): `--scope` must actually exist
 
 Three refusal messages — Task 5's two `ScopeError`s and the budget-exhaustion
