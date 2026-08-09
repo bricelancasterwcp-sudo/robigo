@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,14 +29,17 @@ def _args(**kw):
 def test_exit_code_is_3_when_the_suite_already_passes(tmp_path: Path, capsys):
     (tmp_path / "test_ok.py").write_text("def test_ok():\n    assert 1\n")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    code = main(["--root", str(tmp_path), "--model", "m", "fix it"])
+    code = main(["--root", str(tmp_path), "--python", sys.executable,
+                 "--model", "m", "fix it"])
     assert code == 3
     assert "failing test" in capsys.readouterr().out
 
 
 def test_exit_code_is_3_outside_a_git_repo(tmp_path: Path):
     (tmp_path / "test_x.py").write_text("def test_x():\n    assert 0\n")
-    assert main(["--root", str(tmp_path), "--model", "m", "fix it"]) == 3
+    code = main(["--root", str(tmp_path), "--python", sys.executable,
+                 "--model", "m", "fix it"])
+    assert code == 3
 
 
 def test_scope_flag_is_parsed_and_forwarded_to_run(tmp_path: Path, monkeypatch):
@@ -51,8 +55,8 @@ def test_scope_flag_is_parsed_and_forwarded_to_run(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(cli_module, "run", fake_run)
     code = cli_module.main([
-        "fix it", "--root", str(tmp_path), "--model", "m",
-        "--scope", "src", "tests/test_x.py",
+        "fix it", "--root", str(tmp_path), "--python", sys.executable,
+        "--model", "m", "--scope", "src", "tests/test_x.py",
     ])
     assert code == 0
     assert captured["scope_paths"] == [Path("src"), Path("tests/test_x.py")]
@@ -70,7 +74,8 @@ def test_scope_flag_defaults_to_none(tmp_path: Path, monkeypatch):
         return RunResult("pass", 1, 0, None, "ok")
 
     monkeypatch.setattr(cli_module, "run", fake_run)
-    cli_module.main(["--root", str(tmp_path), "--model", "m", "fix it"])
+    cli_module.main(["--root", str(tmp_path), "--python", sys.executable,
+                     "--model", "m", "fix it"])
     assert captured["scope_paths"] is None
 
 
@@ -101,7 +106,8 @@ def test_live_one_real_repair(tmp_path: Path):
         pytest.skip("ollama daemon not reachable")
 
     code = main([
-        "--root", str(tmp_path), "--model", "qwen2.5-coder:0.5b-instruct-q8_0",
+        "--root", str(tmp_path), "--python", sys.executable,
+        "--model", "qwen2.5-coder:0.5b-instruct-q8_0",
         "--window", "4096", "make the failing test pass",
     ])
     # 0 pass, 1 stalled, 4 infrastructure (model not pulled). Capability is

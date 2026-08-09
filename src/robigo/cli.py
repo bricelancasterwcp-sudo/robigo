@@ -40,17 +40,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-test-edits", dest="allow_test_edits",
                         action="store_true")
     parser.add_argument("--no-git", dest="use_git", action="store_false")
+    parser.add_argument("--python", type=Path, default=None,
+                        help="interpreter holding the project's test "
+                             "dependencies; defaults to the project's "
+                             ".venv/bin/python, then venv/bin/python, then PATH")
     parser.add_argument("--scope", type=Path, nargs="+", default=None,
                         metavar="PATH",
                         help="files or directories to work in, instead of "
                              "tracing imports from the failing test")
     args = parser.parse_args(argv)
 
+    adapter = PythonAdapter(python=str(args.python) if args.python else None)
     result = run(
         args.task,
         Path(args.root).resolve(),
         build_client(args),
-        PythonAdapter(),
+        adapter,
         codec=args.codec,
         turn_cap=args.turn_cap,
         allow_test_edits=args.allow_test_edits,
