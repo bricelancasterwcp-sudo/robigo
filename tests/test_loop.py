@@ -133,7 +133,7 @@ def test_a_mid_loop_scope_failure_keeps_the_previous_scope(repo: Path):
     adapter = PythonAdapter(python=sys.executable)
     real_run, calls = adapter.run, {"n": 0}
 
-    def anchorless(root, filt):
+    def anchorless(root: Path, filt: str | None) -> Diagnostic:
         calls["n"] += 1
         if calls["n"] > 1:
             return Diagnostic(False, None, None, "tests failed", "raw tail")

@@ -207,13 +207,13 @@ def test_a_raising_adapter_is_exit_4_not_a_traceback(tmp_path: Path, capsys,
         def __init__(self, *args, **kwargs) -> None:
             pass
 
-        def run(self, root, filt):
+        def run(self, root: Path, filt: str | None) -> None:
             raise RuntimeError("adapter blew up")
 
-        def imports(self, path, root):
+        def imports(self, path: Path, root: Path) -> list[Path]:
             return []
 
-        def syntax_ok(self, text):
+        def syntax_ok(self, text: str) -> bool:
             return True
 
     monkeypatch.setattr(cli_module, "PythonAdapter", _Exploding)
