@@ -24,7 +24,14 @@ def apply_patch(
     result is known to parse -- a patch that lands and breaks the file
     costs a turn AND corrupts the scope."""
     target = check_target(action.arg, root, scope, allow_test_edits)
-    original = target.read_text(encoding="utf-8")
+    try:
+        original = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise PatchError(
+            f"{action.arg} could not be read ({exc}), so it was not patched. "
+            f"It may have been deleted, or may not be text -- use `read` to "
+            f"see what is there now."
+        ) from exc
     new_text = CODECS[codec](original, action.payload or "")
     if not adapter.syntax_ok(new_text):
         raise PatchError(
@@ -32,7 +39,12 @@ def apply_patch(
             f"so it was not written. Check brackets and indentation in the "
             f"replacement lines."
         )
-    write_atomic(target, new_text)
+    try:
+        write_atomic(target, new_text)
+    except OSError as exc:
+        raise PatchError(
+            f"{action.arg} could not be written ({exc}), so it is unchanged."
+        ) from exc
     return target
 
 
@@ -43,6 +55,9 @@ def write_atomic(path: Path, text: str) -> None:
             out.write(text)
             out.flush()
             os.fsync(out.fileno())
+        # mkstemp creates at 0o600 and os.replace makes that the file's new
+        # mode, so an executable script would silently lose its +x bit.
+        os.chmod(tmp, path.stat().st_mode)
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)

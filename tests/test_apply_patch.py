@@ -58,3 +58,18 @@ def test_a_patch_to_the_anchor_test_is_refused_before_any_write(repo: Path):
         apply_patch(Action("patch", "test_a.py", payload, None), repo,
                     _scope(repo), PythonAdapter(), "search_replace")
     assert (repo / "test_a.py").read_text() == before
+
+
+def test_the_original_permission_bits_survive_a_patch(repo: Path):
+    (repo / "a.py").chmod(0o755)
+    payload = "<<<<<<< SEARCH\n    return 1\n=======\n    return 2\n>>>>>>> REPLACE\n"
+    apply_patch(_patch(payload), repo, _scope(repo), PythonAdapter(), "search_replace")
+    assert (repo / "a.py").stat().st_mode & 0o777 == 0o755
+
+
+def test_an_unreadable_target_is_a_patch_error_not_a_crash(repo: Path):
+    (repo / "a.py").unlink()
+    payload = "<<<<<<< SEARCH\n    return 1\n=======\n    return 2\n>>>>>>> REPLACE\n"
+    with pytest.raises(PatchError) as e:
+        apply_patch(_patch(payload), repo, _scope(repo), PythonAdapter(), "search_replace")
+    assert "could not be read" in str(e.value)
