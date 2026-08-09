@@ -125,6 +125,45 @@ def test_the_default_history_reserve_covers_two_real_capped_reads(
     assert default_history > 200
 
 
+def test_importing_budget_does_not_require_loop_to_finish_importing():
+    # Item 9 (round 2, ruled 2026-08-09): `_default_history_tokens`'s
+    # `from robigo.loop import ...` was only SYNTACTICALLY deferred by
+    # living inside a function -- a module-level `DEFAULT_HISTORY_TOKENS =
+    # _default_history_tokens()` call still ran it while `context.budget`
+    # itself was mid-import. The wiring slice this module exists for
+    # (`loop.py` importing `Budget`/`fit`, its natural first line) hit
+    # `ImportError: cannot import name '_HISTORY_TURNS' from partially
+    # initialized module 'robigo.loop'`, reproduced directly against the
+    # round-1 code before this fix. `field(default_factory=...)` moves the
+    # `robigo.loop` import to `Budget()` CONSTRUCTION time, well after both
+    # modules have finished importing in any real call order.
+    #
+    # Run in a FRESH subprocess, not in-process: other tests in this same
+    # pytest session (anything that imports `robigo.cli`) have almost
+    # certainly already imported `robigo.loop`, which would make an
+    # in-process `"robigo.loop" not in sys.modules` check order-dependent
+    # and unable to tell a fix from a regression.
+    import subprocess
+    import sys
+
+    script = (
+        "import sys\n"
+        "import robigo.context.budget as b\n"
+        "assert 'robigo.loop' not in sys.modules, ("
+        "'importing context.budget must not import robigo.loop as a side "
+        "effect')\n"
+        "budget = b.Budget(window=1, reserve_out=0)\n"
+        "assert budget.history > 0\n"
+        "print('OK', budget.history)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "OK" in result.stdout
+
+
 def test_estimate_tokens_does_not_undercount_a_real_functions_lexical_tokens():
     # Whole-branch review, item 7 (ruled 2026-08-09): the old version of
     # this test asserted `estimate_tokens("x" * 36) == 11`, which is just

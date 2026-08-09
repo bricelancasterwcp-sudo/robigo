@@ -1,7 +1,7 @@
 # src/robigo/context/budget.py
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from robigo.context.scope import Scope
@@ -34,21 +34,24 @@ def _default_history_tokens() -> int:
     over-reserving direction the invariant requires -- rather than kept as
     the precise, fragile-looking token count.
 
-    Imported from `robigo.loop` inside this function, not at module level:
-    `context` is the lower layer here (`robigo.loop` is the orchestrator
-    that will eventually call `fit()`), and a deferred import keeps that
-    direction from becoming a hard dependency every time `context.budget`
-    is imported, the same reason `_section` below imports `render` lazily
-    rather than at the top of this file."""
+    Used as `Budget.history`'s `default_factory` (ruled 2026-08-09, fix
+    wave round 2), NOT called at module import time: a `DEFAULT_HISTORY_
+    TOKENS = _default_history_tokens()` module-level call was only
+    SYNTACTICALLY deferred -- `robigo.loop` was still imported while
+    `context.budget` itself was mid-import, so the first thing in `src/`
+    that imports both (the still-to-come `loop.py` wiring of `fit()`,
+    which is the whole reason `Budget`/`fit` exist) would hit `ImportError:
+    cannot import name '_HISTORY_TURNS' from partially initialized module
+    'robigo.loop'`. `default_factory` runs this at `Budget()` CONSTRUCTION
+    time instead, by which point both modules have finished importing, so
+    the coupling to `robigo.loop` is a value dependency, not an
+    import-order one."""
     from robigo.loop import _HISTORY_TURNS, _READ_CAP
 
     capped_read = "x" * _READ_CAP + "\n<truncated>\n"
     turn_text = f"you: read <path>\nresult: {capped_read}"
     worst_case = estimate_tokens("\n".join([turn_text] * _HISTORY_TURNS))
     return -(-worst_case // 100) * 100
-
-
-DEFAULT_HISTORY_TOKENS = _default_history_tokens()
 
 
 class BudgetExhausted(Exception):
@@ -63,7 +66,7 @@ class Budget:
     reserve_out: int
     system: int = SYSTEM_TOKENS
     diagnostic: int = DIAGNOSTIC_TOKENS
-    history: int = DEFAULT_HISTORY_TOKENS
+    history: int = field(default_factory=_default_history_tokens)
 
     @property
     def scope_budget(self) -> int:
