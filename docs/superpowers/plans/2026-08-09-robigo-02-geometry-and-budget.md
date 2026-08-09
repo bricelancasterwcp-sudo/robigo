@@ -1489,6 +1489,110 @@ def _window_text(text: str, span: tuple[int, int]) -> str:
     return "\n".join(lines[max(0, middle + span[0]) : middle + span[1]])
 ```
 
+#### Amendment (ruled 2026-08-09): the ladder's rung 4 is dead, and its label lies
+
+The implementer reported BLOCKED and was right on every count. I then measured
+each rung's cost against the fixture rather than deriving it, and the
+measurement found two defects worse than the one reported. **This amendment
+states invariants and the tests that falsify them, not code to transcribe** —
+plan 01's first process lesson, which the last seven amendment errors ignored.
+
+Measured, fixture as specified above (`reserve_out=128, system=60,
+diagnostic=60, history=0`, so 248 tokens of fixed cost):
+
+| rung | cost | saves vs previous | window band that lands `fit` here |
+|---|---|---|---|
+| 1 | 569 | — | ≥ 817 |
+| 2 | 566 | **3** | 814 – 816 (**width 3**) |
+| 3 | 323 | 243 | 571 – 813 |
+| 4 | 323 | **0** | **empty — unreachable** |
+
+**Defect 1 — rung 4 is unreachable and rung 2 is untestable.** `cost(4)`
+equals `cost(3)`, so no window exists for which `fit` returns step 4: a scope
+falls from rung 3 straight to refusal, and a fixed five-step ladder is really
+four. Rung 2's band is 3 tokens wide because dropping hop-2 removes only its
+*signatures* — `def g():`, about 3 tokens. Both are fixture artifacts, and both
+hid a real bug behind an untestable gap.
+
+**Defect 2 — the window is centred on the wrong thing, and the label says so
+falsely.** `_window_text` centres on `len(lines) // 2`, the middle of the
+*file*, and `render` labels the result `" (windowed around the failure)"`. For a
+failure at line 350 of a 400-line file, rung 4 hands the model lines 140–260 —
+the failing code excluded — while asserting the opposite. That is the same
+category as a truncated prompt: the model answers about code it cannot see,
+and here it is additionally told it can. It also explains defect 1: a window
+of `(-60, 60)` around the middle of an 81-line file is the whole file, so
+rung 4 saves nothing for any file of 120 lines or fewer, which is most files.
+
+**Invariants to satisfy.** Do not transcribe a fix; make these true and prove
+each with a test that fails when it is violated:
+
+1. **The window contains the failing line.** After `degrade(4)`, the rendered
+   anchor includes the diagnostic's line whenever that line is in the file.
+   The diagnostic's line is available where the `Scope` is built — `resolve`
+   already receives `diag` — and is not available inside `degrade`, so carry it
+   on the `Scope` rather than recomputing it. Give it a default so every
+   existing construction stays valid.
+2. **The estimate and the prompt agree exactly.** `budget`'s cost for a
+   windowed scope and `render`'s output for the same scope must window
+   identically. Both must derive the centre from the `Scope` alone — if one
+   uses the diagnostic and the other uses the file's middle, "it fits" becomes
+   a lie in the direction that OOMs or truncates. The single-implementation
+   plus thin-delegating-wrapper arrangement stays; that is what makes this
+   invariant structural.
+3. **The label is true.** If the text is windowed, say so and say around what.
+   If a window would not shrink the file, do not claim a window was applied.
+4. **Every rung is individually reachable through `fit`.** For each of steps
+   1–4 there must exist a window that makes `fit` return exactly that step,
+   and a test that pins it. Rung 4 must save real tokens against rung 3.
+
+**Fixture, so the bands are wide enough to test.** Make the anchor **400
+lines** — windowing to 120 lines then removes ~70% of it — and give `hop2.py`
+**40 separate `def`s** so its signatures cost something real. Measured with
+that fixture and middle-centred windowing:
+
+| rung | cost | saves | band | width |
+|---|---|---|---|---|
+| 1 | 1958 | — | ≥ 2206 | — |
+| 2 | 1827 | 131 | 2075 – 2205 | 131 |
+| 3 | 1584 | 243 | 1832 – 2074 | 243 |
+| 4 | 476 | **1108** | 724 – 1831 | 1108 |
+
+**Re-measure after implementing invariant 1** — centring on the failure changes
+what rung 4 contains — and choose each test's window from the **middle** of its
+measured band, not its edge. Report the measured table. A budget picked at a
+band edge is one estimator tweak away from testing the neighbouring rung, which
+is how the original numbers came to assert rung 2's shape while landing on
+rung 3.
+
+**Corrected assertions for the test that failed.** Its name is right and its
+body described the wrong rung: at step 3, hop-1 has become a signature, so
+`signatures` is `(hop1,)` and `full` is `(anchor,)` — `== ()` is rung 2's
+shape. Pin the exact rung, since the ladder is fixed rather than heuristic:
+
+```python
+def test_a_tight_window_reduces_hop_one_to_signatures(scope: Scope, tmp_path: Path):
+    fitted, step = fit(scope, Budget(<mid of rung 3 band>, 128, 60, 60, 0), tmp_path)
+    assert step == 3
+    assert fitted.full == (scope.anchor,)
+    assert fitted.signatures == (scope.full[1],)
+```
+
+**And the anchor-window test must isolate windowing.** As written it compares
+`degrade(4)` against the undegraded scope, so it passes on the length drop from
+rung 3's hop-1 collapse — the implementer proved this by mutation: a
+`_window_text` that returns its input unchanged leaves the test green. Compare
+against `degrade(3)` instead. Those two scopes differ *only* in
+`anchor_window`, so the difference can come from nothing else:
+
+```python
+def test_windowing_the_anchor_is_what_shrinks_step_four(scope, tmp_path):
+    diag = Diagnostic(False, "anchor.py", 40, "AssertionError", "raw")
+    at_3 = render(scope.degrade(3), diag, (), "search_replace", tmp_path)
+    at_4 = render(scope.degrade(4), diag, (), "search_replace", tmp_path)
+    assert len(at_4) < len(at_3)
+```
+
 Then:
 
 ```python
