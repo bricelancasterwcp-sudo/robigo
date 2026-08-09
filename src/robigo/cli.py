@@ -47,7 +47,18 @@ def main(argv: list[str] | None = None) -> int:
                         help="'auto' (default) computes it from model "
                              "geometry and free VRAM; an integer caps it")
     parser.add_argument("--kv-bits", dest="kv_bits", type=int,
-                        choices=(16, 8), default=16)
+                        choices=(16, 8), default=16,
+                        help="the KV cache precision the SERVER is already "
+                             "running -- Ollama's OLLAMA_KV_CACHE_TYPE or "
+                             "llama.cpp's --cache-type-k, both set at "
+                             "server launch. robigo cannot set this over "
+                             "the API, so this only DESCRIBES the "
+                             "server's existing configuration to size the "
+                             "window correctly; it does not request it. A "
+                             "value that does not match what the server "
+                             "actually runs overcommits VRAM by that "
+                             "ratio (e.g. claiming 8 against an actual 16 "
+                             "doubles real usage)")
     parser.add_argument("--gguf", type=Path, default=None,
                         help="GGUF path, required with --backend llamacpp "
                              "when --window is auto")

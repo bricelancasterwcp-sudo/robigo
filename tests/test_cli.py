@@ -347,6 +347,22 @@ def test_help_exits_zero(capsys):
     assert "--scope" in capsys.readouterr().out
 
 
+def test_kv_bits_help_says_it_describes_the_server_not_the_reverse(capsys):
+    # Item 6 (Important, ruled 2026-08-09): --kv-bits stays -- robigo cannot
+    # set the server's KV cache type over the API, Ollama takes
+    # OLLAMA_KV_CACHE_TYPE and llama.cpp takes --cache-type-k, both only at
+    # server launch -- but its help text must say it DESCRIBES the server's
+    # existing configuration rather than implying it changes it, and must
+    # say a mismatch overcommits VRAM. A flag whose help implies it changes
+    # the server is the defect the ruling names; the arithmetic is correct
+    # given a truthfully-declared server.
+    assert main(["--help"]) == 0
+    out = capsys.readouterr().out
+    assert "--kv-bits" in out
+    assert "cannot" in out
+    assert "overcommits" in out
+
+
 @pytest.mark.live
 def test_live_one_real_repair(tmp_path: Path):
     """One real generation end to end. Asserts the plumbing works, NOT
