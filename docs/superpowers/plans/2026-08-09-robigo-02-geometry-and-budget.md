@@ -820,6 +820,26 @@ def test_an_absurd_kv_count_ends_at_the_first_missing_byte(tmp_path):
         read_metadata(path)
 ```
 
+**Re-verified against real files after the rewrite** (controller, 2026-08-09).
+Exact reads touch every read path, so the parser's original evidence — "it
+parses real blobs" — had to be re-earned rather than assumed. Result: **20 of
+20 real GGUF blobs parse, and `from_model_info` derives geometry for all 20**,
+reproducing every one of the six independently-known geometries. Nothing in
+`_read_exactly` or the 64 MiB `_MAX_READ` rejects a real file. Widest real
+spread observed, which is the case for `--window auto` later: 56 KiB/token
+(qwen2, 28×4×128) to **800 KiB/token** (a llama with `head_count_kv` 40 —
+no GQA at all), a 14× range, and one model advertising `context_length`
+1024000.
+
+**A real-blob test must resolve the blob directory from `OLLAMA_MODELS`.** On
+this machine Ollama is a systemd service with
+`OLLAMA_MODELS=/mnt/extra/ollama-models`; `~/.ollama/models` holds only
+`.modelfile` text and **no `blobs/` directory at all**. A test whose `skipif`
+hardcodes `~/.ollama/models/blobs` therefore never runs here and reports
+`skipped`, which reads as coverage while guaranteeing nothing. Resolve
+`os.environ.get("OLLAMA_MODELS")` first, fall back to
+`~/.ollama/models`, and skip only when neither yields a readable `blobs/`.
+
 ---
 
 ### Task 3: Free VRAM and the usable window
