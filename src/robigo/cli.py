@@ -7,12 +7,12 @@ from pathlib import Path
 
 from robigo.adapters.python_ import PythonAdapter
 from robigo.loop import run
-from robigo.model.client import LlamaCppClient, OllamaClient
+from robigo.model.client import LlamaCppClient, ModelClient, OllamaClient
 
 _STOP = ("\nread ", "\nfind ", "\nrun\n", "\ndone ")
 
 
-def build_client(args: argparse.Namespace):
+def build_client(args: argparse.Namespace) -> ModelClient:
     kind = LlamaCppClient if args.backend == "llamacpp" else OllamaClient
     return kind(
         args.model,
