@@ -78,7 +78,44 @@ def test_snapshot_commits_a_dirty_tree_so_nothing_is_lost(repo: Path):
 def test_commit_all_records_each_applied_patch(repo: Path):
     start_branch(repo, "fog")
     (repo / "src.py").write_text("x = 2\n")
-    commit_all(repo, "robigo: patch src.py")
+    commit_all(repo, "robigo: patch src.py", [repo / "src.py"])
     log = subprocess.run(["git", "log", "--oneline"], cwd=repo,
                          capture_output=True, text=True).stdout
     assert "robigo: patch src.py" in log
+
+
+def test_commit_all_commits_only_the_named_path(repo: Path):
+    start_branch(repo, "fog")
+    snapshot(repo, "robigo: snapshot")
+    (repo / "src.py").write_text("x = 2\n")
+    (repo / "outside.py").write_text("y = 999\n")
+    commit_all(repo, "robigo: patch src.py", [repo / "src.py"])
+    changed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=repo, capture_output=True, text=True,
+    ).stdout.split()
+    assert changed == ["src.py"]
+
+
+def test_a_no_op_patch_commits_without_raising(repo: Path):
+    start_branch(repo, "fog")
+    snapshot(repo, "robigo: snapshot")
+    commit_all(repo, "robigo: patch src.py", [repo / "src.py"])
+
+
+def test_an_ignored_scope_file_is_refused(repo: Path):
+    (repo / ".gitignore").write_text("secret.py\n")
+    (repo / "secret.py").write_text("x = 1\n")
+    start_branch(repo, "fog")
+    with pytest.raises(RefusedError) as e:
+        snapshot(repo, "robigo: snapshot", [repo / "secret.py"])
+    assert "ignored by git" in str(e.value)
+
+
+def test_snapshot_with_no_ignored_scope_files_proceeds(repo: Path):
+    start_branch(repo, "fog")
+    snapshot(repo, "robigo: snapshot", [repo / "src.py"])
+    assert subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo,
+        capture_output=True, text=True,
+    ).stdout.strip() == ""
