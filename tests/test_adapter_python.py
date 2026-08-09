@@ -73,3 +73,29 @@ def test_an_interpreter_without_pytest_is_refused_loudly(tmp_path: Path):
     with pytest.raises(AdapterError) as e:
         PythonAdapter(python=str(fake)).run(tmp_path, None)
     assert "--python" in str(e.value)
+
+
+def test_a_broken_import_anchors_in_the_repo_not_in_importlib(repo: Path):
+    (repo / "tests" / "test_bad.py").write_text("import nonexistent_xyz\n")
+    diag = PythonAdapter(python=sys.executable).run(repo, None)
+    assert diag.passed is False
+    assert diag.file == "tests/test_bad.py"
+    assert "nonexistent_xyz" in diag.message
+
+
+def test_a_syntax_error_anchors_in_the_repo_not_in_pytest(repo: Path):
+    (repo / "src" / "fog.py").write_text("def radius(t:\n")
+    diag = PythonAdapter(python=sys.executable).run(repo, None)
+    assert diag.file is not None
+    assert "site-packages" not in diag.file
+    assert diag.file.startswith(("src/", "tests/"))
+
+
+def test_a_hanging_suite_is_a_model_result_not_a_crash(repo: Path, monkeypatch):
+    monkeypatch.setattr("robigo.adapters.python_._TIMEOUT_S", 3)
+    (repo / "tests" / "test_fog.py").write_text(
+        "def test_spin():\n    while True:\n        pass\n"
+    )
+    diag = PythonAdapter(python=sys.executable).run(repo, None)
+    assert diag.passed is False
+    assert "timed out" in diag.message

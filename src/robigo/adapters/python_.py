@@ -8,7 +8,9 @@ from pathlib import Path
 
 from robigo.adapters.base import AdapterError, DIAGNOSTIC_CHAR_CAP, Diagnostic
 
-_FAIL_LINE = re.compile(r"^(?P<file>/[^:]+\.py):(?P<line>\d+): (?P<msg>.+)$")
+_FAIL_LINE = re.compile(r"^(?P<file>[^\s:][^:]*\.py):(?P<line>\d+):\s*(?P<msg>.*)$")
+_ERROR_LINE = re.compile(r"^E\s+(?P<msg>\S.*)$")
+_EXCLUDED = ("site-packages", "dist-packages", "/.venv/", "/venv/")
 _TIMEOUT_S = 300
 
 
@@ -53,28 +55,58 @@ class PythonAdapter:
                 "no:cacheprovider"]
         if filt:
             argv += ["-k", filt]
-        proc = subprocess.run(
-            argv, cwd=root, capture_output=True, text=True, timeout=_TIMEOUT_S
-        )
+        try:
+            proc = subprocess.run(
+                argv, cwd=root, capture_output=True, text=True,
+                timeout=_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return Diagnostic(
+                False, None, None,
+                f"tests timed out after {_TIMEOUT_S}s — the last patch may "
+                f"not terminate", "",
+            )
         raw = (proc.stdout + proc.stderr)[-DIAGNOSTIC_CHAR_CAP:]
         if proc.returncode == 0:
             return Diagnostic(True, None, None, "all tests passed", raw)
         return self._first_failure(raw, root)
 
     def _first_failure(self, raw: str, root: Path) -> Diagnostic:
+        root = root.resolve()
+        summary = self._error_summary(raw)
         for line in raw.split("\n"):
             match = _FAIL_LINE.match(line.strip())
             if not match:
                 continue
-            path = Path(match.group("file"))
-            try:
-                rel = str(path.relative_to(root))
-            except ValueError:
-                rel = str(path)
+            rel = self._in_repo(match.group("file"), root)
+            if rel is None:
+                continue
             return Diagnostic(
-                False, rel, int(match.group("line")), match.group("msg"), raw
+                False, rel, int(match.group("line")),
+                summary or match.group("msg"), raw,
             )
-        return Diagnostic(False, None, None, "tests failed", raw)
+        return Diagnostic(False, None, None, summary or "tests failed", raw)
+
+    def _in_repo(self, candidate: str, root: Path) -> str | None:
+        """Repo-relative path, or None when the location is outside the
+        project. An anchor the model cannot edit is worse than none."""
+        if any(fragment in candidate for fragment in _EXCLUDED):
+            return None
+        path = Path(candidate)
+        resolved = path if path.is_absolute() else root / path
+        try:
+            return str(resolved.resolve().relative_to(root))
+        except (ValueError, OSError):
+            return None
+
+    def _error_summary(self, raw: str) -> str | None:
+        """pytest's own `E   <Type>: <message>` line, which names the real
+        failure when a traceback replaces --tb=line's one-liner."""
+        for line in raw.split("\n"):
+            match = _ERROR_LINE.match(line.rstrip())
+            if match:
+                return match.group("msg")
+        return None
 
     def imports(self, path: Path, root: Path) -> list[Path]:
         try:
