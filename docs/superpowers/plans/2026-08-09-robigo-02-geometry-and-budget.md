@@ -1593,6 +1593,89 @@ def test_windowing_the_anchor_is_what_shrinks_step_four(scope, tmp_path):
     assert len(at_4) < len(at_3)
 ```
 
+#### Amendment 2 (ruled 2026-08-09): make invariant 2 structural, not partial
+
+Task 4's review confirmed all four invariants and then found that invariant 2
+holds only for the *windowed file text*, which is narrower than the invariant
+was meant to be. Three of its findings share one root cause: `_cost` and
+`render` each build their own idea of the scope's text, so they can disagree.
+Measured against this fixture — `_cost` reports **445** where the rendered
+prompt costs **721**, a 276-token gap.
+
+Three concrete divergences, all verified live by the reviewer:
+
+1. **The estimate is systematically low.** `_cost` counts file contents only,
+   never the `--- {label} ---` header render emits per file, nor the windowing
+   suffix. Low is the dangerous direction: it is the one that says "fits" and
+   then gets truncated or OOMs. It is currently masked by the fixed
+   `system`+`diagnostic` reserve, but Task 5 sets those to their real values,
+   and then nothing covers the headers.
+2. **`_cost` crashes where `render` degrades.** `_cost` calls bare
+   `path.read_text(encoding="utf-8")`; `render` uses the guarded `_read` and
+   substitutes `_UNREADABLE`. On a non-UTF-8 or deleted file, `render` produces
+   a clean prompt while `_cost` raises `UnicodeDecodeError` — so `fit` crashes
+   instead of fitting or refusing with arithmetic, which is the one guarantee
+   this task exists to provide.
+3. **The honest fallback label is untested.** The branch used when
+   `anchor_window` is set but `anchor_line` is `None` has no coverage:
+   collapsing it to print the literal `windowed around line None` leaves the
+   whole suite green. Reachable whenever an adapter cannot determine a line.
+
+**The invariant, stated properly.** For any `Scope`, the cost `fit` reasons
+about must equal the cost of the text `render` actually emits for that scope's
+files:
+
+    _cost(scope) == estimate_tokens(<exactly what render emits for scope's files>)
+
+Satisfy it **structurally** — extract the scope's file section into one
+function that both call, rather than keeping two implementations in step by
+discipline. Two copies is what produced all three findings above, and the
+`_window_text`/`_window` delegation already in this task is the pattern to
+follow: one implementation, one thin caller.
+
+Do not thread `diag`, `history` or `codec` into `_cost`. Those are the caller's
+fixed costs and are already seated in `Budget`; the scope's own text is what
+must agree.
+
+Falsification tests — each must fail if the two diverge:
+
+```python
+def test_the_estimate_equals_the_cost_of_what_render_emits(scope, tmp_path):
+    """Not 'close to'. Two implementations of the same text drift, and the
+    drift is invisible until a prompt the arithmetic called safe comes back
+    truncated."""
+    for step in (1, 2, 3, 4):
+        candidate = scope.degrade(step)
+        assert _cost(candidate) == estimate_tokens(
+            _scope_section(candidate, tmp_path)
+        )
+
+
+def test_an_unreadable_file_is_costed_the_way_it_is_rendered(scope, tmp_path):
+    """render substitutes a placeholder; the estimate must cost that same
+    placeholder rather than raising. A crash here is worse than a bad
+    number: fit's contract is fit-or-refuse-with-arithmetic."""
+    (tmp_path / "hop1.py").write_bytes(b"\xff\xfe not utf-8")
+    cost = _cost(scope)                      # must not raise
+    assert cost == estimate_tokens(_scope_section(scope, tmp_path))
+
+
+def test_a_windowed_scope_with_no_known_line_is_labelled_honestly(tmp_path):
+    """anchor_window set, anchor_line None: the label must not claim a line
+    it does not have, and must not print the string 'None'."""
+    ...  # build the scope directly, assert "None" not in the rendered label
+```
+
+Also give `degrade` an explicit upper bound. `step >= 5` currently returns
+rung 4's scope silently; `fit` never asks for it today, but a caller that
+miscomputes a step should get a `ValueError`, not a plausible-looking scope.
+
+**Re-measure the rung table afterwards** — adding header tokens raises every
+rung's cost — and re-pick each test's budget from the middle of its new band.
+Report the new table. Every existing test must stay green, including plan 01's
+render tests, which are the proof that extracting the shared section did not
+change what `render` emits.
+
 Then:
 
 ```python
