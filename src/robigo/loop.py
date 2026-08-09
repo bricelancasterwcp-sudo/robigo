@@ -21,6 +21,7 @@ from robigo.apply.safety import (
 from robigo.context.render import Turn, render
 from robigo.context.scope import Scope, ScopeError, explicit, resolve
 from robigo.model.client import ContextOverflowError, Generation, ModelClient, ModelError
+from robigo.paths import OutsideRepo, contain
 from robigo.record import RunRecorder, new_recorder, slug
 
 _READ_CAP = 4000
@@ -234,9 +235,13 @@ def _read(root: Path, arg: str) -> str:
     parts = arg.split()
     if not parts:
         return "read needs a path, e.g. `read src/fog.py`"
-    path = (root / parts[0]).resolve()
-    if not path.is_relative_to(root.resolve()) or not path.is_file():
-        return f"cannot read '{parts[0]}': no such file in this repository"
+    missing = f"cannot read '{parts[0]}': no such file in this repository"
+    try:
+        path = contain(root, parts[0])
+    except OutsideRepo:
+        return missing
+    if not path.is_file():
+        return missing
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:

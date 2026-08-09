@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 from robigo.adapters.base import Adapter, Diagnostic
+from robigo.paths import OutsideRepo, contain
 
 
 class ScopeError(Exception):
@@ -21,6 +22,18 @@ class Scope:
     signatures: tuple[Path, ...]
 
 
+def _anchor(diag_file: str, root: Path) -> Path:
+    """The anchor, contained. Shared by both entry points so neither can
+    reach the working tree with an unchecked path."""
+    try:
+        return contain(root, diag_file)
+    except OutsideRepo as exc:
+        raise ScopeError(
+            f"anchor {diag_file} resolves outside {root}. Scope never leaves "
+            f"the repository; pass --scope to set it explicitly."
+        ) from exc
+
+
 def resolve(
     diag: Diagnostic, adapter: Adapter, root: Path, hops: int = 2
 ) -> Scope:
@@ -29,12 +42,7 @@ def resolve(
             "the test output named no file, so there is no anchor to scope "
             "from. Run with --scope to supply one explicitly."
         )
-    anchor = (root / diag.file).resolve()
-    if not anchor.is_relative_to(root.resolve()):
-        raise ScopeError(
-            f"anchor {diag.file} resolves outside {root}. Scope never leaves "
-            f"the repository; pass --scope to set it explicitly."
-        )
+    anchor = _anchor(diag.file, root)
     if not anchor.is_file():
         raise ScopeError(
             f"anchor {diag.file} does not exist under {root}. Check the path "
@@ -64,12 +72,13 @@ def explicit(diag: Diagnostic, root: Path, paths: Sequence[Path]) -> Scope:
             "--scope needs a failing test to anchor on, and the test output "
             "named no file."
         )
-    anchor = (root / diag.file).resolve()
+    anchor = _anchor(diag.file, root)
     full: list[Path] = [anchor]
     for given in paths:
-        target = (root / given).resolve()
-        if not target.is_relative_to(root.resolve()):
-            raise ScopeError(f"--scope path {given} is outside {root}")
+        try:
+            target = contain(root, given)
+        except OutsideRepo as exc:
+            raise ScopeError(f"--scope path {given} is outside {root}") from exc
         found = sorted(target.rglob("*.py")) if target.is_dir() else [target]
         for path in found:
             if path.is_file() and path not in full:

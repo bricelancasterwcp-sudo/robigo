@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from robigo.context.scope import Scope
+from robigo.paths import OutsideRepo, contain
 
 _GIT_ID = ("-c", "user.email=robigo@localhost", "-c", "user.name=robigo")
 
@@ -17,13 +18,13 @@ class RefusedError(Exception):
 def check_target(
     arg: str, root: Path, scope: Scope, allow_test_edits: bool = False
 ) -> Path:
-    target = (root / arg).resolve()
-    root = root.resolve()
-    if not target.is_relative_to(root):
+    try:
+        target = contain(root, arg)
+    except OutsideRepo as exc:
         raise RefusedError(
             f"'{arg}' resolves outside the repository. Patch only files "
             f"you were shown."
-        )
+        ) from exc
     if target == scope.anchor.resolve() and not allow_test_edits:
         raise RefusedError(
             f"'{arg}' is the failing test itself and is read-only. Fix the "

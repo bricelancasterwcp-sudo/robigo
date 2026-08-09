@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from robigo.adapters.base import AdapterError, DIAGNOSTIC_CHAR_CAP, Diagnostic
+from robigo.paths import OutsideRepo, contain
 
 _FAIL_LINE = re.compile(r"^(?P<file>[^\s:][^:]*\.py):(?P<line>\d+):\s*(?P<msg>.*)$")
 _ERROR_LINE = re.compile(r"^E\s+(?P<msg>\S.*)$")
@@ -113,19 +114,19 @@ class PythonAdapter:
         """
         if any(fragment in candidate for fragment in _EXCLUDED):
             return None
-        path = Path(candidate)
-        resolved = path if path.is_absolute() else root / path
         try:
-            resolved = resolved.resolve()
-            relative = resolved.relative_to(root)
+            resolved = contain(root, candidate)
+        except OutsideRepo:
+            return None
+        try:
             if not resolved.is_file():
                 return None
             body = resolved.read_text(encoding="utf-8", errors="replace")
             if number < 1 or number > len(body.splitlines()):
                 return None
-        except (ValueError, OSError):
+        except OSError:
             return None
-        return str(relative)
+        return str(resolved.relative_to(root.resolve()))
 
     def _error_summary(self, lines: list[str], start: int) -> str | None:
         """pytest's `E   <Type>: <message>`, searched FORWARD from the
