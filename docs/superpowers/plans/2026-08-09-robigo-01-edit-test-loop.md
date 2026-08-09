@@ -3144,6 +3144,180 @@ def test_only_the_patched_file_is_committed(repo: Path):
 The second test is the one that matters: it pins that a hand-edited unrelated
 file is not swept into a commit named after the model's patch.
 
+#### Amendment 2 (ruled 2026-08-09): contain the verb arms, and stop lying about the branch
+
+Four escape paths and one dishonest result field, all reproduced.
+
+**1. `read` and `find` can crash the run on ordinary model output.**
+`parse("read")` yields `arg=""` because the argument is optional, so
+`arg.split()[0]` raises `IndexError`; `read logo.png` raises
+`UnicodeDecodeError`; `_find` raises `OSError` on a broken symlink and also
+walks `.venv`. `render._read` already solved exactly this — loop's did not.
+
+```python
+_READ_CAP = 4000
+_SKIP = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__", ".robigo"})
+
+
+def _read(root: Path, arg: str) -> str:
+    """Model-facing text, never an exception. A bare `read` and a `read` of a
+    binary file are both ordinary model output, not crashes."""
+    parts = arg.split()
+    if not parts:
+        return "read needs a path, e.g. `read src/fog.py`"
+    path = (root / parts[0]).resolve()
+    if not path.is_relative_to(root.resolve()) or not path.is_file():
+        return f"cannot read '{parts[0]}': no such file in this repository"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"cannot read '{parts[0]}': {exc.strerror}"
+    return text[:_READ_CAP] + "\n<truncated>\n" if len(text) > _READ_CAP else text
+
+
+def _find(root: Path, symbol: str) -> str:
+    if not symbol:
+        return "find needs a symbol, e.g. `find computeRadius`"
+    hits: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        if _SKIP.intersection(path.parts):
+            continue
+        try:
+            body = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for number, line in enumerate(body.split("\n"), 1):
+            if symbol in line:
+                hits.append(f"{path.relative_to(root)}:{number}")
+                if len(hits) >= 20:
+                    return "\n".join(hits)
+    return "\n".join(hits) or f"'{symbol}' not found"
+```
+
+**2. The mid-loop `adapter.run` must catch `AdapterError`.** Setup maps it to
+`infrastructure`; the per-turn handler catches only
+`(CalledProcessError, FileNotFoundError)`. `PythonAdapter._preflight` runs on
+every invocation and converts any `OSError`/`SubprocessError` — including a
+60s timeout — into `AdapterError`, which then escapes. Add it to that handler.
+
+**3. A refusal after `start_branch` must not claim `branch=None`.** Reproduced:
+`outcome=refused`, `RunResult.branch=None`, while git is actually on
+`robigo/fix-1` — so the CLI cannot report or clean up what it is told does not
+exist, and `git checkout -` no longer means what `commit_all`'s docstring says.
+
+Split the ignored-scope check out of `snapshot` so the common refusal happens
+**before** any branch exists, and thread the branch through the handlers so
+any other post-branch failure reports it honestly. In `apply/safety.py`:
+
+```python
+def refuse_ignored(root: Path, scope_files: Sequence[Path]) -> None:
+    """A precondition, not part of committing: git will not stage an ignored
+    file, so an ignored file in scope would be patched with no recoverable
+    pre-image. Checked before a branch exists, so refusing costs nothing."""
+    ignored = _ignored(root, scope_files)
+    if ignored:
+        raise RefusedError(
+            f"{', '.join(ignored)} is in scope but ignored by git, so robigo "
+            f"cannot snapshot its pre-patch state and could not undo a change "
+            f"to it. Un-ignore it, or narrow --scope to exclude it."
+        )
+
+
+def snapshot(root: Path, message: str) -> None:
+    """Commit whatever is in the tree BEFORE the first patch, dirty or not, so
+    a pre-existing uncommitted change in a non-ignored path cannot be lost.
+    The ignored-path hole is refused separately by `refuse_ignored`."""
+    _commit(root, message, ["-A"])
+```
+
+and in `loop.run`, initialise `branch = None` **before** the `try`, call
+`refuse_ignored(root, scope.full)` before `start_branch`, drop `scope.full`
+from the `snapshot` call, and pass `branch` in all three setup handlers.
+
+**4. Annotate `_take_turn` and `client`.** Both are unannotated, from the Step 3
+draft. `_take_turn` is the only function in `src/robigo/` with no return type.
+Add a Protocol beside the clients it describes, in `model/client.py`:
+
+```python
+class ModelClient(Protocol):
+    model: str
+    window: int
+
+    def generate(self, prompt: str, *, seed: int) -> Generation: ...
+```
+
+and annotate `_take_turn(gen: Generation, root: Path, scope: Scope,
+adapter: Adapter, codec: str, allow_test_edits: bool) -> tuple[str, str, bool, Path | None]`.
+
+**Six tests.** The exit-code assertion for `stalled` also becomes a literal
+`== 1`, since `OUTCOMES["stalled"] == result.exit_code` is self-referential
+and `OUTCOMES` is the contract the CLI consumes.
+
+```python
+def test_a_bare_read_does_not_crash_the_run(repo: Path):
+    result = run("fix", repo, _ScriptedClient("read", FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert result.outcome == "pass"
+
+
+def test_reading_a_binary_file_does_not_crash_the_run(repo: Path):
+    (repo / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe")
+    result = run("fix", repo, _ScriptedClient("read logo.png", FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert result.outcome == "pass"
+
+
+def test_a_bare_find_does_not_crash_the_run(repo: Path):
+    result = run("fix", repo, _ScriptedClient("find", FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert result.outcome == "pass"
+
+
+def test_an_ignored_scope_file_is_refused_before_any_branch_exists(repo: Path):
+    (repo / ".gitignore").write_text("src/fog.py\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "ignore"], cwd=repo, check=True)
+    result = run("fix", repo, _ScriptedClient(FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert (result.outcome, result.exit_code) == ("refused", 3)
+    branches = subprocess.run(
+        ["git", "branch", "--format=%(refname:short)"], cwd=repo,
+        capture_output=True, text=True,
+    ).stdout.split()
+    assert not any(name.startswith("robigo/") for name in branches)
+
+
+def test_a_failure_after_branching_reports_the_branch(repo: Path, monkeypatch):
+    import robigo.loop as loop_module
+
+    def boom(*args, **kwargs):
+        raise subprocess.CalledProcessError(128, "git")
+
+    monkeypatch.setattr(loop_module, "snapshot", boom)
+    result = run("fix", repo, _ScriptedClient(FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert result.outcome == "infrastructure"
+    assert result.branch is not None and result.branch.startswith("robigo/")
+
+
+def test_a_mid_loop_adapter_failure_is_infrastructure(repo: Path):
+    from robigo.adapters.base import AdapterError
+
+    adapter = PythonAdapter(python=sys.executable)
+    real_run, calls = adapter.run, {"n": 0}
+
+    def flaky(root, filt):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise AdapterError("pytest vanished")
+        return real_run(root, filt)
+
+    adapter.run = flaky  # type: ignore[method-assign]
+    result = run("fix", repo, _ScriptedClient(FIX), adapter, codec="search_replace")
+    assert (result.outcome, result.exit_code) == ("infrastructure", 4)
+```
+
 ---
 
 ### Task 11: CLI, exit codes, and a live smoke test
