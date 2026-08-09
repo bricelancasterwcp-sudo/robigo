@@ -43,6 +43,22 @@ def _as_int(key: str, value: object) -> int:
         ) from exc
 
 
+def _kv_head_count(key: str, value: object) -> int:
+    """Reduce `head_count_kv` — which some architectures report per layer —
+    to its largest value. `max()` is a conversion like any other and must not
+    escape as a raw TypeError, so every element goes through `_as_int` first
+    and the comparison only ever sees ints."""
+    if not isinstance(value, list):
+        return _as_int(key, value)
+    if not value:
+        raise GeometryError(
+            f"{key} is an empty list, so the number of key/value heads is "
+            f"unknown and the KV cache size cannot be computed. Pass "
+            f"--window explicitly."
+        )
+    return max(_as_int(key, element) for element in value)
+
+
 def from_model_info(info: dict) -> Geometry:
     arch = info.get("general.architecture")
     if not isinstance(arch, str):
@@ -62,9 +78,9 @@ def from_model_info(info: dict) -> Geometry:
             )
         return info[full]
 
-    kv_heads = need("attention.head_count_kv")
-    if isinstance(kv_heads, list):
-        kv_heads = max(kv_heads) if kv_heads else None
+    kv_heads = _kv_head_count(
+        f"{arch}.attention.head_count_kv", need("attention.head_count_kv")
+    )
     key_dim = info.get(f"{arch}.attention.key_length")
     if key_dim is None:
         heads = _as_int(f"{arch}.attention.head_count", need("attention.head_count"))
@@ -79,7 +95,7 @@ def from_model_info(info: dict) -> Geometry:
     return Geometry(
         arch=arch,
         layers=_as_int(f"{arch}.block_count", need("block_count")),
-        kv_heads=_as_int(f"{arch}.attention.head_count_kv", kv_heads),
+        kv_heads=kv_heads,
         key_dim=_as_int(f"{arch}.attention.key_length", key_dim),
         value_dim=_as_int(f"{arch}.attention.value_length", value_dim),
         training_ctx=_as_int(f"{arch}.context_length", need("context_length")),

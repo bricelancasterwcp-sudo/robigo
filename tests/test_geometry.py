@@ -123,3 +123,19 @@ def test_an_empty_kv_head_list_is_geometry_error_not_a_max_failure():
     info = dict(QWEN7B, **{"qwen2.attention.head_count_kv": []})
     with pytest.raises(GeometryError):
         from_model_info(info)
+
+
+def test_a_malformed_element_of_a_per_layer_kv_list_is_named_not_raw():
+    """A JSON null inside the list is the same defect as a malformed scalar
+    field, and Task 5's --window fallback catches only GeometryError."""
+    info = dict(QWEN7B, **{"qwen2.attention.head_count_kv": [4, None]})
+    with pytest.raises(GeometryError) as e:
+        from_model_info(info)
+    assert "attention.head_count_kv" in str(e.value)
+
+
+def test_an_empty_per_layer_kv_list_says_it_is_empty():
+    info = dict(QWEN7B, **{"qwen2.attention.head_count_kv": []})
+    with pytest.raises(GeometryError) as e:
+        from_model_info(info)
+    assert "empty list" in str(e.value)
