@@ -50,7 +50,7 @@ def read_metadata(path: Path) -> dict[str, object]:
         _read_exactly(handle, 4, "version")          # version, unused
         _read_exactly(handle, 8, "tensor_count")     # tensor count, unused
         count = struct.unpack("<Q", _read_exactly(handle, 8, "kv_count"))[0]
-        return {_string(handle): _value(handle, _u32(handle)) for _ in range(count)}
+        return {_string(handle, "key"): _value(handle, _u32(handle)) for _ in range(count)}
 
 
 def _u32(handle: BinaryIO) -> int:
@@ -73,7 +73,7 @@ def _string(handle: BinaryIO, what: str = "string") -> str:
 
 def _value(handle: BinaryIO, kind: int) -> object:
     if kind == _STRING:
-        return _string(handle)
+        return _string(handle, "string value")
     if kind == _ARRAY:
         element = _u32(handle)
         if element == _ARRAY:

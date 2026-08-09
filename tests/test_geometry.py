@@ -151,6 +151,35 @@ def test_an_empty_per_layer_kv_list_says_it_is_empty():
     assert "empty list" in str(e.value)
 
 
+def test_a_non_positive_block_count_raises_geometry_error():
+    # A zero here is not a harmless edge case: it makes kv_bytes_per_token
+    # zero, and usable_window then divides by it and raises a bare
+    # ZeroDivisionError that Task 5's `except GeometryError` fallback cannot
+    # catch. _as_int only validates type, not value, so this needs its own
+    # guard (amendment 2).
+    info = dict(QWEN7B, **{"qwen2.block_count": 0})
+    with pytest.raises(GeometryError) as e:
+        from_model_info(info)
+    assert "block_count" in str(e.value)
+
+
+def test_a_non_positive_head_count_kv_raises_geometry_error():
+    info = dict(QWEN7B, **{"qwen2.attention.head_count_kv": -4})
+    with pytest.raises(GeometryError) as e:
+        from_model_info(info)
+    assert "head_count_kv" in str(e.value)
+
+
+def test_an_infinite_metadata_field_raises_geometry_error_not_overflow_error():
+    # int(float('inf')) raises OverflowError, and stdlib json.loads accepts
+    # the bare `Infinity` token by default, so this is reachable from a
+    # hostile /api/show response, not just a crafted dict.
+    info = dict(QWEN7B, **{"qwen2.block_count": float("inf")})
+    with pytest.raises(GeometryError) as e:
+        from_model_info(info)
+    assert "block_count" in str(e.value)
+
+
 def test_the_training_context_is_never_exceeded_even_with_vram_to_spare():
     # llama-server refuses a slot larger than the model was trained on,
     # and Ollama accepts it silently and rope-degrades (law 1).
@@ -185,6 +214,24 @@ def test_kv_quantization_buys_window():
     assert at_16.window == 2048 and at_8.window == 4096
     assert at_8.window == at_16.window * 2
     assert at_8.limited_by == "vram"
+
+
+def test_kv_bits_zero_raises_value_error():
+    with pytest.raises(ValueError) as e:
+        usable_window(from_model_info(QWEN7B), free_vram=15 * GIB,
+                      weights_bytes=8 * GIB, kv_bits=0)
+    assert "kv_bits" in str(e.value)
+
+
+def test_kv_bits_negative_raises_value_error():
+    # The reviewer's exact reproduction: kv_bits=-16 used to silently
+    # produce window=-126391, limited_by='vram' with no error at all --
+    # silent wrong data beats a crash for damage, so this must not be a
+    # ZeroDivisionError-adjacent near-miss either; it must raise loudly.
+    with pytest.raises(ValueError) as e:
+        usable_window(from_model_info(QWEN7B), free_vram=15 * GIB,
+                      weights_bytes=8 * GIB, kv_bits=-16)
+    assert "kv_bits" in str(e.value)
 
 
 def test_a_user_cap_wins_and_is_reported():

@@ -37,12 +37,30 @@ def _as_int(key: str, value: object) -> int:
     TypeError or ValueError escaping here would defeat that fallback."""
     try:
         return int(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
+        # OverflowError: int(float('inf')) raises it, and stdlib json.loads
+        # accepts the bare `Infinity` token by default, so this is reachable
+        # from a hostile /api/show response, not just a crafted dict.
         raise GeometryError(
             f"{key} is malformed ({value!r}); the KV cache size cannot be "
             f"computed, so the usable window is unknown. Pass --window "
             f"explicitly."
         ) from exc
+
+
+def _positive(key: str, value: int) -> int:
+    """Reject a non-positive dimension. `_as_int` checks that a field is an
+    integer; this checks it is a usable one. A zero here is not a harmless
+    edge case: it makes `kv_bytes_per_token` zero, and `usable_window` then
+    divides by it and raises a bare ZeroDivisionError that Task 5's
+    `except GeometryError` fallback cannot catch."""
+    if value <= 0:
+        raise GeometryError(
+            f"{key} is {value}; a model cannot have a non-positive value "
+            f"there, so the KV cache size cannot be computed and the usable "
+            f"window is unknown. Pass --window explicitly."
+        )
+    return value
 
 
 def _kv_head_count(key: str, value: object) -> int:
@@ -96,11 +114,22 @@ def from_model_info(info: dict) -> Geometry:
     value_dim = info.get(f"{arch}.attention.value_length", key_dim)
     return Geometry(
         arch=arch,
-        layers=_as_int(f"{arch}.block_count", need("block_count")),
-        kv_heads=kv_heads,
-        key_dim=_as_int(f"{arch}.attention.key_length", key_dim),
-        value_dim=_as_int(f"{arch}.attention.value_length", value_dim),
-        training_ctx=_as_int(f"{arch}.context_length", need("context_length")),
+        layers=_positive(
+            f"{arch}.block_count", _as_int(f"{arch}.block_count", need("block_count"))
+        ),
+        kv_heads=_positive(f"{arch}.attention.head_count_kv", kv_heads),
+        key_dim=_positive(
+            f"{arch}.attention.key_length",
+            _as_int(f"{arch}.attention.key_length", key_dim),
+        ),
+        value_dim=_positive(
+            f"{arch}.attention.value_length",
+            _as_int(f"{arch}.attention.value_length", value_dim),
+        ),
+        training_ctx=_positive(
+            f"{arch}.context_length",
+            _as_int(f"{arch}.context_length", need("context_length")),
+        ),
     )
 
 
@@ -176,6 +205,13 @@ def usable_window(
     excludes the weights, and subtracting them again understates the window
     by roughly the size of the model. Callers own that ordering.
     """
+    if kv_bits <= 0:
+        # ValueError, not GeometryError: a bad kv_bits is a caller's
+        # programming error, not a property of the model file, and must not
+        # be swallowed by a fallback meant for unreadable metadata. Without
+        # this guard, kv_bits=-16 silently produced a negative window with
+        # no error at all -- silent wrong data beats a crash for damage.
+        raise ValueError(f"kv_bits must be positive, got {kv_bits}")
     per_token = geometry.kv_bytes_per_token * kv_bits // 16
     limits: list[tuple[int, str]] = [(geometry.training_ctx, "training_ctx")]
     if free_vram is not None:

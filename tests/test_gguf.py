@@ -151,6 +151,32 @@ def test_a_string_of_the_right_length_holding_invalid_utf8_is_refused(tmp_path: 
     assert "UTF-8" in str(e.value)
 
 
+def test_a_corrupt_key_and_a_corrupt_value_produce_distinguishable_messages(tmp_path: Path):
+    """Amendment 2: both _string call sites used to share the default `what`
+    ('string'), so a corrupt-file message could never say which one was
+    bad. The key site now passes 'key' and the value site passes 'string
+    value'."""
+    key_path = tmp_path / "bad_key.gguf"
+    key_path.write_bytes(_header(1) + struct.pack("<Q", 3) + b"\xff\xfe\xfd")
+    with pytest.raises(GGUFError) as key_err:
+        read_metadata(key_path)
+
+    value_path = tmp_path / "bad_value.gguf"
+    value_path.write_bytes(
+        _header(1)
+        + _s("general.architecture")
+        + struct.pack("<I", 8)
+        + struct.pack("<Q", 3)
+        + b"\xff\xfe\xfd"
+    )
+    with pytest.raises(GGUFError) as value_err:
+        read_metadata(value_path)
+
+    assert "key" in str(key_err.value)
+    assert "string value" in str(value_err.value)
+    assert str(key_err.value) != str(value_err.value)
+
+
 class _CountingHandle:
     """Wraps a binary handle and totals the bytes read through it. The cost
     requirement is about reads, so the test has to observe reads; asserting
