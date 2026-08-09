@@ -1407,6 +1407,100 @@ git add src/robigo/context tests/test_scope.py
 git commit -m "feat: test-anchored scope with signature-only second hop"
 ```
 
+#### Amendment (ruled 2026-08-09): `signatures_of` must be readable, and refusals actionable
+
+Three defects in the reference code above, two verified by reproduction:
+
+1. **`ast.walk` is breadth-first, so definitions come out scrambled.**
+   `class Foo: method_a` / `class Bar: method_b` emits
+   `Foo, Bar, method_a, method_b`. Any file with two top-level definitions
+   where one has nested content — the common case — gets a misleading outline.
+2. **Decorators are dropped.** `node.lineno` points at `def`, not at the
+   decorator, so `@property` reads as a plain method.
+3. **The missing-anchor `ScopeError` names the problem but not the remedy**,
+   contradicting the plan's own constraint that these messages say what to do.
+
+Sort by position, carry decorator lines, and add a containment check — an
+anchor must never resolve outside the repo:
+
+```python
+def signatures_of(text: str) -> str:
+    """Definition lines only, in source order, decorators included. Hop-2
+    files are for orientation, and an outline whose order does not match
+    the file is worse than no outline."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return ""
+    lines = text.split("\n")
+    nodes = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    ]
+    out: list[str] = []
+    for node in sorted(nodes, key=lambda item: item.lineno):
+        start = node.lineno
+        if node.decorator_list:
+            start = min(decorator.lineno for decorator in node.decorator_list)
+        out.extend(lines[number - 1].rstrip() for number in range(start, node.lineno + 1))
+    return "\n".join(out) + ("\n" if out else "")
+```
+
+and in `resolve`, before the existence check:
+
+```python
+    anchor = (root / diag.file).resolve()
+    if not anchor.is_relative_to(root.resolve()):
+        raise ScopeError(
+            f"anchor {diag.file} resolves outside {root}. Scope never leaves "
+            f"the repository; pass --scope to set it explicitly."
+        )
+    if not anchor.is_file():
+        raise ScopeError(
+            f"anchor {diag.file} does not exist under {root}. Check the path "
+            f"is repo-relative and spelled correctly, or pass --scope to name "
+            f"the files to work in explicitly."
+        )
+```
+
+Four tests:
+
+```python
+def test_signatures_keep_source_order_across_nested_definitions():
+    out = signatures_of(
+        "class Foo:\n    def method_a(self):\n        pass\n\n"
+        "class Bar:\n    def method_b(self):\n        pass\n"
+    )
+    assert out.split("\n")[:4] == [
+        "class Foo:",
+        "    def method_a(self):",
+        "class Bar:",
+        "    def method_b(self):",
+    ]
+
+
+def test_signatures_keep_decorators():
+    out = signatures_of(
+        "class K:\n    @property\n    def size(self):\n        return 1\n"
+    )
+    assert "@property" in out
+    assert "return 1" not in out
+
+
+def test_an_anchor_outside_the_repo_is_refused(repo: Path):
+    (repo.parent / "escape.py").write_text("x = 1\n")
+    with pytest.raises(ScopeError) as e:
+        resolve(_diag("../escape.py"), PythonAdapter(), repo)
+    assert "outside" in str(e.value)
+
+
+def test_a_missing_anchor_says_what_to_do(repo: Path):
+    with pytest.raises(ScopeError) as e:
+        resolve(_diag("tests/nope.py"), PythonAdapter(), repo)
+    assert "--scope" in str(e.value)
+```
+
 ---
 
 ### Task 6: Prompt rendering
@@ -2756,6 +2850,60 @@ Expected: 3 passed, 1 deselected (live); full suite green
 git add src/robigo/cli.py tests/test_cli.py
 git commit -m "feat: cli with distinct exit codes and a live smoke test"
 ```
+
+#### Amendment (ruled 2026-08-09): `--scope` must actually exist
+
+Three refusal messages — Task 5's two `ScopeError`s and the budget-exhaustion
+refusal in plan 02 — tell the user to pass `--scope`, and spec §3 and §6 both
+reference it, but this task's CLI never defined it. A refusal that names a
+nonexistent flag is worse than one that names nothing.
+
+Add the flag, and an explicit scope builder that bypasses import tracing:
+
+```python
+    parser.add_argument("--scope", type=Path, nargs="+", default=None,
+                        metavar="PATH",
+                        help="files or directories to work in, instead of "
+                             "tracing imports from the failing test")
+```
+
+In `src/robigo/context/scope.py`, add:
+
+```python
+def explicit(diag: Diagnostic, root: Path, paths: Sequence[Path]) -> Scope:
+    """Scope drawn by the user rather than traced. The anchor still comes
+    from the diagnostic — the failing test is what the run is about — but
+    nothing is inferred beyond the paths given."""
+    if not diag.file:
+        raise ScopeError(
+            "--scope needs a failing test to anchor on, and the test output "
+            "named no file."
+        )
+    anchor = (root / diag.file).resolve()
+    full: list[Path] = [anchor]
+    for given in paths:
+        target = (root / given).resolve()
+        if not target.is_relative_to(root.resolve()):
+            raise ScopeError(f"--scope path {given} is outside {root}")
+        found = sorted(target.rglob("*.py")) if target.is_dir() else [target]
+        for path in found:
+            if path.is_file() and path not in full:
+                full.append(path)
+    return Scope(anchor=anchor, full=tuple(full), signatures=())
+```
+
+and in `loop.run`, take an optional `scope_paths` and use it:
+
+```python
+        scope = (
+            explicit(diag, root, scope_paths) if scope_paths
+            else resolve(diag, adapter, root)
+        )
+```
+
+Signature-only hops are deliberately empty here: the user drew the box, so
+nothing is added they did not name. If the result is too large, plan 02's
+degradation ladder and refusal handle it.
 
 - [ ] **Step 6: Run the live test against a real model**
 
