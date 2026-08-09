@@ -1899,11 +1899,20 @@ def ensure_repo(root: Path) -> None:
 
 
 def start_branch(root: Path, slug: str) -> str:
-    existing = subprocess.run(
-        ["git", "branch", "--list", f"robigo/{slug}-*"],
-        cwd=root, capture_output=True, text=True,
-    ).stdout
-    branch = f"robigo/{slug}-{len(existing.splitlines()) + 1}"
+    """The first UNUSED name, not a count. Counting collides as soon as any
+    earlier branch is deleted — two branches minus one deleted still counts
+    1, and `git checkout -b` on a name that already exists aborts the run
+    under check=True."""
+    existing = set(
+        subprocess.run(
+            ["git", "branch", "--format=%(refname:short)"],
+            cwd=root, capture_output=True, text=True, check=True,
+        ).stdout.split()
+    )
+    number = 1
+    while f"robigo/{slug}-{number}" in existing:
+        number += 1
+    branch = f"robigo/{slug}-{number}"
     subprocess.run(["git", "checkout", "-q", "-b", branch], cwd=root, check=True)
     return branch
 
@@ -3083,9 +3092,13 @@ from pathlib import Path
 
 
 def next_run_id(root: Path, slug: str) -> str:
+    """The first unused id, not a count — counting collides as soon as any
+    earlier run directory is deleted, and would then overwrite it."""
     runs = root / ".robigo" / "runs"
-    existing = len(list(runs.glob(f"{slug}-*"))) if runs.is_dir() else 0
-    return f"{slug}-{existing + 1}"
+    number = 1
+    while (runs / f"{slug}-{number}").exists():
+        number += 1
+    return f"{slug}-{number}"
 
 
 class RunRecorder:
