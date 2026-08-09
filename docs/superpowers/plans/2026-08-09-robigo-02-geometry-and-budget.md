@@ -692,6 +692,134 @@ git add src/robigo/model/gguf.py tests/test_gguf.py
 git commit -m "feat: dependency-free GGUF metadata reader"
 ```
 
+#### Amendment (ruled 2026-08-09): every read must be an exact read
+
+The four tests above cover bad magic and an unknown type id. They do not cover
+a **short** read, and the parser as written handles it badly. Measured against
+the shipped module, not reasoned about — eight probes, five raw escapes:
+
+| input | result |
+|---|---|
+| well-formed header | parses |
+| empty file | `GGUFError` ✓ |
+| just the magic | raw `struct.error` |
+| truncated mid-header | raw `struct.error` |
+| kv count says 1, file ends | raw `struct.error` |
+| truncated mid-key-string | raw `struct.error` |
+| key length claims 8 EiB | raw `OverflowError` |
+| kv count claims 2**40 | raw `struct.error` |
+
+Two of these matter beyond the exception type:
+
+- **"kv count says 1, file ends" is the interrupted-`ollama pull` shape.** A
+  partial blob is the realistic malformed input for this reader, not a hostile
+  one. "Real GGUF files won't truncate mid-header" is true only of *complete*
+  files, and the reader's job is to tell you when it doesn't have one.
+- **A short read inside `_string` does not raise at all.** `handle.read(300)`
+  returning 3 bytes decodes cleanly to a 3-character key, so the metadata dict
+  gets a *wrong key name* rather than an error. In the probe the mistake
+  surfaced one field later, by luck, on the next `unpack`. That is a silent
+  corruption path and it is the reason this amendment exists.
+
+`read` returns a short buffer at EOF instead of raising, so every read must go
+through one helper that treats short as fatal:
+
+```python
+_MAX_READ = 64 * 1024 * 1024
+"""No single GGUF field approaches this. The largest metadata values are the
+tokenizer arrays, and those are read element by element, so no individual
+read is big. A claimed length above this means a corrupt length field, and
+honouring it would allocate that much memory."""
+
+
+def _read_exactly(handle: BinaryIO, n: int, what: str) -> bytes:
+    """Read exactly `n` bytes or raise. `read` returns a short buffer at EOF
+    rather than raising, which reaches `struct.unpack` as `struct.error` and
+    reaches `bytes.decode` as a silently truncated string."""
+    if not 0 <= n <= _MAX_READ:
+        raise GGUFError(
+            f"{what} claims {n} bytes, beyond anything a real GGUF field "
+            f"contains; the file is corrupt."
+        )
+    data = handle.read(n)
+    if len(data) != n:
+        raise GGUFError(
+            f"file ends mid-{what}: wanted {n} bytes, got {len(data)}; the "
+            f"file is truncated."
+        )
+    return data
+```
+
+Route **every** `handle.read(...)` in the module through it — the version,
+the tensor count, the kv count, `_u32`, `_u64`, `_string`, and the scalar read
+in `_value` — passing a `what` that names the field being read. The magic
+check may stay as it is: a short read there already fails the `!= b"GGUF"`
+comparison and produces the right message, which the empty-file probe
+confirms.
+
+The absurd-count cases need no separate guard once this is in place: a kv or
+array count of 2**40 makes the first element read hit EOF, and that read now
+raises `GGUFError`.
+
+Six tests, one per probe row that currently escapes, plus the silent-corruption
+case stated as an assertion about the *value* rather than the exception:
+
+```python
+def _header(kv_count: int = 1) -> bytes:
+    return b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + struct.pack(
+        "<Q", kv_count
+    )
+
+
+def test_a_file_holding_only_the_magic_is_a_gguf_error(tmp_path):
+    path = tmp_path / "m.gguf"
+    path.write_bytes(b"GGUF")
+    with pytest.raises(GGUFError):
+        read_metadata(path)
+
+
+def test_a_header_truncated_mid_field_is_a_gguf_error(tmp_path):
+    path = tmp_path / "t.gguf"
+    path.write_bytes(b"GGUF" + struct.pack("<I", 3) + b"\x01\x02")
+    with pytest.raises(GGUFError):
+        read_metadata(path)
+
+
+def test_a_count_promising_more_pairs_than_the_file_holds_is_a_gguf_error(tmp_path):
+    """The interrupted-download shape: the header is intact and claims a
+    pair, and the file simply stops."""
+    path = tmp_path / "p.gguf"
+    path.write_bytes(_header(1))
+    with pytest.raises(GGUFError) as e:
+        read_metadata(path)
+    assert "truncated" in str(e.value)
+
+
+def test_a_key_string_running_past_the_end_does_not_silently_shorten(tmp_path):
+    """The value-level assertion. A short read used to decode cleanly, so the
+    key came back as 'abc' instead of failing."""
+    path = tmp_path / "s.gguf"
+    path.write_bytes(_header(1) + struct.pack("<Q", 300) + b"abc")
+    with pytest.raises(GGUFError) as e:
+        read_metadata(path)
+    assert "truncated" in str(e.value)
+
+
+def test_an_absurd_string_length_is_refused_before_allocating(tmp_path):
+    path = tmp_path / "h.gguf"
+    path.write_bytes(_header(1) + struct.pack("<Q", 2**63) + b"abc")
+    with pytest.raises(GGUFError) as e:
+        read_metadata(path)
+    assert "corrupt" in str(e.value)
+
+
+def test_an_absurd_kv_count_ends_at_the_first_missing_byte(tmp_path):
+    path = tmp_path / "c.gguf"
+    path.write_bytes(_header(2**40))
+    with pytest.raises(GGUFError):
+        read_metadata(path)
+```
+
 ---
 
 ### Task 3: Free VRAM and the usable window
