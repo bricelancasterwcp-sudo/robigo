@@ -1183,6 +1183,70 @@ def test_a_real_file_at_an_impossible_line_is_not_an_anchor(tmp_path: Path):
     assert adapter._in_repo("short.py", tmp_path, 999) is None
 ```
 
+#### Amendment 5 (ruled 2026-08-09): prefer the anchor's own tail
+
+Amendment 3's forward search rests on a false premise. pytest 9.1.1 emits
+`E   <Type>: <message>` **before** its own crash line in a `FAILURES` block,
+so searching forward from the anchor skips the anchor's message and takes the
+*next* failure's. Reproduced:
+
+```
+E   AssertionError: FAILURE-A-MESSAGE
+assert 1 == 2
+tests/test_a.py:2: AssertionError: FAILURE-A-MESSAGE
+E   AssertionError: FAILURE-B-MESSAGE
+tests/test_b.py:2: ...
+→ shipped ('tests/test_a.py', 2, 'AssertionError: FAILURE-B-MESSAGE')
+```
+
+Scanning all of `raw` was *correct* on this shape, so Amendment 3 was a
+regression. And the right message was already in hand: the anchor line's own
+tail carries it.
+
+The two shapes order oppositely, so discriminate by **shape, not direction**:
+
+- `FAILURES` (`--tb=line`): the tail is the message. Use it.
+- `ERRORS` (traceback): the in-repo frame's tail is a bare frame marker like
+  `in <module>`, and the real message follows. Fall back to the forward search.
+
+```python
+_FRAME_TAIL = re.compile(r"^in\s")
+
+
+        index, rel, number, tail = anchor
+        if tail and not _FRAME_TAIL.match(tail):
+            message = tail
+        else:
+            message = self._error_summary(lines, index) or tail or "tests failed"
+        return Diagnostic(False, rel, number, message, raw)
+```
+
+`_error_summary` stays exactly as it is — it is now the collection-error path
+only.
+
+**Delete `test_the_summary_is_paired_with_the_anchor_not_the_first_failure`.**
+It hand-builds a three-line list in the *inverse* of pytest's real ordering,
+so it passes while the defect is live. A synthetic ordering test is worse than
+none here. Replace it with a real end-to-end multi-failure run:
+
+```python
+def test_a_multi_failure_run_pairs_the_message_with_its_own_anchor(repo: Path):
+    (repo / "tests" / "test_fog.py").write_text(
+        "def test_a():\n    assert 1 == 2, 'FAILURE-A'\n"
+    )
+    (repo / "tests" / "test_grid.py").write_text(
+        "def test_b():\n    assert 3 == 4, 'FAILURE-B'\n"
+    )
+    diag = PythonAdapter(python=sys.executable).run(repo, None)
+    assert diag.file == "tests/test_fog.py"
+    assert "FAILURE-A" in diag.message
+    assert "FAILURE-B" not in diag.message
+```
+
+The existing broken-import test already guards the other branch: it asserts
+`"nonexistent_xyz" in diag.message`, which only passes via the `E`-line
+fallback.
+
 ---
 
 ### Task 5: Test-anchored scope resolution
