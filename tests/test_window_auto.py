@@ -89,19 +89,56 @@ def test_plan_window_reads_free_vram_before_any_network_call(monkeypatch):
 
 
 def test_cli_accepts_the_word_auto(monkeypatch, tmp_path: Path):
+    """Item 7 (ruled 2026-08-09, whole-branch review): two problems in one
+    test. `pytest.importorskip("robigo.model.geometry")` can never actually
+    skip -- that module is already imported at the top of this file, so the
+    "skip if unavailable" it implies is fake dead weight; `WindowPlan` is
+    used directly instead. And `build_client` was never stubbed, so with a
+    real `OllamaClient` this test POSTed to a real daemon at
+    127.0.0.1:11434 -- a hard violation of "every test passes with no
+    daemon, no GPU, no network." A scripted client that raises ModelError
+    reproduces "the model does not exist" with no network at all.
+
+    `--python sys.executable` is passed explicitly, unlike the pre-fix
+    version: without it, `PythonAdapter` looks for a `.venv`/`venv` under
+    `--root` (there is none, it is a fresh tmp_path) and falls back to a
+    bare `python` on PATH, which may or may not have pytest importable --
+    on a box where it does not, THIS test's own outcome (infrastructure, 4)
+    would already be reached from the adapter's preflight check, before
+    `client.generate()` is ever called, and the fix below would go
+    unexercised without anyone noticing. Naming the real interpreter makes
+    the adapter succeed everywhere, so `_AbsentModel.generate()` is what
+    actually produces the infrastructure result, not an environment
+    accident."""
     from robigo.cli import main
+    from robigo.model.client import ModelError
     import subprocess
+    import sys
 
     (tmp_path / "test_x.py").write_text("def test_x():\n    assert 0\n")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    monkeypatch.setattr("robigo.cli.plan_window",
-                        lambda *a, **k: pytest.importorskip("robigo.model.geometry")
-                        .WindowPlan(4096, "vram", None, 56 * 1024,
-                                    8 * 1024**3, 256 * 1024**2))
+    monkeypatch.setattr(
+        "robigo.cli.plan_window",
+        lambda *a, **k: WindowPlan(4096, "vram", None, 56 * 1024,
+                                   8 * 1024**3, 256 * 1024**2),
+    )
+
+    generated: list[str] = []
+
+    class _AbsentModel:
+        model = "nope"
+        window = 4096
+
+        def generate(self, prompt: str, *, seed: int):
+            generated.append(prompt)
+            raise ModelError("nope: model not found")
+
+    monkeypatch.setattr("robigo.cli.build_client", lambda args: _AbsentModel())
     # The model does not exist, so this must end as infrastructure (4),
     # proving the window was resolved and the loop was entered.
-    assert main(["--root", str(tmp_path), "--model", "nope",
-                 "--window", "auto", "fix"]) == 4
+    assert main(["--root", str(tmp_path), "--python", sys.executable,
+                 "--model", "nope", "--window", "auto", "fix"]) == 4
+    assert generated, "client.generate() was never reached"
 
 
 def test_window_rejects_a_non_auto_non_integer_value(capsys):
@@ -348,6 +385,73 @@ def test_weights_bytes_on_llamacpp_measures_the_real_file(tmp_path: Path):
     path = tmp_path / "m.gguf"
     path.write_bytes(b"x" * 4096)
     assert weights_bytes("llamacpp", "m", "", path) == 4096
+
+
+# --- Whole-branch review fix wave (ruled 2026-08-09) --------------------
+
+
+def test_cli_corrupt_gguf_reaches_the_contract_not_a_traceback(
+    monkeypatch, tmp_path: Path, capsys
+):
+    """Item 1 (Critical): GGUFError used to escape detect_geometry entirely
+    -- gguf.py defines it independent of GeometryError, and cli.main only
+    catches `(GeometryError, OSError)`. A truncated --gguf (the
+    interrupted-download shape tests/test_gguf.py itself names) escaped as
+    an uncaught traceback and exit 1, which is 'stalled' in the five-code
+    contract -- a model result the model never produced. A real corrupt
+    file through the real CLI, not a mock of read_metadata."""
+    from robigo.cli import main
+
+    monkeypatch.setattr("robigo.model.detect.free_vram_bytes", lambda: None)
+    bad = tmp_path / "corrupt.gguf"
+    bad.write_bytes(b"GGUF" + b"\x00" * 4)  # magic + version only; truncated
+    code = main(["--root", str(tmp_path), "--model", "m", "--backend", "llamacpp",
+                 "--gguf", str(bad), "fix"])
+    assert code == 4  # infrastructure: GeometryError caught by cli.main
+    out = capsys.readouterr().out
+    assert "cannot determine the usable window" in out
+    assert "truncated" in out  # gguf.py's own message, carried through
+
+
+def test_a_null_model_info_raises_geometry_error_not_attribute_error(monkeypatch):
+    """Item 2 (Critical), first repro: `.get('model_info', {})` only
+    substitutes `{}` when the key is ABSENT, never when its value is JSON
+    `null` -- the same shape as the `.get('size', 0)` bug this plan already
+    fixed once. `{"model_info": null}` used to reach
+    `from_model_info(None)`, and `None.get(...)` raised a raw
+    AttributeError."""
+    monkeypatch.setattr("robigo.model.detect._show",
+                        lambda model, host: {"model_info": None})
+    with pytest.raises(GeometryError) as e:
+        detect_geometry("ollama", "m", "")
+    assert "architecture" in str(e.value)
+
+
+def test_a_null_models_list_raises_geometry_error_not_type_error(monkeypatch):
+    """Item 2, second repro: same shape, the /api/tags sibling.
+    `{"models": null}` used to reach `for entry in None`, a raw
+    TypeError."""
+    monkeypatch.setattr("robigo.model.detect._tags",
+                        lambda host: {"models": None})
+    with pytest.raises(GeometryError) as e:
+        weights_bytes("ollama", "m", "", None)
+    assert "m" in str(e.value)
+
+
+def test_an_infinite_tags_size_raises_geometry_error_not_overflow_error(monkeypatch):
+    """Item 2, third repro: `int(float('inf'))` raises OverflowError, and
+    stdlib json.loads accepts the bare `Infinity` token by default, so a
+    `size: Infinity` field is reachable from a hostile daemon response, not
+    just a crafted dict -- geometry.py:40 already catches this for the KV
+    geometry fields, with a comment explaining why, while its sibling
+    weights-size conversion did not."""
+    monkeypatch.setattr(
+        "robigo.model.detect._tags",
+        lambda host: {"models": [{"name": "m", "size": float("inf")}]},
+    )
+    with pytest.raises(GeometryError) as e:
+        weights_bytes("ollama", "m", "", None)
+    assert "m" in str(e.value)
 
 
 @pytest.mark.live

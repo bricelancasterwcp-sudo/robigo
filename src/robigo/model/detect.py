@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import urllib.request
 from pathlib import Path
+from typing import TypeVar
 
 from robigo.model.geometry import (
     Geometry,
@@ -13,9 +14,28 @@ from robigo.model.geometry import (
     from_model_info,
     usable_window,
 )
-from robigo.model.gguf import read_metadata
+from robigo.model.gguf import GGUFError, read_metadata
 
 OLLAMA_HOST = "http://127.0.0.1:11434"
+
+_Shape = TypeVar("_Shape", dict, list)
+
+
+def _shaped(value: object, empty: _Shape) -> _Shape:
+    """A daemon response field, coerced to the shape a caller needs.
+
+    `.get(key, default)` only substitutes `default` when `key` is ABSENT,
+    never when its value is JSON `null` -- the same shape as the
+    `.get("size", 0)` bug this plan already fixed once (see
+    `weights_bytes`'s docstring). `{"model_info": null}` used to reach
+    `from_model_info(None)`, and `None.get(...)` raised a raw
+    AttributeError; `{"models": null}` used to reach `for entry in None`, a
+    raw TypeError. Both are malformed-response shapes, not Python bugs, and
+    must become `GeometryError` like every other malformed field this
+    module rejects. One converter shared by both call sites, rather than
+    two independent shape checks that already drifted into three raw
+    exceptions once."""
+    return value if isinstance(value, type(empty)) else empty
 
 
 def _show(model: str, host: str) -> dict:
@@ -78,10 +98,24 @@ def detect_geometry(
     was already supplied (see `_no_gguf_message`).
     """
     if backend == "ollama":
-        return from_model_info(_show(model, host).get("model_info", {}))
+        info = _shaped(_show(model, host).get("model_info"), {})
+        return from_model_info(info)
     if gguf_path is None:
         raise GeometryError(_no_gguf_message("KV geometry", user_cap))
-    return from_model_info(read_metadata(gguf_path))
+    try:
+        metadata = read_metadata(gguf_path)
+    except GGUFError as exc:
+        # The boundary that promises geometry: gguf.py is deliberately
+        # standalone (it is used without geometry too), so it raises its
+        # own GGUFError, and detect.py -- not gguf.py -- is where that
+        # becomes the one error every geometry failure surfaces as. A
+        # truncated --gguf (the interrupted-download shape
+        # tests/test_gguf.py itself names) used to escape here as a raw
+        # GGUFError, past cli.main's `except (GeometryError, OSError)`,
+        # as an uncaught traceback and exit 1 -- 'stalled' in the
+        # five-code contract, a model result the model never produced.
+        raise GeometryError(str(exc)) from exc
+    return from_model_info(metadata)
 
 
 def weights_bytes(
@@ -118,7 +152,7 @@ def weights_bytes(
         if gguf_path is None:
             raise GeometryError(_no_gguf_message("weights size", user_cap))
         return gguf_path.stat().st_size
-    models = _tags(host).get("models", [])
+    models = _shaped(_tags(host).get("models"), [])
     by_name = {
         entry.get("name"): entry for entry in models if isinstance(entry, dict)
     }
@@ -133,7 +167,13 @@ def weights_bytes(
         )
     try:
         return int(entry["size"])
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
+        # OverflowError: int(float('inf')) raises it, and stdlib json.loads
+        # accepts the bare `Infinity` token by default, so a `size:
+        # Infinity` field is reachable from a hostile daemon response, not
+        # just a crafted dict -- geometry.py's `_as_int` already guards
+        # this same conversion for the KV-geometry fields; this one guards
+        # it independently for weights size.
         raise GeometryError(
             f"{model!r}'s /api/tags size is malformed ({entry['size']!r}); "
             f"the weights size cannot be measured, so the usable window is "
