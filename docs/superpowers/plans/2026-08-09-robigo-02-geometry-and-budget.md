@@ -2215,3 +2215,45 @@ so it can never fire; a test that stubs `plan_window` but not `build_client`
 and therefore **POSTs to a real daemon**, violating the offline-tests
 constraint outright; and `estimate_tokens("x" * 36) == 11` under a name
 claiming it tests conservatism for code.
+
+### Fix wave, round 2 (ruled 2026-08-09)
+
+The wave's re-review confirmed items 1, 3, 4, 6, 7 and item 5's derivation, and
+found two escapes that both rounds missed. Both are inside invariants already
+stated above; neither is a new requirement.
+
+**8. `json.loads` is unguarded in `_show` and `_tags`.** A response body that is
+not JSON — the proxy or captive-portal case item 2's own docstring cites as its
+justification — raises `json.JSONDecodeError`, which is a `ValueError` and so
+passes straight through `cli.main`'s `except (GeometryError, OSError)`.
+Reproduced through the real `main()` with an HTML body. Item 2's enumeration
+began one step too late: it traced everything downstream of those functions
+*returning* and never asked what happens when they raise.
+
+*Invariant, restated from item 2:* a malformed daemon response raises
+`GeometryError` **whatever its source** — including a body that never parses.
+Wrap at the same boundary item 1 wraps `GGUFError`, and add a CLI-level test
+with a non-JSON body, mirroring the corrupt-`--gguf` test.
+
+**9. `DEFAULT_HISTORY_TOKENS` is computed eagerly at import (blocks the next
+slice).** The `robigo.loop` import inside `_default_history_tokens()` is only
+*syntactically* deferred: the module-level `DEFAULT_HISTORY_TOKENS =
+_default_history_tokens()` calls it while `context.budget` is still importing,
+which defeats the stated purpose of keeping that direction from becoming a hard
+dependency. Silent today because nothing in `src/` imports `context.budget` —
+and reproduced as a hard failure the moment something does: adding
+`from robigo.context.budget import Budget, fit` to `loop.py`, which is the
+natural first line of the wiring slice, gives
+`ImportError: cannot import name '_HISTORY_TURNS' from partially initialized
+module 'robigo.loop'`.
+
+*Invariant:* importing `context.budget` must not require `loop` to have finished
+importing. Compute the default when a `Budget` is constructed, not when the
+module loads — `field(default_factory=...)` — so the coupling stays a value
+dependency rather than an import-order one.
+
+**10. Small one.** Several of item 2's new tests assert `"m" in str(e.value)`
+where `"m"` is the fixture's one-character model name — true of almost any
+English error message, so the assertion adds nothing beyond the
+`pytest.raises(GeometryError)` beside it. Use a distinctive fixture name so the
+assertion means something.
