@@ -63,3 +63,32 @@ def test_missing_geometry_raises_rather_than_guessing():
 def test_geometry_is_frozen():
     with pytest.raises(Exception):
         from_model_info(QWEN7B).layers = 99  # type: ignore[misc]
+
+
+def test_key_and_value_dims_are_summed_separately():
+    # No fixture supplies both, so nothing else pins this: a regression to
+    # `2 * key_dim` would pass every other test in this file.
+    info = dict(QWEN7B, **{"qwen2.attention.value_length": 64})
+    g = from_model_info(info)
+    assert (g.key_dim, g.value_dim) == (128, 64)
+    assert g.kv_bytes_per_token == 28 * 4 * (128 + 64) * 2
+
+
+def test_the_training_context_is_carried_through():
+    # The field the never-exceed-training-context law reads downstream.
+    assert from_model_info(QWEN7B).training_ctx == 32768
+
+
+def test_a_missing_architecture_says_what_to_do():
+    with pytest.raises(GeometryError) as e:
+        from_model_info({"qwen2.block_count": 28})
+    assert "--window" in str(e.value)
+
+
+def test_a_malformed_field_raises_geometry_error_not_a_raw_type_error():
+    # Task 5 catches GeometryError to fall back to --window; a raw TypeError
+    # would escape that handler entirely.
+    info = dict(QWEN7B, **{"qwen2.attention.head_count_kv": None})
+    with pytest.raises(GeometryError) as e:
+        from_model_info(info)
+    assert "malformed" in str(e.value)

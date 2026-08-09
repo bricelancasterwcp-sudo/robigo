@@ -32,7 +32,11 @@ class Geometry:
 def from_model_info(info: dict) -> Geometry:
     arch = info.get("general.architecture")
     if not isinstance(arch, str):
-        raise GeometryError("general.architecture missing from model metadata")
+        raise GeometryError(
+            "general.architecture missing from model metadata; the KV cache "
+            "size cannot be computed, so the usable window is unknown. Pass "
+            "--window explicitly."
+        )
 
     def need(key: str) -> object:
         full = f"{arch}.{key}"
@@ -45,19 +49,24 @@ def from_model_info(info: dict) -> Geometry:
         return info[full]
 
     kv_heads = need("attention.head_count_kv")
-    if isinstance(kv_heads, list):
-        kv_heads = max(kv_heads)
-    layers = int(need("block_count"))
     heads = int(need("attention.head_count"))
     key_dim = info.get(f"{arch}.attention.key_length")
     if key_dim is None:
         key_dim = int(need("embedding_length")) // heads
     value_dim = info.get(f"{arch}.attention.value_length", key_dim)
-    return Geometry(
-        arch=arch,
-        layers=layers,
-        kv_heads=int(kv_heads),
-        key_dim=int(key_dim),
-        value_dim=int(value_dim),
-        training_ctx=int(need("context_length")),
-    )
+    try:
+        kv_heads = max(kv_heads) if isinstance(kv_heads, list) else kv_heads
+        return Geometry(
+            arch=arch,
+            layers=int(need("block_count")),
+            kv_heads=int(kv_heads),
+            key_dim=int(key_dim),
+            value_dim=int(value_dim),
+            training_ctx=int(need("context_length")),
+        )
+    except (TypeError, ValueError) as exc:
+        raise GeometryError(
+            f"{arch} metadata has a malformed geometry field ({exc}); the KV "
+            f"cache size cannot be computed, so the usable window is unknown. "
+            f"Pass --window explicitly."
+        ) from exc
