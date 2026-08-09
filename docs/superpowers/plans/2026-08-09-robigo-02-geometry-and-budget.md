@@ -264,6 +264,85 @@ git add src/robigo/model/geometry.py tests/test_geometry.py
 git commit -m "feat: KV-cache geometry from model metadata"
 ```
 
+#### Amendment (ruled 2026-08-09): pin what the tests only imply
+
+Three gaps, all in the reference code above.
+
+**1. Malformed-but-present fields raise the wrong exception type.** `need()`
+guards *absence*, but `int()` and `max()` on a present-and-broken value —
+`head_count_kv: null`, a non-numeric string — raise raw `TypeError`/`ValueError`.
+Task 5 catches `GeometryError` specifically to fall back to an explicit
+`--window`, so a malformed field produces an uncaught crash instead of the
+documented fallback. Wrap the conversions:
+
+```python
+    try:
+        kv_heads = max(kv_heads) if isinstance(kv_heads, list) else kv_heads
+        return Geometry(
+            arch=arch,
+            layers=int(need("block_count")),
+            kv_heads=int(kv_heads),
+            key_dim=int(key_dim),
+            value_dim=int(value_dim),
+            training_ctx=int(need("context_length")),
+        )
+    except (TypeError, ValueError) as exc:
+        raise GeometryError(
+            f"{arch} metadata has a malformed geometry field ({exc}); the KV "
+            f"cache size cannot be computed, so the usable window is unknown. "
+            f"Pass --window explicitly."
+        ) from exc
+```
+
+**2. The `general.architecture` guard names the missing key but no remedy**,
+unlike every `need()` message. Make it consistent, and test it:
+
+```python
+        raise GeometryError(
+            "general.architecture missing from model metadata; the KV cache "
+            "size cannot be computed, so the usable window is unknown. Pass "
+            "--window explicitly."
+        )
+```
+
+**3. "Key and value dims used separately" is unpinned.** Both fixtures omit
+`attention.value_length`, so `value_dim` always falls back to `key_dim` and a
+regression conflating them would pass every existing test. Same shape as the
+six vacuous guarantees mutation testing found in plan 01.
+
+Four tests. The first is the one that matters — verify it fails if
+`(key_dim + value_dim)` is replaced by `2 * key_dim`:
+
+```python
+def test_key_and_value_dims_are_summed_separately():
+    # No fixture supplies both, so nothing else pins this: a regression to
+    # `2 * key_dim` would pass every other test in this file.
+    info = dict(QWEN7B, **{"qwen2.attention.value_length": 64})
+    g = from_model_info(info)
+    assert (g.key_dim, g.value_dim) == (128, 64)
+    assert g.kv_bytes_per_token == 28 * 4 * (128 + 64) * 2
+
+
+def test_the_training_context_is_carried_through():
+    # The field the never-exceed-training-context law reads downstream.
+    assert from_model_info(QWEN7B).training_ctx == 32768
+
+
+def test_a_missing_architecture_says_what_to_do():
+    with pytest.raises(GeometryError) as e:
+        from_model_info({"qwen2.block_count": 28})
+    assert "--window" in str(e.value)
+
+
+def test_a_malformed_field_raises_geometry_error_not_a_raw_type_error():
+    # Task 5 catches GeometryError to fall back to --window; a raw TypeError
+    # would escape that handler entirely.
+    info = dict(QWEN7B, **{"qwen2.attention.head_count_kv": None})
+    with pytest.raises(GeometryError) as e:
+        from_model_info(info)
+    assert "malformed" in str(e.value)
+```
+
 ---
 
 ### Task 2: GGUF metadata reader
