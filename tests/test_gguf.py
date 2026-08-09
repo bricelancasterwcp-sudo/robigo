@@ -80,21 +80,21 @@ def _header(kv_count: int = 1) -> bytes:
     )
 
 
-def test_a_file_holding_only_the_magic_is_a_gguf_error(tmp_path):
+def test_a_file_holding_only_the_magic_is_a_gguf_error(tmp_path: Path):
     path = tmp_path / "m.gguf"
     path.write_bytes(b"GGUF")
     with pytest.raises(GGUFError):
         read_metadata(path)
 
 
-def test_a_header_truncated_mid_field_is_a_gguf_error(tmp_path):
+def test_a_header_truncated_mid_field_is_a_gguf_error(tmp_path: Path):
     path = tmp_path / "t.gguf"
     path.write_bytes(b"GGUF" + struct.pack("<I", 3) + b"\x01\x02")
     with pytest.raises(GGUFError):
         read_metadata(path)
 
 
-def test_a_count_promising_more_pairs_than_the_file_holds_is_a_gguf_error(tmp_path):
+def test_a_count_promising_more_pairs_than_the_file_holds_is_a_gguf_error(tmp_path: Path):
     """The interrupted-download shape: the header is intact and claims a
     pair, and the file simply stops."""
     path = tmp_path / "p.gguf"
@@ -104,7 +104,7 @@ def test_a_count_promising_more_pairs_than_the_file_holds_is_a_gguf_error(tmp_pa
     assert "truncated" in str(e.value)
 
 
-def test_a_key_string_running_past_the_end_does_not_silently_shorten(tmp_path):
+def test_a_key_string_running_past_the_end_does_not_silently_shorten(tmp_path: Path):
     """The value-level assertion. A short read used to decode cleanly, so the
     key came back as 'abc' instead of failing."""
     path = tmp_path / "s.gguf"
@@ -114,7 +114,7 @@ def test_a_key_string_running_past_the_end_does_not_silently_shorten(tmp_path):
     assert "truncated" in str(e.value)
 
 
-def test_an_absurd_string_length_is_refused_before_allocating(tmp_path):
+def test_an_absurd_string_length_is_refused_before_allocating(tmp_path: Path):
     path = tmp_path / "h.gguf"
     path.write_bytes(_header(1) + struct.pack("<Q", 2**63) + b"abc")
     with pytest.raises(GGUFError) as e:
@@ -122,11 +122,80 @@ def test_an_absurd_string_length_is_refused_before_allocating(tmp_path):
     assert "corrupt" in str(e.value)
 
 
-def test_an_absurd_kv_count_ends_at_the_first_missing_byte(tmp_path):
+def test_an_absurd_kv_count_ends_at_the_first_missing_byte(tmp_path: Path):
     path = tmp_path / "c.gguf"
     path.write_bytes(_header(2**40))
     with pytest.raises(GGUFError):
         read_metadata(path)
+
+
+def test_a_nested_array_is_refused_not_a_recursion_error(tmp_path: Path):
+    """12 bytes per level on the wire, so a small file can exhaust the
+    stack. RecursionError is not a GGUFError."""
+    path = tmp_path / "n.gguf"
+    nest = _s("deep") + struct.pack("<I", 9)
+    nest += b"".join(struct.pack("<I", 9) + struct.pack("<Q", 1) for _ in range(2000))
+    path.write_bytes(_header(1) + nest)
+    with pytest.raises(GGUFError) as e:
+        read_metadata(path)
+    assert "nested arrays" in str(e.value)
+
+
+def test_a_string_of_the_right_length_holding_invalid_utf8_is_refused(tmp_path: Path):
+    """Amendment 1 guarded the length; this guards the bytes. Silently
+    replacing them yields a mangled value and no error."""
+    path = tmp_path / "u.gguf"
+    path.write_bytes(_header(1) + struct.pack("<Q", 3) + b"\xff\xfe\xfd")
+    with pytest.raises(GGUFError) as e:
+        read_metadata(path)
+    assert "UTF-8" in str(e.value)
+
+
+class _CountingHandle:
+    """Wraps a binary handle and totals the bytes read through it. The cost
+    requirement is about reads, so the test has to observe reads; asserting
+    on the returned dict cannot distinguish a bounded reader from one that
+    slurps the file first."""
+
+    def __init__(self, handle):
+        self._handle = handle
+        self.read_bytes = 0
+
+    def read(self, size=-1):
+        data = self._handle.read(size)
+        self.read_bytes += len(data)
+        return data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._handle.close()
+        return False
+
+
+def test_the_reader_stops_at_the_end_of_the_metadata(tmp_path, monkeypatch):
+    path = tmp_path / "tail.gguf"
+    metadata = _header(1) + _kv_u32("qwen2.block_count", 28)
+    path.write_bytes(metadata + b"\x00" * (1024 * 1024))
+
+    opened = []
+    real_open = Path.open
+
+    def counting_open(self, *args, **kwargs):
+        handle = _CountingHandle(real_open(self, *args, **kwargs))
+        opened.append(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", counting_open)
+    info = read_metadata(path)
+
+    assert info == {"qwen2.block_count": 28}
+    assert opened, "read_metadata did not open the path via Path.open"
+    assert opened[0].read_bytes <= len(metadata), (
+        f"read {opened[0].read_bytes} bytes for {len(metadata)} bytes of "
+        f"metadata; the reader is not stopping at the metadata block"
+    )
 
 
 def _find_ollama_blobs_dir() -> Path | None:
@@ -171,8 +240,6 @@ def test_real_gguf_blobs_parse():
     GGUFError and GeometryError are both allowed to fail the test with the
     offending blob named. AssertionError is never caught here: a failed
     assertion must fail the test, not print a reassuring count."""
-    assert _ollama_blobs_dir is not None, "Blobs directory should exist if test runs"
-
     # Find GGUF blobs (filter by magic bytes) and take the largest handful.
     gguf_blobs = []
     for blob_path in _ollama_blobs_dir.glob("sha256-*"):

@@ -61,9 +61,14 @@ def _u64(handle: BinaryIO) -> int:
     return struct.unpack("<Q", _read_exactly(handle, 8, "u64"))[0]
 
 
-def _string(handle: BinaryIO) -> str:
-    length = _u64(handle)
-    return _read_exactly(handle, length, "string").decode("utf-8", errors="replace")
+def _string(handle: BinaryIO, what: str = "string") -> str:
+    raw = _read_exactly(handle, _u64(handle), what)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise GGUFError(
+            f"{what} is not valid UTF-8 ({raw[:24]!r}); the file is corrupt."
+        ) from exc
 
 
 def _value(handle: BinaryIO, kind: int) -> object:
@@ -71,6 +76,12 @@ def _value(handle: BinaryIO, kind: int) -> object:
         return _string(handle)
     if kind == _ARRAY:
         element = _u32(handle)
+        if element == _ARRAY:
+            raise GGUFError(
+                "nested arrays are not supported; no real GGUF model uses "
+                "them, and honouring them would let a crafted file recurse "
+                "until the stack is exhausted."
+            )
         return [_value(handle, element) for _ in range(_u64(handle))]
     if kind in _SCALARS:
         fmt, size = _SCALARS[kind]
