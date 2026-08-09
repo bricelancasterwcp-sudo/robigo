@@ -1,7 +1,9 @@
 # src/robigo/model/geometry.py
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
+from typing import Callable
 
 
 class GeometryError(Exception):
@@ -99,4 +101,94 @@ def from_model_info(info: dict) -> Geometry:
         key_dim=_as_int(f"{arch}.attention.key_length", key_dim),
         value_dim=_as_int(f"{arch}.attention.value_length", value_dim),
         training_ctx=_as_int(f"{arch}.context_length", need("context_length")),
+    )
+
+
+OVERHEAD_BYTES = 256 * 1024 * 1024
+"""A margin ON TOP OF the slack `weights_bytes` already carries, not an
+estimate of total overhead.
+
+Measured 2026-08-09 by loading two models at three context sizes each and
+fitting `/api/ps`'s `size_vram`: the fitted intercept sits 430 MiB (7B) to
+531 MiB (8B) BELOW the on-disk `size` that `weights_bytes` reports, because
+on-disk size overstates VRAM residency. Subtracting a full overhead estimate
+on top of that double-counts and refuses windows that genuinely fit — and
+context is the scarcest resource this project has.
+
+This 256 MiB covers the observed per-context-class step (qwen's 4096→8192
+interval cost 92 KiB/token against a 58 KiB/token steady state) plus
+allocator fragmentation. Under-reserving trades a clear refusal for an OOM
+mid-run, so the direction of the margin matters more than its precision."""
+
+
+@dataclass(frozen=True)
+class WindowPlan:
+    window: int
+    limited_by: str
+    free_vram: int | None
+    kv_per_token: int
+
+
+def free_vram_bytes(runner: Callable[[], str] | None = None) -> int | None:
+    """Free VRAM in bytes, or None when it cannot be measured — in which
+    case the caller must fall back to the training context or an explicit
+    --window rather than assuming a number."""
+    try:
+        text = (runner or _nvidia_smi)()
+    except Exception:
+        return None
+    try:
+        # nvidia-smi prints one line per GPU; robigo loads one model onto
+        # one device, so GPU 0's line is the deliberate choice here, not an
+        # oversight that silently ignores the other cards on a multi-GPU box.
+        return int(text.strip().split("\n")[0]) * 1024 * 1024
+    except ValueError:
+        return None
+
+
+def _nvidia_smi() -> str:
+    return subprocess.run(
+        ["nvidia-smi", "--query-gpu=memory.free",
+         "--format=csv,noheader,nounits"],
+        capture_output=True, text=True, check=True, timeout=15,
+    ).stdout
+
+
+def usable_window(
+    geometry: Geometry,
+    *,
+    free_vram: int | None,
+    weights_bytes: int,
+    kv_bits: int = 16,
+    overhead_bytes: int = OVERHEAD_BYTES,
+    user_cap: int | None = None,
+) -> WindowPlan:
+    """The largest context that fits, as the minimum of three independent
+    limits: the model's training context, what free VRAM allows once the
+    weights and a margin are subtracted, and an optional user cap. The
+    advertised context length is never the answer by itself — it is one of
+    these three inputs, and not always the binding one.
+
+    `free_vram` must be measured BEFORE the model is loaded. This function
+    subtracts `weights_bytes` from it, which is only correct when those
+    bytes are not already resident. If the model is already loaded (Ollama
+    keeps one hot for five minutes by default), `memory.free` already
+    excludes the weights, and subtracting them again understates the window
+    by roughly the size of the model. Callers own that ordering.
+    """
+    per_token = geometry.kv_bytes_per_token * kv_bits // 16
+    limits: list[tuple[int, str]] = [(geometry.training_ctx, "training_ctx")]
+    if free_vram is not None:
+        spare = free_vram - weights_bytes - overhead_bytes
+        # max(spare, 0) keeps this a well-defined (if useless) 0-token
+        # window instead of a negative one when VRAM is already exhausted.
+        limits.append((max(spare, 0) // per_token, "vram"))
+    if user_cap is not None:
+        limits.append((user_cap, "user_cap"))
+    window, limited_by = min(limits, key=lambda pair: pair[0])
+    return WindowPlan(
+        window=window,
+        limited_by=limited_by,
+        free_vram=free_vram,
+        kv_per_token=per_token,
     )

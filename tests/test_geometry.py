@@ -3,7 +3,17 @@ from __future__ import annotations
 
 import pytest
 
-from robigo.model.geometry import Geometry, GeometryError, from_model_info
+from robigo.model.geometry import (
+    OVERHEAD_BYTES,
+    Geometry,
+    GeometryError,
+    WindowPlan,
+    free_vram_bytes,
+    from_model_info,
+    usable_window,
+)
+
+GIB = 1024**3
 
 # Verbatim shapes of Ollama /api/show model_info, 2026-08-09.
 QWEN7B = {
@@ -139,3 +149,82 @@ def test_an_empty_per_layer_kv_list_says_it_is_empty():
     with pytest.raises(GeometryError) as e:
         from_model_info(info)
     assert "empty list" in str(e.value)
+
+
+def test_the_training_context_is_never_exceeded_even_with_vram_to_spare():
+    # llama-server refuses a slot larger than the model was trained on,
+    # and Ollama accepts it silently and rope-degrades (law 1).
+    plan = usable_window(from_model_info(QWEN7B), free_vram=15 * GIB,
+                         weights_bytes=8 * GIB)
+    assert plan.window == 32768
+    assert plan.limited_by == "training_ctx"
+
+
+def test_vram_binds_when_the_cache_is_expensive():
+    """codegemma costs 448 KiB/token, so 896 MiB of spare VRAM buys far less
+    than its 8192-token training context. The report must name vram as the
+    binding constraint -- a user asking why their window is small needs that
+    answer without reading the code."""
+    geometry = from_model_info(CODEGEMMA)
+    free, weights = 10 * GIB + GIB // 8, 9 * GIB
+    # 448 KiB/token is the measured figure from the spec's table, restated
+    # here on purpose so this does not depend on the property under test.
+    expected = (free - weights - OVERHEAD_BYTES) // (448 * 1024)
+    plan = usable_window(geometry, free_vram=free, weights_bytes=weights)
+    assert plan.limited_by == "vram"
+    assert plan.window == expected == 2048
+    assert plan.window < geometry.training_ctx
+
+
+def test_kv_quantization_buys_window():
+    """8-bit KV halves the cache, so it exactly doubles the window while vram
+    is still binding. This is the cheapest rung on Task 4's ladder."""
+    args = dict(free_vram=10 * GIB + GIB // 8, weights_bytes=9 * GIB)
+    at_16 = usable_window(from_model_info(CODEGEMMA), **args, kv_bits=16)
+    at_8 = usable_window(from_model_info(CODEGEMMA), **args, kv_bits=8)
+    assert at_16.window == 2048 and at_8.window == 4096
+    assert at_8.window == at_16.window * 2
+    assert at_8.limited_by == "vram"
+
+
+def test_a_user_cap_wins_and_is_reported():
+    plan = usable_window(from_model_info(QWEN7B), free_vram=15 * GIB,
+                         weights_bytes=8 * GIB, user_cap=4096)
+    assert (plan.window, plan.limited_by) == (4096, "user_cap")
+
+
+def test_an_unmeasurable_vram_returns_a_training_ctx_plan():
+    plan = usable_window(from_model_info(QWEN7B), free_vram=None,
+                         weights_bytes=8 * GIB)
+    assert (plan.window, plan.limited_by) == (32768, "training_ctx")
+    assert plan.free_vram is None
+
+
+def test_free_vram_parses_nvidia_smi():
+    assert free_vram_bytes(lambda: "5759\n") == 5759 * 1024 * 1024
+
+
+def test_free_vram_returns_none_when_the_tool_is_absent():
+    def boom() -> str:
+        raise FileNotFoundError("nvidia-smi")
+
+    assert free_vram_bytes(boom) is None
+
+
+def test_window_plan_is_frozen():
+    plan = usable_window(from_model_info(QWEN7B), free_vram=15 * GIB,
+                         weights_bytes=8 * GIB)
+    assert isinstance(plan, WindowPlan)
+    with pytest.raises(Exception):
+        plan.window = 99  # type: ignore[misc]
+
+
+def test_exhausted_vram_yields_a_zero_window_attributed_to_vram():
+    # weights_bytes alone already consumes all of free_vram, so
+    # max(spare, 0) // per_token is 0 -- a legitimate min() winner that
+    # must not be confused with an unmeasured (free_vram=None) plan, and
+    # must not go negative if the max(spare, 0) floor were ever dropped.
+    plan = usable_window(from_model_info(QWEN7B), free_vram=8 * GIB,
+                         weights_bytes=8 * GIB)
+    assert (plan.window, plan.limited_by) == (0, "vram")
+    assert plan.free_vram == 8 * GIB
