@@ -30,6 +30,63 @@
 | `src/robigo/context/scope.py` | *modified* — `Scope.degrade(step)` |
 | `src/robigo/cli.py` | *modified* — `--window auto` becomes the default |
 
+## Verified before execution (2026-08-09)
+
+Plan 01's dominant defect was asserting specifics about external formats that
+were never checked. This plan had two such assertions; both were tested against
+real files and a real daemon before any task was dispatched. One held, one did
+not.
+
+**The GGUF reader (Task 2) is correct as written.** Transcribed verbatim and run
+against the blob store: 14 of 14 GGUF blobs parsed with zero failures, and it
+independently reproduced 5 of the 6 geometries `/api/show` reports — qwen2.5-coder:7b
+(56 KiB/tok), granite-code:8b (144), codegemma:7b (448), qwen3:14b (160),
+phi4:14b (200). The sixth simply is not among the largest blobs. It also
+confirmed the 192 KiB/token figure the design spec §3.1 estimated for the
+14B class.
+
+**`attention.key_length` is absent for `qwen2`**, so `from_model_info`'s
+`embedding_length / head_count` fallback is **load-bearing, not a nicety** —
+without it the recommended model class yields no head dimension at all. Task 1's
+`test_head_dim_falls_back_to_embedding_over_heads` is therefore pinning real
+behaviour, not a hypothetical.
+
+**`kv_bytes_per_token` from geometry is right; `OVERHEAD_BYTES = 700MB` is
+not.** Measured by loading each model at three context sizes and reading
+`/api/ps`'s `size_vram`:
+
+| model | ctx points | marginal KiB/token | vs geometric |
+|---|---|---|---|
+| qwen2.5-coder:7b-q8 | 4096 / 8192 / 16384 | 92.0 then **58.0** | 1.64× then **1.04×** |
+| granite-code:8b-q8 | 1024 / 2048 / 4096 | **145.0** then **145.0** | **1.01×** both |
+
+Two corrections follow.
+
+1. **The geometric figure is accurate at the margin** (1.01–1.04×). An earlier
+   two-point measurement suggested 1.24× and was wrong — an artifact of the
+   step described below. Keep the arithmetic exactly as Task 1 specifies.
+2. **On-disk size overstates VRAM residency**, so subtracting a further 700MB
+   double-counts. Fitted intercepts against `/api/tags` `size`:
+
+   | model | fitted intercept | on-disk `size` | difference |
+   |---|---|---|---|
+   | qwen2.5-coder:7b | 7,293 MiB | 7,723 MiB | −430 MiB |
+   | granite-code:8b | 8,275 MiB | 8,806 MiB | −531 MiB |
+
+   `weights_bytes` from `/api/tags` already carries ~480 MiB of slack.
+   **`OVERHEAD_BYTES` becomes `256 * 1024 * 1024`**, and its docstring says
+   why: it is a margin *on top of* that measured slack, sized to cover the
+   per-context-class step below and allocator fragmentation — not an estimate
+   of total overhead, which would double-count. Task 3's test that asserts on
+   `OVERHEAD_BYTES` uses the constant rather than a literal, so it follows.
+
+**There is a step between context classes.** qwen's 4096→8192 interval cost
+92 KiB/token marginal against a 58 KiB/token steady state, so something is
+allocated once when crossing into a larger class. A linear model therefore
+under-predicts near the low end. This is the reason the arithmetic here is a
+**hypothesis** and plan 03's stage 0 probes the window by actually loading it:
+where the two disagree, the probe wins.
+
 Reference measurements to test against, taken from local models on 2026-08-09:
 
 | model | layers | kv heads | head dim | training ctx | KiB/token |
@@ -464,10 +521,21 @@ Expected: FAIL — `ImportError: cannot import name 'usable_window'`
 import subprocess
 from typing import Callable
 
-OVERHEAD_BYTES = 700 * 1024 * 1024
-"""Compute buffers, CUDA context, and fragmentation. Measured slack, not
-a guess to be tuned away: under-reserving here trades a clear refusal for
-an OOM mid-run."""
+OVERHEAD_BYTES = 256 * 1024 * 1024
+"""A margin ON TOP OF the slack `weights_bytes` already carries, not an
+estimate of total overhead.
+
+Measured 2026-08-09 by loading two models at three context sizes each and
+fitting `/api/ps`'s `size_vram`: the fitted intercept sits 430 MiB (7B) to
+531 MiB (8B) BELOW the on-disk `size` that `weights_bytes` reports, because
+on-disk size overstates VRAM residency. Subtracting a full overhead estimate
+on top of that double-counts and refuses windows that genuinely fit — and
+context is the scarcest resource this project has.
+
+This 256 MiB covers the observed per-context-class step (qwen's 4096→8192
+interval cost 92 KiB/token against a 58 KiB/token steady state) plus
+allocator fragmentation. Under-reserving trades a clear refusal for an OOM
+mid-run, so the direction of the margin matters more than its precision."""
 
 
 @dataclass(frozen=True)
