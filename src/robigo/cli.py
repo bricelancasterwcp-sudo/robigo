@@ -10,7 +10,15 @@ from robigo.loop import OUTCOMES, run
 from robigo.model.client import LlamaCppClient, ModelClient, OllamaClient
 from robigo.record import new_recorder
 
-_STOP = ("\nread ", "\nfind ", "\nrun\n", "\ndone ")
+# No stop sequences. They were matched against the whole stream, payload
+# included, and all four of the old ones ("\nread ", "\nfind ", "\nrun\n",
+# "\ndone ") match ordinary Python at column 0 -- `done = False`,
+# `read = open(path)`, a bare `run`. Generation then stopped mid-payload with
+# finish_reason "stop", so the truncation veto could not fire and the reply
+# reached the parser as an unclosed fence, every turn, forever, for that file.
+# `verbs._reject_second_action` already refuses a multi-action reply, so the
+# stops were a token-saving optimisation; spec 2.3's Level 0 sanctions
+# unconstrained decoding explicitly.
 
 # EX_USAGE from sysexits.h, deliberately outside the five contract codes.
 _EX_USAGE = 64
@@ -23,7 +31,6 @@ def build_client(args: argparse.Namespace) -> ModelClient:
         window=args.window,
         num_predict=args.num_predict,
         host=args.host or "",
-        stop=_STOP,
     )
 
 

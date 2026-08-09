@@ -19,6 +19,15 @@ def test_backend_selection_and_window_pass_through():
     assert isinstance(llama, LlamaCppClient) and llama.window == 8192
 
 
+def test_no_stop_sequence_can_cut_a_payload():
+    # Every stop sequence robigo used to send ("\nread ", "\nfind ",
+    # "\nrun\n", "\ndone ") matches ordinary Python at column 0, and a cut
+    # payload arrives as an unclosed fence with finish_reason "stop" -- so
+    # the truncation veto never fires.
+    for backend in ("ollama", "llamacpp"):
+        assert build_client(_args(backend=backend, model="m")).stop == []
+
+
 def _args(**kw):
     import argparse
 

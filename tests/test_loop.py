@@ -70,6 +70,29 @@ def test_a_truncated_generation_is_never_applied(repo: Path):
     assert (repo / "src" / "fog.py").read_text() == before
 
 
+def test_a_payload_containing_a_verb_at_column_zero_is_applied(repo: Path):
+    # `done = False` at column 0 is exactly what the old "\ndone " stop
+    # sequence cut, mid-payload, with finish_reason "stop".
+    payload = """patch src/fog.py
+```python
+<<<<<<< SEARCH
+def radius(t):
+    return t
+=======
+done = False
+
+
+def radius(t):
+    return t * 2
+>>>>>>> REPLACE
+```
+"""
+    result = run("fix", repo, _ScriptedClient(payload),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert result.outcome == "pass"
+    assert "done = False" in (repo / "src" / "fog.py").read_text()
+
+
 def test_a_parse_failure_is_fed_back_and_costs_a_turn(repo: Path):
     client = _ScriptedClient("edit src/fog.py", FIX)
     result = run("fix", repo, client, PythonAdapter(python=sys.executable),
