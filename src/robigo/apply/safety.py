@@ -64,15 +64,10 @@ def start_branch(root: Path, slug: str) -> str:
     return branch
 
 
-def snapshot(root: Path, message: str, scope_files: Sequence[Path] = ()) -> None:
-    """Commit whatever is in the tree BEFORE the first patch, dirty or not,
-    so a pre-existing uncommitted change in a non-ignored path cannot be
-    lost.
-
-    The guarantee has one hole, and it is refused rather than papered over:
-    git will not stage an ignored file, so an ignored file in scope would be
-    patched with no recoverable pre-image.
-    """
+def refuse_ignored(root: Path, scope_files: Sequence[Path]) -> None:
+    """A precondition, not part of committing: git will not stage an ignored
+    file, so an ignored file in scope would be patched with no recoverable
+    pre-image. Checked before a branch exists, so refusing costs nothing."""
     ignored = _ignored(root, scope_files)
     if ignored:
         raise RefusedError(
@@ -80,6 +75,12 @@ def snapshot(root: Path, message: str, scope_files: Sequence[Path] = ()) -> None
             f"cannot snapshot its pre-patch state and could not undo a change "
             f"to it. Un-ignore it, or narrow --scope to exclude it."
         )
+
+
+def snapshot(root: Path, message: str) -> None:
+    """Commit whatever is in the tree BEFORE the first patch, dirty or not,
+    so a pre-existing uncommitted change in a non-ignored path cannot be
+    lost. The ignored-path hole is refused separately by `refuse_ignored`."""
     _commit(root, message, ["-A"])
 
 

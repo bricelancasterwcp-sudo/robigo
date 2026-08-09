@@ -84,7 +84,7 @@ def test_repeating_an_identical_failing_patch_stalls(repo: Path):
     result = run("fix", repo, _ScriptedClient(miss, miss, miss, miss),
                  PythonAdapter(python=sys.executable),
                  codec="search_replace", stall_cap=3)
-    assert (result.outcome, result.exit_code) == ("stalled", OUTCOMES["stalled"])
+    assert (result.outcome, result.exit_code) == ("stalled", 1)
 
 
 def test_the_turn_cap_ends_the_run(repo: Path):
@@ -168,3 +168,67 @@ def test_only_the_patched_file_is_committed(repo: Path):
         cwd=repo, capture_output=True, text=True,
     ).stdout.split()
     assert changed == ["src/fog.py"]
+
+
+def test_a_bare_read_does_not_crash_the_run(repo: Path):
+    result = run("fix", repo, _ScriptedClient("read", FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert result.outcome == "pass"
+
+
+def test_reading_a_binary_file_does_not_crash_the_run(repo: Path):
+    (repo / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe")
+    result = run("fix", repo, _ScriptedClient("read logo.png", FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert result.outcome == "pass"
+
+
+def test_a_bare_find_does_not_crash_the_run(repo: Path):
+    result = run("fix", repo, _ScriptedClient("find", FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert result.outcome == "pass"
+
+
+def test_an_ignored_scope_file_is_refused_before_any_branch_exists(repo: Path):
+    (repo / ".gitignore").write_text("src/fog.py\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "ignore"], cwd=repo, check=True)
+    result = run("fix", repo, _ScriptedClient(FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert (result.outcome, result.exit_code) == ("refused", 3)
+    branches = subprocess.run(
+        ["git", "branch", "--format=%(refname:short)"], cwd=repo,
+        capture_output=True, text=True,
+    ).stdout.split()
+    assert not any(name.startswith("robigo/") for name in branches)
+
+
+def test_a_failure_after_branching_reports_the_branch(repo: Path, monkeypatch):
+    import robigo.loop as loop_module
+
+    def boom(*args, **kwargs):
+        raise subprocess.CalledProcessError(128, "git")
+
+    monkeypatch.setattr(loop_module, "snapshot", boom)
+    result = run("fix", repo, _ScriptedClient(FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert result.outcome == "infrastructure"
+    assert result.branch is not None and result.branch.startswith("robigo/")
+
+
+def test_a_mid_loop_adapter_failure_is_infrastructure(repo: Path):
+    from robigo.adapters.base import AdapterError
+
+    adapter = PythonAdapter(python=sys.executable)
+    real_run, calls = adapter.run, {"n": 0}
+
+    def flaky(root, filt):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise AdapterError("pytest vanished")
+        return real_run(root, filt)
+
+    adapter.run = flaky  # type: ignore[method-assign]
+    result = run("fix", repo, _ScriptedClient(FIX), adapter, codec="search_replace")
+    assert (result.outcome, result.exit_code) == ("infrastructure", 4)

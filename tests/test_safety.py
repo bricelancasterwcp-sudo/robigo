@@ -11,6 +11,7 @@ from robigo.apply.safety import (
     check_target,
     commit_all,
     ensure_repo,
+    refuse_ignored,
     snapshot,
     start_branch,
 )
@@ -108,13 +109,14 @@ def test_an_ignored_scope_file_is_refused(repo: Path):
     (repo / "secret.py").write_text("x = 1\n")
     start_branch(repo, "fog")
     with pytest.raises(RefusedError) as e:
-        snapshot(repo, "robigo: snapshot", [repo / "secret.py"])
+        refuse_ignored(repo, [repo / "secret.py"])
     assert "ignored by git" in str(e.value)
 
 
 def test_snapshot_with_no_ignored_scope_files_proceeds(repo: Path):
     start_branch(repo, "fog")
-    snapshot(repo, "robigo: snapshot", [repo / "src.py"])
+    refuse_ignored(repo, [repo / "src.py"])
+    snapshot(repo, "robigo: snapshot")
     assert subprocess.run(
         ["git", "status", "--porcelain"], cwd=repo,
         capture_output=True, text=True,

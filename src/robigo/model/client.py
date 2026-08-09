@@ -6,7 +6,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Callable, Sequence
+from typing import Callable, Protocol, Sequence
 
 OLLAMA_HOST = "http://127.0.0.1:11434"
 LLAMACPP_HOST = "http://127.0.0.1:8081"
@@ -120,6 +120,16 @@ class _HTTPClient:
             if attempt < self.retries - 1:
                 self._sleep(self.backoff_s * (2**attempt))
         raise ModelError(f"{self.model}: {self.retries} attempts failed: {last}")
+
+
+class ModelClient(Protocol):
+    """What the loop needs from a model. Both concrete clients below satisfy
+    it structurally, and so does any scripted stand-in used in tests."""
+
+    model: str
+    window: int
+
+    def generate(self, prompt: str, *, seed: int) -> Generation: ...
 
 
 class OllamaClient(_HTTPClient):

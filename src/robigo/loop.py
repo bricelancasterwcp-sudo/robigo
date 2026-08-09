@@ -10,10 +10,20 @@ from robigo.action.codec import PatchError
 from robigo.action.verbs import ActionParseError, parse
 from robigo.adapters.base import Adapter, AdapterError
 from robigo.apply.patch import apply_patch
-from robigo.apply.safety import RefusedError, commit_all, ensure_repo, snapshot, start_branch
+from robigo.apply.safety import (
+    RefusedError,
+    commit_all,
+    ensure_repo,
+    refuse_ignored,
+    snapshot,
+    start_branch,
+)
 from robigo.context.render import Turn, render
-from robigo.context.scope import ScopeError, resolve
-from robigo.model.client import ContextOverflowError, ModelError
+from robigo.context.scope import Scope, ScopeError, resolve
+from robigo.model.client import ContextOverflowError, Generation, ModelClient, ModelError
+
+_READ_CAP = 4000
+_SKIP = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__", ".robigo"})
 
 OUTCOMES: dict[str, int] = {
     "pass": 0,
@@ -40,7 +50,7 @@ def _result(outcome: str, turns: int, branch: str | None, detail: str) -> RunRes
 def run(
     task: str,
     root: Path,
-    client,
+    client: ModelClient,
     adapter: Adapter,
     *,
     codec: str,
@@ -49,6 +59,7 @@ def run(
     use_git: bool = True,
     stall_cap: int = 3,
 ) -> RunResult:
+    branch: str | None = None
     try:
         if use_git:
             ensure_repo(root)
@@ -60,21 +71,26 @@ def run(
                 "interface."
             )
         scope = resolve(diag, adapter, root)
-        branch = None
         if use_git:
+            # Checked before a branch exists: an ignored scope file is a
+            # refusal, not an infrastructure failure, and it must not leave
+            # a `robigo/*` branch behind for a run that never really started.
+            refuse_ignored(root, scope.full)
             branch = start_branch(root, _slug(task))
-            snapshot(root, "robigo: snapshot before first patch", scope.full)
+            snapshot(root, "robigo: snapshot before first patch")
     except (RefusedError, ScopeError) as exc:
-        return _result("refused", 0, None, str(exc))
+        return _result("refused", 0, branch, str(exc))
     except (ModelError, AdapterError) as exc:
         # AdapterError means the project's tests cannot be run at all --
         # infrastructure, never a model result (Task 4's amendment).
-        return _result("infrastructure", 0, None, str(exc))
+        return _result("infrastructure", 0, branch, str(exc))
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
         # git can be missing from PATH entirely, or any of the git helpers
         # above (ensure_repo, start_branch, snapshot) can fail -- an
-        # infrastructure problem, never a model result.
-        return _result("infrastructure", 0, None, f"git failed: {exc}")
+        # infrastructure problem, never a model result. `branch` may already
+        # be set if the failure came from `snapshot`, and that must be
+        # reported honestly rather than claimed as None.
+        return _result("infrastructure", 0, branch, f"git failed: {exc}")
 
     history: tuple[Turn, ...] = ()
     seen: set[str] = set()
@@ -108,7 +124,7 @@ def run(
                 if target is not None:
                     commit_all(root, f"robigo: {action_text}", [target])
                 diag = adapter.run(root, None)
-            except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            except (subprocess.CalledProcessError, FileNotFoundError, AdapterError) as exc:
                 return _result("infrastructure", turn, branch, f"git failed: {exc}")
             if diag.passed:
                 return _result("pass", turn, branch, "tests pass")
@@ -131,7 +147,14 @@ def run(
     return _result("stalled", turn_cap, branch, f"turn cap {turn_cap} reached")
 
 
-def _take_turn(gen, root, scope, adapter, codec, allow_test_edits):
+def _take_turn(
+    gen: Generation,
+    root: Path,
+    scope: Scope,
+    adapter: Adapter,
+    codec: str,
+    allow_test_edits: bool,
+) -> tuple[str, str, bool, Path | None]:
     """→ (action label, result text fed back, whether a file changed, the
     path written or None). Only the `patch` success path has a target;
     every other return -- including a bare `run` -- passes None."""
@@ -165,20 +188,33 @@ def _take_turn(gen, root, scope, adapter, codec, allow_test_edits):
 
 
 def _read(root: Path, arg: str) -> str:
-    path = (root / arg.split()[0]).resolve()
+    """Model-facing text, never an exception. A bare `read` and a `read` of a
+    binary file are both ordinary model output, not crashes."""
+    parts = arg.split()
+    if not parts:
+        return "read needs a path, e.g. `read src/fog.py`"
+    path = (root / parts[0]).resolve()
     if not path.is_relative_to(root.resolve()) or not path.is_file():
-        return f"cannot read '{arg}': no such file in this repository"
-    return path.read_text(encoding="utf-8")[:4000]
+        return f"cannot read '{parts[0]}': no such file in this repository"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"cannot read '{parts[0]}': {exc.strerror}"
+    return text[:_READ_CAP] + "\n<truncated>\n" if len(text) > _READ_CAP else text
 
 
 def _find(root: Path, symbol: str) -> str:
+    if not symbol:
+        return "find needs a symbol, e.g. `find computeRadius`"
     hits: list[str] = []
     for path in sorted(root.rglob("*.py")):
-        if ".git" in path.parts:
+        if _SKIP.intersection(path.parts):
             continue
-        for number, line in enumerate(
-            path.read_text(encoding="utf-8", errors="replace").split("\n"), 1
-        ):
+        try:
+            body = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for number, line in enumerate(body.split("\n"), 1):
             if symbol in line:
                 hits.append(f"{path.relative_to(root)}:{number}")
                 if len(hits) >= 20:
