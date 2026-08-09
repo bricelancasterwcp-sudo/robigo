@@ -1184,6 +1184,71 @@ bytes and subtracting them again understates the window by roughly the size
 of the model. Task 5 owns that ordering; state the precondition in
 `usable_window`'s docstring here so the caller cannot get it wrong silently.
 
+#### Amendment (ruled 2026-08-09): two of these tests contradict their own fixture
+
+The implementer reported BLOCKED rather than guessing, and was right.
+`test_vram_binds_when_the_cache_is_expensive` and
+`test_kv_quantization_buys_window` cannot pass as written, because the numbers
+in them do not produce the outcome they assert. Verified by calculation, not
+by hand:
+
+    CODEGEMMA is 448 KiB/token with training_ctx 8192
+    spare  = 13 GiB - 9 GiB - 256 MiB = 3.75 GiB
+    vram   = 3.75 GiB // 448 KiB      = 8777 tokens
+    min(8192 training_ctx, 8777 vram)  -> 8192, limited_by "training_ctx"
+
+So the vram limit lands *above* the training context, `training_ctx` binds, and
+both `limited_by == "vram"` and `window < 8192` fail. The fixture was fine; my
+chosen `free_vram` was.
+
+Use `free_vram = 10 * GIB + GIB // 8` (10.125 GiB), which leaves 896 MiB of
+spare and divides **exactly**: 2048 tokens at 16-bit KV and 4096 at 8-bit, with
+no floor truncation, so the doubling is exact rather than approximate.
+
+Derive the expected window in the test from the **measured** 448 KiB/token
+figure rather than from `geometry.kv_bytes_per_token`. Restating it
+independently is the point: a test that recomputes the expectation with the
+same property it is testing would pass even if that property were wrong, and a
+wrong bytes-per-token is the failure this whole plan exists to prevent.
+
+```python
+def test_vram_binds_when_the_cache_is_expensive():
+    """codegemma costs 448 KiB/token, so 896 MiB of spare VRAM buys far less
+    than its 8192-token training context. The report must name vram as the
+    binding constraint -- a user asking why their window is small needs that
+    answer without reading the code."""
+    geometry = from_model_info(CODEGEMMA)
+    free, weights = 10 * GIB + GIB // 8, 9 * GIB
+    # 448 KiB/token is the measured figure from the spec's table, restated
+    # here on purpose so this does not depend on the property under test.
+    expected = (free - weights - OVERHEAD_BYTES) // (448 * 1024)
+    plan = usable_window(geometry, free_vram=free, weights_bytes=weights)
+    assert plan.limited_by == "vram"
+    assert plan.window == expected == 2048
+    assert plan.window < geometry.training_ctx
+
+
+def test_kv_quantization_buys_window():
+    """8-bit KV halves the cache, so it exactly doubles the window while vram
+    is still binding. This is the cheapest rung on Task 4's ladder."""
+    args = dict(free_vram=10 * GIB + GIB // 8, weights_bytes=9 * GIB)
+    at_16 = usable_window(from_model_info(CODEGEMMA), **args, kv_bits=16)
+    at_8 = usable_window(from_model_info(CODEGEMMA), **args, kv_bits=8)
+    assert at_16.window == 2048 and at_8.window == 4096
+    assert at_8.window == at_16.window * 2
+    assert at_8.limited_by == "vram"
+```
+
+The `== 2048` and `== 4096` literals are deliberate alongside the derived
+expression: they pin `OVERHEAD_BYTES` at its measured 256 MiB, so
+re-measuring that constant fails here loudly instead of quietly shifting every
+window the tool reports.
+
+**Keep the two supplementary tests the implementer added** — a frozen-`WindowPlan`
+check and the exhausted-VRAM zero-window case. Both cover constraints this plan
+states in prose and never tested, which is the gap that has cost this plan the
+most.
+
 ---
 
 ### Task 4: The budget and the degradation ladder
