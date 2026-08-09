@@ -11,6 +11,7 @@ from robigo.adapters.base import AdapterError, DIAGNOSTIC_CHAR_CAP, Diagnostic
 _FAIL_LINE = re.compile(r"^(?P<file>[^\s:][^:]*\.py):(?P<line>\d+):\s*(?P<msg>.*)$")
 _ERROR_LINE = re.compile(r"^E\s+(?P<msg>\S.*)$")
 _EXCLUDED = ("site-packages", "dist-packages", "/.venv/", "/venv/")
+_FRAME_TAIL = re.compile(r"^in\s")
 _TIMEOUT_S = 300
 
 
@@ -79,8 +80,11 @@ class PythonAdapter:
             summary = self._error_summary(lines, 0)
             return Diagnostic(False, None, None, summary or "tests failed", raw)
         index, rel, number, tail = anchor
-        summary = self._error_summary(lines, index)
-        return Diagnostic(False, rel, number, summary or tail, raw)
+        if tail and not _FRAME_TAIL.match(tail):
+            message = tail
+        else:
+            message = self._error_summary(lines, index) or tail or "tests failed"
+        return Diagnostic(False, rel, number, message, raw)
 
     def _anchor(self, lines: list[str], root: Path) -> tuple[int, str, int, str] | None:
         for index, line in enumerate(lines):

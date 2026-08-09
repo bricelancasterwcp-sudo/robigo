@@ -123,12 +123,14 @@ def test_a_real_file_at_an_impossible_line_is_not_an_anchor(tmp_path: Path):
     assert adapter._in_repo("short.py", tmp_path, 999) is None
 
 
-def test_the_summary_is_paired_with_the_anchor_not_the_first_failure():
-    lines = [
-        "E   AssertionError: an earlier unrelated failure",
-        "tests/test_b.py:2: AssertionError",
-        "E   AssertionError: the failure that belongs here",
-    ]
-    assert PythonAdapter()._error_summary(lines, 1) == (
-        "AssertionError: the failure that belongs here"
+def test_a_multi_failure_run_pairs_the_message_with_its_own_anchor(repo: Path):
+    (repo / "tests" / "test_fog.py").write_text(
+        "def test_a():\n    assert 1 == 2, 'FAILURE-A'\n"
     )
+    (repo / "tests" / "test_grid.py").write_text(
+        "def test_b():\n    assert 3 == 4, 'FAILURE-B'\n"
+    )
+    diag = PythonAdapter(python=sys.executable).run(repo, None)
+    assert diag.file == "tests/test_fog.py"
+    assert "FAILURE-A" in diag.message
+    assert "FAILURE-B" not in diag.message
