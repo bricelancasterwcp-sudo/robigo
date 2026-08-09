@@ -42,6 +42,27 @@ def _shaped(value: object, empty: _Shape) -> _Shape:
     return value if isinstance(value, type(empty)) else empty
 
 
+def _decode(raw: bytes, endpoint: str) -> object:
+    """A response body, parsed as JSON -- or a `GeometryError` naming which
+    endpoint and why, never a raw `json.JSONDecodeError`. A body that is not
+    JSON at all (a proxy or captive-portal error page, a misconfigured host
+    serving an HTML error page instead of the daemon) is the exact scenario
+    `_shaped`'s own docstring cites as its justification, arriving one step
+    earlier: before the envelope's SHAPE can be wrong, the parse itself can
+    fail outright. `json.JSONDecodeError` is a `ValueError` subclass, so it
+    would otherwise pass straight through `cli.main`'s `except
+    (GeometryError, OSError)` uncaught -- the same escape item 1 closed for
+    `GGUFError`, one call earlier in the chain."""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise GeometryError(
+            f"{endpoint} did not return valid JSON ({exc}); the daemon "
+            f"response is malformed, so the usable window is unknown. Pass "
+            f"--window explicitly."
+        ) from exc
+
+
 def _show(model: str, host: str) -> object:
     """Returns whatever `json.loads` hands back -- NOT `dict`. A `/api/show`
     body is not guaranteed to be a JSON object: a proxy, a captive portal,
@@ -55,7 +76,7 @@ def _show(model: str, host: str) -> object:
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read())
+        return _decode(resp.read(), "/api/show")
 
 
 def _tags(host: str) -> object:
@@ -70,7 +91,7 @@ def _tags(host: str) -> object:
     before calling `.get` on it."""
     req = urllib.request.Request(f"{(host or OLLAMA_HOST).rstrip('/')}/api/tags")
     with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read())
+        return _decode(resp.read(), "/api/tags")
 
 
 def _no_gguf_message(what: str, user_cap: int | None) -> str:

@@ -434,8 +434,13 @@ def test_a_null_models_list_raises_geometry_error_not_type_error(monkeypatch):
     monkeypatch.setattr("robigo.model.detect._tags",
                         lambda host: {"models": None})
     with pytest.raises(GeometryError) as e:
-        weights_bytes("ollama", "m", "", None)
-    assert "m" in str(e.value)
+        weights_bytes("ollama", "zzyzx-distinctive-model", "", None)
+    # Item 10 (round 2, ruled 2026-08-09): a single-letter fixture name
+    # ("m") is a substring of nearly any English error message, so
+    # `"m" in str(e.value)` added nothing beyond the `pytest.raises`
+    # itself. A distinctive name actually checks the message names the
+    # model that was asked for.
+    assert "zzyzx-distinctive-model" in str(e.value)
 
 
 def test_an_infinite_tags_size_raises_geometry_error_not_overflow_error(monkeypatch):
@@ -447,11 +452,13 @@ def test_an_infinite_tags_size_raises_geometry_error_not_overflow_error(monkeypa
     weights-size conversion did not."""
     monkeypatch.setattr(
         "robigo.model.detect._tags",
-        lambda host: {"models": [{"name": "m", "size": float("inf")}]},
+        lambda host: {"models": [
+            {"name": "zzyzx-distinctive-model", "size": float("inf")}
+        ]},
     )
     with pytest.raises(GeometryError) as e:
-        weights_bytes("ollama", "m", "", None)
-    assert "m" in str(e.value)
+        weights_bytes("ollama", "zzyzx-distinctive-model", "", None)
+    assert "zzyzx-distinctive-model" in str(e.value)
 
 
 # --- Round 2 (ruled 2026-08-09): the envelope itself, not just its fields --
@@ -491,8 +498,88 @@ def test_a_non_dict_tags_envelope_raises_geometry_error_not_attribute_error(
     monkeypatch.setattr("robigo.model.detect._tags",
                         lambda host: bad_envelope)
     with pytest.raises(GeometryError) as e:
-        weights_bytes("ollama", "m", "", None)
-    assert "m" in str(e.value)
+        weights_bytes("ollama", "zzyzx-distinctive-model", "", None)
+    # Item 10 (round 2, ruled 2026-08-09): distinctive name, see the note
+    # on test_a_null_models_list_raises_geometry_error_not_type_error.
+    assert "zzyzx-distinctive-model" in str(e.value)
+
+
+# --- Item 8 (round 2, ruled 2026-08-09): a body that never parses at all --
+#
+# Round 1 and round 2's `_shaped` guards both assumed `json.loads` itself
+# succeeded. It does not always: a proxy or captive-portal error page, or a
+# misconfigured host, can return a body that is not JSON at all, and
+# `json.loads` raises `json.JSONDecodeError` -- a `ValueError` subclass --
+# which used to pass straight through `cli.main`'s
+# `except (GeometryError, OSError)` uncaught. Item 2's enumeration traced
+# everything downstream of `_show`/`_tags` RETURNING and never asked what
+# happens when they RAISE instead.
+
+
+class _NonJSONResponse:
+    """A urlopen response whose body is not JSON -- an HTML error page from
+    a proxy or captive portal, or any misconfigured host. Real enough to
+    exercise `_show`'s/`_tags`'s own `json.loads` call for real, rather
+    than mocking `_show`/`_tags` themselves (which would test `_shaped`
+    again, not this)."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> "_NonJSONResponse":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+def test_cli_non_json_show_body_reaches_the_contract_not_a_traceback(
+    monkeypatch, tmp_path: Path, capsys
+):
+    """Mirrors test_cli_corrupt_gguf_reaches_the_contract_not_a_traceback
+    (item 1): a real malformed body reaches the real CLI, not a mock of
+    json.loads. `urllib.request.urlopen` is faked (no real network call:
+    still offline), but `_show`'s own `json.loads(resp.read())` call runs
+    for real and really raises `json.JSONDecodeError`."""
+    from robigo.cli import main
+    import urllib.request
+
+    monkeypatch.setattr("robigo.model.detect.free_vram_bytes", lambda: None)
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda req, timeout=60: _NonJSONResponse(
+            b"<html><body>captive portal login required</body></html>"
+        ),
+    )
+    code = main(["--root", str(tmp_path), "--model", "m", "fix"])
+    assert code == 4  # infrastructure: GeometryError caught by cli.main
+    out = capsys.readouterr().out
+    assert "cannot determine the usable window" in out
+    assert "/api/show" in out
+    assert "valid JSON" in out
+
+
+def test_a_non_json_tags_body_raises_geometry_error_not_json_decode_error(
+    monkeypatch,
+):
+    """The /api/tags sibling of the CLI-level test above. Not reachable
+    through a single CLI run (`plan_window`'s real call order hits
+    `/api/show` first, so a malformed `/api/show` body never lets `/api/tags`
+    run at all) -- exercised directly against `weights_bytes` instead, with
+    the same fake, non-mocked `urlopen`."""
+    import urllib.request
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda req, timeout=60: _NonJSONResponse(b"not json at all"),
+    )
+    with pytest.raises(GeometryError) as e:
+        weights_bytes("ollama", "zzyzx-distinctive-model", "", None)
+    assert "/api/tags" in str(e.value)
+    assert "valid JSON" in str(e.value)
 
 
 @pytest.mark.live
