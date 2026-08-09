@@ -831,6 +831,150 @@ spread observed, which is the case for `--window auto` later: 56 KiB/token
 no GQA at all), a 14× range, and one model advertising `context_length`
 1024000.
 
+#### Amendment 2 (ruled 2026-08-09): the two remaining escapes, and a cost test that tests cost
+
+The task review reproduced three defects. All three are the same shape as the
+ones already fixed — malformed input escaping as something other than
+`GGUFError`, and a test that cannot fail — so they close here rather than
+being deferred.
+
+**Both fixes were measured against all 32 real GGUF blobs before being
+specified**, because the obvious form of each would have rejected working
+models:
+
+| question | measured answer |
+|---|---|
+| keys failing strict UTF-8 | **0** of 32 blobs |
+| string values failing strict UTF-8 | **0**, including ~150k-token tokenizer arrays |
+| blobs using nested arrays | **0**; deepest value nesting is 2 (an array of scalars) |
+
+So `errors="strict"` rejects no real file, and refusing nested arrays outright
+costs nothing real.
+
+**1. Nested arrays raise `RecursionError`.** `_value` recurses on the array
+branch with no depth limit. Each level costs 12 bytes on the wire (`u32`
+element type + `u64` count), so a ~24 KB file with 2000 levels exhausts the
+stack. Since no real blob nests arrays at all, refuse the construct instead of
+counting depth — a depth limit invites picking a number, and a clear refusal is
+the honest bound:
+
+```python
+    if kind == _ARRAY:
+        element = _u32(handle)
+        if element == _ARRAY:
+            raise GGUFError(
+                "nested arrays are not supported; no real GGUF model uses "
+                "them, and honouring them would let a crafted file recurse "
+                "until the stack is exhausted."
+            )
+        return [_value(handle, element) for _ in range(_u64(handle))]
+```
+
+**2. `errors="replace"` absorbs corrupt bytes silently.** A string of the
+correct declared length holding invalid UTF-8 decodes to U+FFFD with no error,
+so a bit-flip inside a correctly-sized string yields a mangled value. That is
+the same silent corruption Amendment 1 exists to prevent — Amendment 1 only
+guarded the *length*. A mangled `general.architecture` then surfaces
+downstream as `GeometryError: ... missing from model metadata`, which names
+absence when the truth is corruption:
+
+```python
+def _string(handle: BinaryIO, what: str = "string") -> str:
+    raw = _read_exactly(handle, _u64(handle), what)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise GGUFError(
+            f"{what} is not valid UTF-8 ({raw[:24]!r}); the file is corrupt."
+        ) from exc
+```
+
+**3. `test_stops_reading_after_the_metadata_block` does not test cost.** It
+asserts only on the parsed dict, and the review demonstrated that a
+`path.open("rb").read()` implementation — the exact O(filesize) behaviour the
+brief forbids — passes it unchanged. Assert on **bytes actually read**, which
+is the property the requirement is about. No large or sparse file is needed:
+
+```python
+class _CountingHandle:
+    """Wraps a binary handle and totals the bytes read through it. The cost
+    requirement is about reads, so the test has to observe reads; asserting
+    on the returned dict cannot distinguish a bounded reader from one that
+    slurps the file first."""
+
+    def __init__(self, handle):
+        self._handle = handle
+        self.read_bytes = 0
+
+    def read(self, size=-1):
+        data = self._handle.read(size)
+        self.read_bytes += len(data)
+        return data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._handle.close()
+        return False
+
+
+def test_the_reader_stops_at_the_end_of_the_metadata(tmp_path, monkeypatch):
+    path = tmp_path / "tail.gguf"
+    metadata = _header(1) + _kv_u32("qwen2.block_count", 28)
+    path.write_bytes(metadata + b"\x00" * (1024 * 1024))
+
+    opened = []
+    real_open = Path.open
+
+    def counting_open(self, *args, **kwargs):
+        handle = _CountingHandle(real_open(self, *args, **kwargs))
+        opened.append(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", counting_open)
+    info = read_metadata(path)
+
+    assert info == {"qwen2.block_count": 28}
+    assert opened, "read_metadata did not open the path via Path.open"
+    assert opened[0].read_bytes <= len(metadata), (
+        f"read {opened[0].read_bytes} bytes for {len(metadata)} bytes of "
+        f"metadata; the reader is not stopping at the metadata block"
+    )
+```
+
+Keep the original equality test as well — it pins the parse, and this one pins
+the cost.
+
+Tests for the first two, both of which must fail before the fix:
+
+```python
+def test_a_nested_array_is_refused_not_a_recursion_error(tmp_path):
+    """12 bytes per level on the wire, so a small file can exhaust the
+    stack. RecursionError is not a GGUFError."""
+    path = tmp_path / "n.gguf"
+    nest = _s("deep") + struct.pack("<I", 9)
+    nest += b"".join(struct.pack("<I", 9) + struct.pack("<Q", 1) for _ in range(2000))
+    path.write_bytes(_header(1) + nest)
+    with pytest.raises(GGUFError) as e:
+        read_metadata(path)
+    assert "nested arrays" in str(e.value)
+
+
+def test_a_string_of_the_right_length_holding_invalid_utf8_is_refused(tmp_path):
+    """Amendment 1 guarded the length; this guards the bytes. Silently
+    replacing them yields a mangled value and no error."""
+    path = tmp_path / "u.gguf"
+    path.write_bytes(_header(1) + struct.pack("<Q", 3) + b"\xff\xfe\xfd")
+    with pytest.raises(GGUFError) as e:
+        read_metadata(path)
+    assert "UTF-8" in str(e.value)
+```
+
+After this lands, **re-run the real-blob check again** — `errors="strict"` and
+the nested-array refusal both sit on the path every real file takes, and the
+20-of-20 result above was measured before them.
+
 **A real-blob test must resolve the blob directory from `OLLAMA_MODELS`.** On
 this machine Ollama is a systemd service with
 `OLLAMA_MODELS=/mnt/extra/ollama-models`; `~/.ollama/models` holds only
