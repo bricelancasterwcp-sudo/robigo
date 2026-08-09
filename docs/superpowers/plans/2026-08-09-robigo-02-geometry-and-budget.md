@@ -2062,14 +2062,62 @@ that the real `/api/show` response for a locally-present model still lacks
 `size`, so this regression is caught if Ollama ever adds the field back and the
 workaround becomes unnecessary.
 
+#### Amendment 2 (ruled 2026-08-09): a zero window must refuse, and two messages are wrong
+
+Task 5 was exercised end to end against the live daemon on the target box. The
+window arithmetic is right — `--window auto` gives
+`32768 (limited by training_ctx, 28 KiB/token)`, `--window 999999` clamps to
+`32768` by `training_ctx`, `--window 2048` reports `user_cap`, and the 14.2 GB
+model correctly reports `window 0 (limited by vram, 56 KiB/token)` where the
+pre-amendment `.get("size", 0)` bug would have handed back 128000. Three
+defects remain, all in what happens around that arithmetic.
+
+**1. A zero window prints and then proceeds.** `window 0` means the weights plus
+the margin already exceed free VRAM: not one token of context fits, and no
+degradation rung can help, because the ladder shrinks the *scope*, not the KV
+cache. The run must stop there. Today it prints the line and continues into
+adapter setup, so on a repo where the adapter succeeds it would go on to build
+a prompt against a 0-token budget. This is the plan's own law — a refusal
+before turn 1, printing the arithmetic, never an attempt — and `window 0` is
+the most clear-cut case of it.
+
+Refuse with `OUTCOMES["refused"]` (exit 3), not `infrastructure`: nothing is
+broken in the environment, the model simply does not fit this card, and exit 4
+is reserved for a harness that could not run at all. Print the arithmetic that
+produced it — free VRAM, the weights, the margin, and the per-token cost — so
+the user can see which term to change. A bare `window 0` tells them nothing
+actionable; `free 14571 MiB − weights 14540 MiB − margin 256 MiB` tells them to
+pick a smaller quantisation.
+
+**2. The llama.cpp geometry message advises a flag the user already passed.**
+With `--backend llamacpp --window 4096` and no `--gguf`, the run aborts with
+*"Pass `--gguf <path>` so the window can be computed, or `--window <int>`."* —
+recommending exactly what was just supplied. Same family as plan 01's messages
+naming flags that did not exist: the advice does not match the situation. Make
+the text depend on whether a cap was given. With an explicit `--window`, the
+honest statement is that the training context cannot be verified without
+`--gguf`, so the cap cannot be safely clamped.
+
+**3. The `codegemma` criterion below was never true on this hardware.** Measured:
+codegemma weighs 8.454 GiB, free VRAM is 14571 MiB, so spare is 5.525 GiB and
+buys 12931 tokens at 448 KiB each — comfortably above its 8192 training
+context, which therefore binds. The example was miscalibrated: 8192 × 448 KiB
+is only 3.5 GiB, which fits beside 8.45 GiB of weights on a 16 GB card. It is
+replaced below with the case that does exercise a `vram`-bound result, taken
+from a real run rather than constructed.
+
 ---
 
 ## Done when
 
 - `pytest -q` green.
 - `--window auto` is the default and prints what bound it.
-- codegemma resolves to a window below its advertised 8192, attributed to
-  `vram`; granite resolves to exactly 4096, attributed to `training_ctx`.
+- granite resolves to exactly 4096, attributed to `training_ctx`; codegemma to
+  exactly 8192, also `training_ctx` (its 448 KiB/token still fits beside 8.45
+  GiB of weights on a 16 GB card — see amendment 2).
+- A model whose weights leave no room — the 14.2 GB one on this box — resolves
+  to `window 0` attributed to `vram`, **and refuses before turn 1 with the
+  arithmetic printed**.
 - A window request above the training context is clamped, never granted.
 - An impossible scope refuses with the arithmetic printed, before any
   generation.
