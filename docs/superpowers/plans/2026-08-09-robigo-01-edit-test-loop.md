@@ -1949,6 +1949,115 @@ git add src/robigo/apply tests/test_safety.py
 git commit -m "feat: path refusals and the git snapshot envelope"
 ```
 
+#### Amendment (ruled 2026-08-09): commit only the target, refuse ignored scope files
+
+Three defects in the reference code, all demonstrated:
+
+1. **`git add -A` mislabels commits.** A user's concurrent hand-edit to an
+   unrelated file gets folded into a commit titled `robigo: patch src.py`.
+   Since undo is `git checkout -` back to the original branch, that edit is
+   then stranded on the `robigo/*` branch and disappears from their tree.
+2. **"can never be lost" is false for gitignored files.** `git add -A` skips
+   an ignored file, so its dirty state is in no commit. Worse, `check_target`
+   never consults ignore rules, so a *scope* file could be ignored — patched
+   with no recoverable pre-image.
+3. **`commit_all` on a clean tree raises `CalledProcessError`**, reachable
+   whenever a patch parses but produces no net diff.
+
+`commit_all` takes the paths it is committing; `snapshot` refuses an ignored
+scope file; and both commit paths pass `--allow-empty` so neither can raise.
+
+```python
+def snapshot(root: Path, message: str, scope_files: Sequence[Path] = ()) -> None:
+    """Commit whatever is in the tree BEFORE the first patch, dirty or not,
+    so a pre-existing uncommitted change in a non-ignored path cannot be
+    lost.
+
+    The guarantee has one hole, and it is refused rather than papered over:
+    git will not stage an ignored file, so an ignored file in scope would be
+    patched with no recoverable pre-image.
+    """
+    ignored = _ignored(root, scope_files)
+    if ignored:
+        raise RefusedError(
+            f"{', '.join(ignored)} is in scope but ignored by git, so robigo "
+            f"cannot snapshot its pre-patch state and could not undo a change "
+            f"to it. Un-ignore it, or narrow --scope to exclude it."
+        )
+    _commit(root, message, ["-A"])
+
+
+def commit_all(root: Path, message: str, paths: Sequence[Path]) -> None:
+    """Commit exactly the paths named. Staging the whole tree would fold a
+    concurrent hand-edit into a commit titled as the model's patch, and
+    `git checkout -` would then strand that edit on this branch."""
+    _commit(root, message, [str(path) for path in paths])
+
+
+def _ignored(root: Path, paths: Sequence[Path]) -> list[str]:
+    """Which of these paths git ignores. `check-ignore` exits 1 when none
+    match, which is not an error — so no check=True here."""
+    if not paths:
+        return []
+    proc = subprocess.run(
+        ["git", "check-ignore", "--", *(str(path) for path in paths)],
+        cwd=root, capture_output=True, text=True,
+    )
+    return proc.stdout.split()
+
+
+def _commit(root: Path, message: str, pathspec: list[str]) -> None:
+    """--allow-empty unconditionally. Probing whether anything is staged is
+    fiddly on an unborn HEAD, and an empty commit titled after a patch is
+    honest — it records that the patch was a no-op. It also cannot raise,
+    which a bare `git commit` on a clean tree does."""
+    subprocess.run(["git", "add", *pathspec], cwd=root, check=True)
+    subprocess.run(
+        ["git", *_GIT_ID, "commit", "-q", "--allow-empty", "-m", message],
+        cwd=root, check=True,
+    )
+```
+
+Add `from typing import Sequence` (or `collections.abc`). Four tests:
+
+```python
+def test_commit_all_commits_only_the_named_path(repo: Path):
+    start_branch(repo, "fog")
+    snapshot(repo, "robigo: snapshot")
+    (repo / "src.py").write_text("x = 2\n")
+    (repo / "outside.py").write_text("y = 999\n")
+    commit_all(repo, "robigo: patch src.py", [repo / "src.py"])
+    changed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=repo, capture_output=True, text=True,
+    ).stdout.split()
+    assert changed == ["src.py"]
+
+
+def test_a_no_op_patch_commits_without_raising(repo: Path):
+    start_branch(repo, "fog")
+    snapshot(repo, "robigo: snapshot")
+    commit_all(repo, "robigo: patch src.py", [repo / "src.py"])
+
+
+def test_an_ignored_scope_file_is_refused(repo: Path):
+    (repo / ".gitignore").write_text("secret.py\n")
+    (repo / "secret.py").write_text("x = 1\n")
+    start_branch(repo, "fog")
+    with pytest.raises(RefusedError) as e:
+        snapshot(repo, "robigo: snapshot", [repo / "secret.py"])
+    assert "ignored by git" in str(e.value)
+
+
+def test_snapshot_with_no_ignored_scope_files_proceeds(repo: Path):
+    start_branch(repo, "fog")
+    snapshot(repo, "robigo: snapshot", [repo / "src.py"])
+    assert subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo,
+        capture_output=True, text=True,
+    ).stdout.strip() == ""
+```
+
 ---
 
 ### Task 8: Atomic apply with post-write verification
@@ -2793,6 +2902,86 @@ Expected: PASS, 9 tests
 git add src/robigo/loop.py tests/test_loop.py
 git commit -m "feat: turn loop with distinct terminal states and a stall guard"
 ```
+
+#### Amendment (ruled 2026-08-09): four deltas from Task 7's amendment
+
+Task 7's safety layer changed shape after review, and its callers here must
+follow. Where this section and the code above disagree, this section governs.
+
+**1. `snapshot` takes the scope files**, so it can refuse an ignored one:
+
+```python
+        snapshot(root, "robigo: snapshot before first patch", scope.full)
+```
+
+**2. `commit_all` takes the paths it is committing.** Staging the whole tree
+folds a user's concurrent hand-edit into a commit titled as the model's patch.
+So `_take_turn` returns a fourth element — the path it wrote, or `None`:
+
+```python
+        action_text, result_text, applied, target = _take_turn(
+            gen, root, scope, adapter, codec, allow_test_edits
+        )
+        history = (history + (Turn(action_text, result_text),))[-2:]
+
+        if applied:
+            if target is not None:
+                commit_all(root, f"robigo: {action_text}", [target])
+```
+
+`_take_turn`'s returns become 4-tuples. Only the `patch` success path has a
+target; every other return passes `None`. `apply_patch` already returns the
+path it wrote — use it:
+
+```python
+        target = apply_patch(action, root, scope, adapter, codec, allow_test_edits)
+        return label, "applied", True, target
+```
+
+A `run` action reports `applied=True` with `target=None` — nothing was
+written, so nothing is committed, and `git add` is never called with an empty
+pathspec.
+
+**3. Git failures are infrastructure and must not escape.** `git` can be
+missing from `PATH`, and any of the four helpers can raise
+`CalledProcessError`. Add to the setup handler:
+
+```python
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        return _result("infrastructure", 0, None, f"git failed: {exc}")
+```
+
+and wrap the per-turn commit and re-run in the same way, returning
+`infrastructure` with the turn number reached. Import `subprocess` at module
+level.
+
+**4. Two tests** for the new failure paths:
+
+```python
+def test_a_git_failure_is_infrastructure_not_a_crash(repo: Path, monkeypatch):
+    import robigo.loop as loop_module
+
+    def boom(*args, **kwargs):
+        raise subprocess.CalledProcessError(128, "git")
+
+    monkeypatch.setattr(loop_module, "start_branch", boom)
+    result = run("fix", repo, _ScriptedClient(FIX), PythonAdapter(),
+                 codec="search_replace")
+    assert (result.outcome, result.exit_code) == ("infrastructure", 4)
+
+
+def test_only_the_patched_file_is_committed(repo: Path):
+    (repo / "unrelated.py").write_text("y = 999\n")
+    run("fix", repo, _ScriptedClient(FIX), PythonAdapter(), codec="search_replace")
+    changed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=repo, capture_output=True, text=True,
+    ).stdout.split()
+    assert changed == ["src/fog.py"]
+```
+
+The second test is the one that matters: it pins that a hand-edited unrelated
+file is not swept into a commit named after the model's patch.
 
 ---
 
