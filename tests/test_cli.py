@@ -10,6 +10,19 @@ import pytest
 
 from robigo.cli import build_client, main
 from robigo.model.client import Generation, LlamaCppClient, OllamaClient
+from robigo.model.geometry import WindowPlan
+
+
+def _stub_plan_window(*args, **kwargs) -> WindowPlan:
+    """Task 5: plan_window now runs for EVERY --window value, not just
+    'auto' -- the never-exceed-training-context law has to bind on an
+    explicit cap too, so an explicit int no longer skips geometry detection.
+    These tests are about exit codes, undo recipes, and adapter behaviour,
+    none of which is about window resolution, and their model ("m") does
+    not exist on any real daemon, so left unstubbed every one of them would
+    hit a real /api/show over the network and fail on an unrelated 404
+    before reaching what it actually tests."""
+    return WindowPlan(8192, "user_cap", None, 1024)
 
 
 def test_backend_selection_and_window_pass_through():
@@ -36,7 +49,11 @@ def _args(**kw):
     return argparse.Namespace(**{**defaults, **kw})
 
 
-def test_exit_code_is_3_when_the_suite_already_passes(tmp_path: Path, capsys):
+def test_exit_code_is_3_when_the_suite_already_passes(tmp_path: Path, capsys,
+                                                       monkeypatch):
+    import robigo.cli as cli_module
+
+    monkeypatch.setattr(cli_module, "plan_window", _stub_plan_window)
     (tmp_path / "test_ok.py").write_text("def test_ok():\n    assert 1\n")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     code = main(["--root", str(tmp_path), "--python", sys.executable,
@@ -45,7 +62,10 @@ def test_exit_code_is_3_when_the_suite_already_passes(tmp_path: Path, capsys):
     assert "failing test" in capsys.readouterr().out
 
 
-def test_exit_code_is_3_outside_a_git_repo(tmp_path: Path):
+def test_exit_code_is_3_outside_a_git_repo(tmp_path: Path, monkeypatch):
+    import robigo.cli as cli_module
+
+    monkeypatch.setattr(cli_module, "plan_window", _stub_plan_window)
     (tmp_path / "test_x.py").write_text("def test_x():\n    assert 0\n")
     code = main(["--root", str(tmp_path), "--python", sys.executable,
                  "--model", "m", "fix it"])
@@ -64,6 +84,7 @@ def test_scope_flag_is_parsed_and_forwarded_to_run(tmp_path: Path, monkeypatch):
         return RunResult("pass", 1, 0, None, "ok")
 
     monkeypatch.setattr(cli_module, "run", fake_run)
+    monkeypatch.setattr(cli_module, "plan_window", _stub_plan_window)
     code = cli_module.main([
         "fix it", "--root", str(tmp_path), "--python", sys.executable,
         "--model", "m", "--scope", "src", "tests/test_x.py",
@@ -84,6 +105,7 @@ def test_scope_flag_defaults_to_none(tmp_path: Path, monkeypatch):
         return RunResult("pass", 1, 0, None, "ok")
 
     monkeypatch.setattr(cli_module, "run", fake_run)
+    monkeypatch.setattr(cli_module, "plan_window", _stub_plan_window)
     cli_module.main(["--root", str(tmp_path), "--python", sys.executable,
                      "--model", "m", "fix it"])
     assert captured["scope_paths"] is None
@@ -164,6 +186,7 @@ def test_the_printed_undo_recipe_really_restores_the_pre_run_tree(
     original = _git(tmp_path, "symbolic-ref", "--short", "HEAD").stdout.strip()
 
     monkeypatch.setattr(cli_module, "build_client", lambda args: _Scripted(_FIX))
+    monkeypatch.setattr(cli_module, "plan_window", _stub_plan_window)
     code = main(["--root", str(tmp_path), "--python", sys.executable,
                  "--model", "m", "fix it"])
     assert code == 0
@@ -243,6 +266,7 @@ def test_the_undo_recipe_works_in_a_repo_that_does_not_ignore_pycache(
          "commit", "-qm", "init")
 
     (tmp_path / "scratch1.py").write_text("WIP = 1\n")
+    monkeypatch.setattr(cli_module, "plan_window", _stub_plan_window)
     monkeypatch.setattr(cli_module, "build_client",
                         lambda args: _Scripted(_NO_FIX))
     assert main(["--root", str(tmp_path), "--python", sys.executable,
@@ -298,6 +322,7 @@ def test_a_raising_adapter_is_exit_4_not_a_traceback(tmp_path: Path, capsys,
             return True
 
     monkeypatch.setattr(cli_module, "PythonAdapter", _Exploding)
+    monkeypatch.setattr(cli_module, "plan_window", _stub_plan_window)
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     code = main(["--root", str(tmp_path), "--python", sys.executable,
                  "--model", "m", "fix it"])

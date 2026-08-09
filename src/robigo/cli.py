@@ -8,6 +8,8 @@ from pathlib import Path
 from robigo.adapters.python_ import PythonAdapter
 from robigo.loop import OUTCOMES, run
 from robigo.model.client import LlamaCppClient, ModelClient, OllamaClient
+from robigo.model.detect import plan_window
+from robigo.model.geometry import GeometryError
 from robigo.record import new_recorder
 
 # No stop sequences. They were matched against the whole stream, payload
@@ -41,9 +43,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", required=True)
     parser.add_argument("--backend", choices=("ollama", "llamacpp"), default="ollama")
     parser.add_argument("--host", default=None)
-    # Explicit for now. Plan 02 computes it from model geometry and free
-    # VRAM, and the advertised context length is never trusted.
-    parser.add_argument("--window", type=int, default=8192)
+    parser.add_argument("--window", default="auto",
+                        help="'auto' (default) computes it from model "
+                             "geometry and free VRAM; an integer caps it")
+    parser.add_argument("--kv-bits", dest="kv_bits", type=int,
+                        choices=(16, 8), default=16)
+    parser.add_argument("--gguf", type=Path, default=None,
+                        help="GGUF path, required with --backend llamacpp "
+                             "when --window is auto")
     parser.add_argument("--num-predict", dest="num_predict", type=int, default=1024)
     parser.add_argument("--codec", choices=("search_replace", "whole_file"),
                         default="search_replace")
@@ -66,6 +73,30 @@ def main(argv: list[str] | None = None) -> int:
         # argparse exits 2 on a usage error, and 2 is `budget_exhausted` in
         # the contract. A harness-level mistake must not alias a run outcome.
         return _EX_USAGE if exc.code else 0
+
+    if args.window == "auto":
+        cap = None
+    else:
+        try:
+            cap = int(args.window)
+        except ValueError:
+            # Not GeometryError/OSError below: a malformed --window is a
+            # harness-level usage mistake, same class as the SystemExit(2)
+            # case above, and must not alias a run outcome either.
+            print(f"--window must be 'auto' or an integer, got {args.window!r}")
+            return _EX_USAGE
+    # Runs for BOTH 'auto' and an explicit int: the never-exceed-training-
+    # context law (usable_window always seats training_ctx as a limit) must
+    # bind on a user-supplied cap too, not only on the computed default.
+    try:
+        plan = plan_window(args.backend, args.model, args.host or "", cap,
+                           kv_bits=args.kv_bits, gguf_path=args.gguf)
+    except (GeometryError, OSError) as exc:
+        print(f"cannot determine the usable window: {exc}")
+        return OUTCOMES["infrastructure"]
+    args.window = plan.window
+    print(f"window {plan.window} (limited by {plan.limited_by}, "
+          f"{plan.kv_per_token // 1024} KiB/token)")
 
     adapter = PythonAdapter(python=str(args.python) if args.python else None)
     root = Path(args.root).resolve()
