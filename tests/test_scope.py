@@ -56,3 +56,37 @@ def test_signatures_of_keeps_definitions_and_drops_bodies():
     assert "def f(a, b):" in out
     assert "class K:" in out
     assert "return a" not in out
+
+
+def test_signatures_keep_source_order_across_nested_definitions():
+    out = signatures_of(
+        "class Foo:\n    def method_a(self):\n        pass\n\n"
+        "class Bar:\n    def method_b(self):\n        pass\n"
+    )
+    assert out.split("\n")[:4] == [
+        "class Foo:",
+        "    def method_a(self):",
+        "class Bar:",
+        "    def method_b(self):",
+    ]
+
+
+def test_signatures_keep_decorators():
+    out = signatures_of(
+        "class K:\n    @property\n    def size(self):\n        return 1\n"
+    )
+    assert "@property" in out
+    assert "return 1" not in out
+
+
+def test_an_anchor_outside_the_repo_is_refused(repo: Path):
+    (repo.parent / "escape.py").write_text("x = 1\n")
+    with pytest.raises(ScopeError) as e:
+        resolve(_diag("../escape.py"), PythonAdapter(), repo)
+    assert "outside" in str(e.value)
+
+
+def test_a_missing_anchor_says_what_to_do(repo: Path):
+    with pytest.raises(ScopeError) as e:
+        resolve(_diag("tests/nope.py"), PythonAdapter(), repo)
+    assert "--scope" in str(e.value)
