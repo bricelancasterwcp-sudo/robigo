@@ -60,6 +60,30 @@ def _miss_message(text: str, search: str) -> str:
     )
 
 
+def apply_whole_file(original: str, payload: str) -> str:
+    """The whole file, re-emitted. ``original`` is unused by design and
+    kept in the signature so both codecs share one call shape."""
+    text = _strip_nested_fence(payload)
+    if not text.strip():
+        raise PatchError(
+            "the payload is empty, which would delete the file's contents. "
+            "Emit the complete new file, or use a SEARCH/REPLACE edit."
+        )
+    return text if text.endswith("\n") else text + "\n"
+
+
+def _strip_nested_fence(payload: str) -> str:
+    lines = payload.split("\n")
+    if lines and lines[0].startswith("```"):
+        end = len(lines) - 1
+        while end > 0 and not lines[end].strip():
+            end -= 1
+        if lines[end].strip() == "```":
+            return "\n".join(lines[1:end]) + "\n"
+    return payload
+
+
 CODECS: dict[str, Callable[[str, str], str]] = {
     "search_replace": apply_search_replace,
+    "whole_file": apply_whole_file,
 }

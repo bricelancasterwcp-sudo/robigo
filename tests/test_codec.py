@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from robigo.action.codec import CODECS, PatchError, apply_search_replace
+from robigo.action.codec import CODECS, PatchError, apply_search_replace, apply_whole_file
 
 FILE = "def radius(t):\n    r = compute(t)\n    return r\n"
 
@@ -53,3 +53,25 @@ def test_a_payload_with_no_blocks_is_refused():
 
 def test_codecs_registry_exposes_search_replace():
     assert CODECS["search_replace"] is apply_search_replace
+
+
+def test_whole_file_replaces_everything_and_ignores_the_original():
+    assert apply_whole_file(FILE, "x = 1\n") == "x = 1\n"
+
+
+def test_whole_file_refuses_an_empty_payload():
+    # An empty emission would silently gut the file. The likeliest real
+    # data loss in the whole design (spec section 6).
+    with pytest.raises(PatchError) as e:
+        apply_whole_file(FILE, "   \n")
+    assert "empty" in str(e.value)
+
+
+def test_whole_file_strips_a_nested_fence_if_the_model_adds_one():
+    # Models re-fence habitually; the envelope already consumed the outer
+    # fence, so an inner one is content the file must not receive.
+    assert apply_whole_file(FILE, "```python\nx = 1\n```\n") == "x = 1\n"
+
+
+def test_codecs_registry_exposes_whole_file():
+    assert CODECS["whole_file"] is apply_whole_file
