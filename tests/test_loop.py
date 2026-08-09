@@ -159,6 +159,22 @@ def test_a_run_is_branch_scoped_and_snapshots_first(repo: Path):
     assert "snapshot" in log
 
 
+def test_snapshot_never_commits_an_ignored_path(repo: Path):
+    # Mutating `snapshot` to `git add -f -A` left all 122 tests green,
+    # because nothing drove snapshot end to end. Force-adding is exactly how
+    # a secret, a build artefact, or robigo's own transcripts reach the
+    # user's history -- and an ignored file so committed has no pre-image.
+    (repo / ".gitignore").write_text("secret.txt\n")
+    (repo / "secret.txt").write_text("token\n")
+    result = run("fix", repo, _ScriptedClient(FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert result.outcome == "pass"
+    tracked = subprocess.run(["git", "ls-files"], cwd=repo,
+                             capture_output=True, text=True).stdout.split()
+    assert "secret.txt" not in tracked
+    assert not any(name.startswith(".robigo/") for name in tracked)
+
+
 def test_a_git_failure_is_infrastructure_not_a_crash(repo: Path, monkeypatch):
     import robigo.loop as loop_module
 

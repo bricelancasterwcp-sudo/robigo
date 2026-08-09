@@ -13,7 +13,10 @@ from robigo.apply.patch import apply_patch
 from robigo.apply.safety import (
     RefusedError,
     commit_all,
+    current_branch,
     ensure_repo,
+    head_sha,
+    is_dirty,
     refuse_ignored,
     snapshot,
     start_branch,
@@ -37,16 +40,34 @@ OUTCOMES: dict[str, int] = {
 
 
 @dataclass(frozen=True)
+class UndoInfo:
+    """What a user needs to get back to where they started. `git checkout -`
+    is not enough: it relies on a reflog another shell can clobber, and it
+    silently drops a dirty tree into the snapshot commit."""
+
+    original_branch: str | None
+    snapshot_sha: str | None
+    started_dirty: bool
+
+
+@dataclass(frozen=True)
 class RunResult:
     outcome: str
     turns: int
     exit_code: int
     branch: str | None
     detail: str
+    undo: UndoInfo | None = None
 
 
-def _result(outcome: str, turns: int, branch: str | None, detail: str) -> RunResult:
-    return RunResult(outcome, turns, OUTCOMES[outcome], branch, detail)
+def _result(
+    outcome: str,
+    turns: int,
+    branch: str | None,
+    detail: str,
+    undo: UndoInfo | None = None,
+) -> RunResult:
+    return RunResult(outcome, turns, OUTCOMES[outcome], branch, detail, undo)
 
 
 def run(
@@ -100,6 +121,7 @@ def _execute(
     recorder: RunRecorder,
 ) -> RunResult:
     branch: str | None = None
+    undo: UndoInfo | None = None
     try:
         if use_git:
             ensure_repo(root)
@@ -119,21 +141,27 @@ def _execute(
             # refusal, not an infrastructure failure, and it must not leave
             # a `robigo/*` branch behind for a run that never really started.
             refuse_ignored(root, scope.full)
+            # Captured BEFORE the branch exists, because that is the state
+            # the undo recipe has to name. `git checkout -` cannot: it reads
+            # a reflog any other shell can clobber, and it says nothing about
+            # a dirty tree that snapshot is about to fold into a commit.
+            original, dirty = current_branch(root), is_dirty(root)
             branch = start_branch(root, slug(task))
             snapshot(root, "robigo: snapshot before first patch")
+            undo = UndoInfo(original, head_sha(root), dirty)
     except (RefusedError, ScopeError) as exc:
-        return _result("refused", 0, branch, str(exc))
+        return _result("refused", 0, branch, str(exc), undo)
     except (ModelError, AdapterError) as exc:
         # AdapterError means the project's tests cannot be run at all --
         # infrastructure, never a model result (Task 4's amendment).
-        return _result("infrastructure", 0, branch, str(exc))
+        return _result("infrastructure", 0, branch, str(exc), undo)
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
         # git can be missing from PATH entirely, or any of the git helpers
         # above (ensure_repo, start_branch, snapshot) can fail -- an
         # infrastructure problem, never a model result. `branch` may already
         # be set if the failure came from `snapshot`, and that must be
         # reported honestly rather than claimed as None.
-        return _result("infrastructure", 0, branch, f"git failed: {exc}")
+        return _result("infrastructure", 0, branch, f"git failed: {exc}", undo)
 
     history: tuple[Turn, ...] = ()
     seen: set[str] = set()
@@ -150,10 +178,10 @@ def _execute(
             # evidence exists.
             recorder.turn(prompt, f"<no reply: {exc}>", diag.raw)
             outcome = "budget_exhausted" if turn > 1 else "refused"
-            return _result(outcome, turn, branch, str(exc))
+            return _result(outcome, turn, branch, str(exc), undo)
         except ModelError as exc:
             recorder.turn(prompt, f"<no reply: {exc}>", diag.raw)
-            return _result("infrastructure", turn, branch, str(exc))
+            return _result("infrastructure", turn, branch, str(exc), undo)
 
         action_text, result_text, applied, target = _take_turn(
             gen, root, scope, adapter, codec, allow_test_edits
@@ -171,9 +199,9 @@ def _execute(
                     commit_all(root, f"robigo: {action_text}", [target])
                 diag = adapter.run(root, None)
             except (subprocess.CalledProcessError, FileNotFoundError, AdapterError) as exc:
-                return _result("infrastructure", turn, branch, f"git failed: {exc}")
+                return _result("infrastructure", turn, branch, f"git failed: {exc}", undo)
             if diag.passed:
-                return _result("pass", turn, branch, "tests pass")
+                return _result("pass", turn, branch, "tests pass", undo)
             # Mid-loop re-resolution can fail where the first one could not:
             # a timed-out or unanchorable run returns file=None, and resolve
             # refuses that. Keep the scope we already have and let the model
@@ -188,9 +216,9 @@ def _execute(
         stalls = stalls + 1 if key in seen else 0
         seen.add(key)
         if stalls >= stall_cap - 1:
-            return _result("stalled", turn, branch, "no progress; repeating")
+            return _result("stalled", turn, branch, "no progress; repeating", undo)
 
-    return _result("stalled", turn_cap, branch, f"turn cap {turn_cap} reached")
+    return _result("stalled", turn_cap, branch, f"turn cap {turn_cap} reached", undo)
 
 
 def _take_turn(

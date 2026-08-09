@@ -86,7 +86,18 @@ def main(argv: list[str] | None = None) -> int:
         return OUTCOMES["infrastructure"]
     print(f"{result.outcome}  turns={result.turns}  {result.detail}")
     if result.branch:
-        print(f"branch {result.branch} — `git checkout -` to undo everything")
+        print(f"branch {result.branch}", end="")
+        undo = result.undo
+        if undo and undo.original_branch:
+            print(f" (from {undo.original_branch})")
+            print(f"  to undo:  git checkout {undo.original_branch}")
+            if undo.started_dirty and undo.snapshot_sha:
+                print(
+                    f"            git checkout {undo.snapshot_sha} -- ."
+                    f"   # your tree was dirty; this restores it"
+                )
+        else:
+            print()
     if recorder.error:
         print(f"run record unavailable: {recorder.error}")
     return result.exit_code

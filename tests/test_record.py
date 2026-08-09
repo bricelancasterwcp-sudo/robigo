@@ -45,11 +45,37 @@ def test_turns_are_numbered_in_order(tmp_path: Path):
     assert names == ["turn-01-reply.txt", "turn-02-reply.txt", "turn-03-reply.txt"]
 
 
+def test_finish_records_what_an_undo_needs(tmp_path: Path):
+    from robigo.loop import UndoInfo
+
+    recorder = RunRecorder(tmp_path, "fog-1")
+    recorder.turn("p", "r", "a")
+    recorder.finish(
+        RunResult("pass", 1, 0, "robigo/fog-1", "tests pass",
+                  UndoInfo("main", "abc1234", True)),
+        model="m", window=8192, codec="search_replace",
+    )
+    meta = json.loads((tmp_path / ".robigo" / "runs" / "fog-1" / "meta.json").read_text())
+    assert meta["original_branch"] == "main"
+    assert meta["snapshot_sha"] == "abc1234"
+    assert meta["started_dirty"] is True
+
+
 def test_records_never_enter_the_users_history(tmp_path: Path):
     # The Critical: snapshot does `git add -A`, so a record written inside
     # the repo would be committed into the user's own history from run 2 on.
     recorder = RunRecorder(tmp_path, "fog-1")
     recorder.turn("p", "r", "a")
+    assert (tmp_path / ".robigo" / ".gitignore").read_text() == "*\n"
+
+
+def test_an_existing_marker_that_ignores_nothing_is_overwritten(tmp_path: Path):
+    # Trusting existence alone reopened the Critical: a repo carrying an
+    # empty or unrelated .robigo/.gitignore would have its transcripts
+    # committed by snapshot's `git add -A`.
+    (tmp_path / ".robigo").mkdir()
+    (tmp_path / ".robigo" / ".gitignore").write_text("# notes\n")
+    RunRecorder(tmp_path, "fog-1").turn("p", "r", "a")
     assert (tmp_path / ".robigo" / ".gitignore").read_text() == "*\n"
 
 

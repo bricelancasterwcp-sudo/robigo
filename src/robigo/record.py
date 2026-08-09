@@ -51,11 +51,17 @@ class RunRecorder:
     def finish(
         self, result: RunResult, model: str, window: int, codec: str
     ) -> None:
+        undo = result.undo
         self._write("meta.json", json.dumps({
             "outcome": result.outcome, "turns": result.turns,
             "exit_code": result.exit_code, "branch": result.branch,
             "detail": result.detail, "model": model, "window": window,
             "codec": codec,
+            # What an undo needs, so a transcript read weeks later can still
+            # say where the run came from.
+            "original_branch": undo.original_branch if undo else None,
+            "snapshot_sha": undo.snapshot_sha if undo else None,
+            "started_dirty": undo.started_dirty if undo else None,
         }, indent=2, sort_keys=True))
 
     def _ensure(self) -> bool:
@@ -66,14 +72,25 @@ class RunRecorder:
             return self.error is None
         try:
             self.dir.mkdir(parents=True, exist_ok=True)
-            marker = self.dir.parent.parent / ".gitignore"
-            if not marker.exists():
-                marker.write_text(_IGNORE_ALL, encoding="utf-8")
+            self._ignore_self()
         except OSError as exc:
             self.error = f"cannot create {self.dir}: {exc}"
             return False
         self._ready = True
         return True
+
+    def _ignore_self(self) -> None:
+        """Write the marker whenever it is missing OR says anything other
+        than `*`. Trusting mere existence let a repo carrying an unrelated or
+        empty `.robigo/.gitignore` reopen the hole: `git add -A` would then
+        commit robigo's transcripts into the user's own history."""
+        marker = self.dir.parent.parent / ".gitignore"
+        try:
+            current = marker.read_text(encoding="utf-8")
+        except OSError:
+            current = ""
+        if current.strip() != "*":
+            marker.write_text(_IGNORE_ALL, encoding="utf-8")
 
     def _write(self, name: str, text: str) -> None:
         """A write failure is remembered, not raised: losing the transcript

@@ -46,6 +46,33 @@ def ensure_repo(root: Path) -> None:
         )
 
 
+def current_branch(root: Path) -> str | None:
+    """The checked-out branch, or None on a detached or unborn HEAD."""
+    proc = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+        cwd=root, capture_output=True, text=True,
+    )
+    return proc.stdout.strip() or None
+
+
+def is_dirty(root: Path) -> bool:
+    """Whether the tree has uncommitted changes, checked BEFORE snapshot."""
+    proc = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=root, capture_output=True, text=True, check=True,
+    )
+    return bool(proc.stdout.strip())
+
+
+def head_sha(root: Path) -> str | None:
+    """HEAD's short SHA, or None on an unborn HEAD."""
+    proc = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=root, capture_output=True, text=True,
+    )
+    return proc.stdout.strip() or None
+
+
 def start_branch(root: Path, slug: str) -> str:
     """The first UNUSED name, not a count. Counting collides as soon as any
     earlier branch is deleted — two branches minus one deleted still counts
