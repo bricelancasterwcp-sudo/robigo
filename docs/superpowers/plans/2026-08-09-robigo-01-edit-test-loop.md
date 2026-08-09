@@ -3740,10 +3740,127 @@ and call `recorder.finish(...)` on every return path by wrapping the body — si
     return result
 ```
 
+#### Amendment (ruled 2026-08-09): the exact wiring, and records must never fail a run
+
+The prose above ("compute the result into a local and finish once") is the
+vaguest instruction in this plan, and it asks for a refactor of the file that
+has already been through two review rounds. Two things are settled here.
+
+**1. Extract, do not restructure.** `run` becomes a thin wrapper; the entire
+existing body moves to `_execute` **unchanged**, taking `recorder` as a
+parameter. Every `return _result(...)` inside it stays exactly where it is —
+the wrapper is what guarantees `finish` runs on every path, so no return
+statement needs touching.
+
+```python
+def run(
+    task: str,
+    root: Path,
+    client: ModelClient,
+    adapter: Adapter,
+    *,
+    codec: str,
+    turn_cap: int = 8,
+    allow_test_edits: bool = False,
+    use_git: bool = True,
+    stall_cap: int = 3,
+    scope_paths: Sequence[Path] | None = None,
+    recorder: RunRecorder | None = None,
+) -> RunResult:
+    """Wrapper only. `_execute` is the loop; this exists so `finish` runs on
+    every return path without touching any of them."""
+    if recorder is None:
+        recorder = RunRecorder(root, next_run_id(root, _slug(task)))
+    result = _execute(
+        task, root, client, adapter, codec=codec, turn_cap=turn_cap,
+        allow_test_edits=allow_test_edits, use_git=use_git,
+        stall_cap=stall_cap, scope_paths=scope_paths, recorder=recorder,
+    )
+    recorder.finish(
+        result,
+        model=getattr(client, "model", "?"),
+        window=getattr(client, "window", 0),
+        codec=codec,
+    )
+    return result
+```
+
+`_execute` keeps `run`'s old signature plus `recorder`, and calls
+`recorder.turn(prompt, gen.text, diag.raw)` once per turn, immediately after
+`_take_turn` returns.
+
+**2. A record that cannot be written must never fail the run.** The record is
+a diagnostic, not the product: a read-only `.robigo/`, a full disk, or a
+permission error must not turn a passing repair into a crash. But it must not
+vanish silently either — the first failure is remembered and surfaced.
+
+```python
+class RunRecorder:
+    def __init__(self, root: Path, run_id: str) -> None:
+        self.dir = root / ".robigo" / "runs" / run_id
+        self.error: str | None = None
+        self._turns = 0
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.error = f"cannot create {self.dir}: {exc}"
+
+    def _write(self, name: str, text: str) -> None:
+        """Records are diagnostics. A write failure is remembered, not
+        raised: losing the transcript is bad, failing a completed repair
+        because the transcript could not be saved is worse."""
+        if self.error is not None:
+            return
+        try:
+            (self.dir / name).write_text(text, encoding="utf-8", newline="")
+        except OSError as exc:
+            self.error = f"cannot write {name}: {exc}"
+```
+
+`turn` and `finish` route every write through `_write`, so one failure
+disables the rest and keeps the first reason.
+
+The CLI surfaces it rather than swallowing it — in `cli.py`, after printing
+the outcome:
+
+```python
+    if recorder.error:
+        print(f"run record unavailable: {recorder.error}")
+```
+
+which means `main` constructs the recorder and passes it to `run`, rather than
+letting `run` build its own.
+
+Two extra tests:
+
+```python
+def test_a_record_write_failure_does_not_raise(tmp_path: Path):
+    recorder = RunRecorder(tmp_path, "fog-1")
+    recorder.dir.chmod(0o500)
+    try:
+        recorder.turn("p", "r", "a")           # must not raise
+        assert recorder.error is not None
+        assert "cannot write" in recorder.error
+    finally:
+        recorder.dir.chmod(0o700)
+
+
+def test_an_unwritable_root_is_remembered_not_raised(tmp_path: Path):
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    blocked.chmod(0o500)
+    try:
+        recorder = RunRecorder(blocked, "fog-1")   # must not raise
+        assert recorder.error is not None
+        assert "cannot create" in recorder.error
+    finally:
+        blocked.chmod(0o700)
+```
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_record.py tests/test_loop.py -v`
-Expected: PASS — 4 record tests, 9 loop tests still green
+Expected: PASS — 6 record tests, every loop test still green
 
 - [ ] **Step 5: Commit**
 
