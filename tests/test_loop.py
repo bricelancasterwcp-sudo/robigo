@@ -293,6 +293,58 @@ def test_a_nul_in_a_patch_path_is_a_model_facing_refusal(repo: Path):
     assert "PATCH REJECTED" in client.prompts[1]
 
 
+def test_find_skips_a_vendored_directory_inside_the_repo(tmp_path: Path):
+    from robigo.loop import _find
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "fog.py").write_text("def computeRadius():\n    pass\n")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "vendored.py").write_text("computeRadius = 1\n")
+    assert _find(tmp_path, "computeRadius") == "src/fog.py:1"
+
+
+def test_find_works_in_a_repo_whose_own_path_contains_a_skip_name(tmp_path: Path):
+    # Verified: identical content under `.../venv/myproject` found nothing,
+    # because the skip list was matched against the absolute path. Every
+    # file in the repo was skipped and `find` answered "not found" for
+    # every symbol.
+    from robigo.loop import _find
+
+    root = tmp_path / "venv" / "myproject"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "fog.py").write_text("def computeRadius():\n    pass\n")
+    assert _find(root, "computeRadius") == "src/fog.py:1"
+
+
+def test_a_re_resolve_that_pulls_in_an_ignored_file_ends_the_run(repo: Path):
+    # Task 7's ruling, reopened mid-loop: the setup check ran once, and every
+    # applied turn replaced the scope with no re-check. An ignored `.py` in
+    # the new scope would be patched with no pre-image, and reported as
+    # `infrastructure: git failed` when `git add` refused to stage it.
+    (repo / ".gitignore").write_text("src/secret.py\n")
+    (repo / "src" / "secret.py").write_text("VALUE = 1\n")
+    breaks = """patch src/fog.py
+```python
+<<<<<<< SEARCH
+def radius(t):
+    return t
+=======
+import secret
+
+
+def radius(t):
+    raise ValueError("boom " + str(secret.VALUE))
+>>>>>>> REPLACE
+```
+"""
+    result = run("fix", repo, _ScriptedClient(breaks, FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert (result.outcome, result.exit_code) == ("refused", 3)
+    assert result.turns == 1        # mid-loop, not the setup check
+    assert "ignored by git" in result.detail
+    assert (repo / "src" / "secret.py").read_text() == "VALUE = 1\n"
+
+
 def test_a_mid_loop_adapter_failure_is_infrastructure(repo: Path):
     from robigo.adapters.base import AdapterError
 

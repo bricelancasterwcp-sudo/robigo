@@ -207,10 +207,21 @@ def _execute(
             # refuses that. Keep the scope we already have and let the model
             # see the new diagnostic — aborting here would throw away a
             # recoverable turn (and, unguarded, crash out of the loop).
+            #
+            # The ignored-file check is re-run, not just done at setup: a new
+            # import trace can pull in a gitignored `.py`, which `check_target`
+            # would admit, `apply_patch` would write, and `commit_all` would
+            # then fail to stage -- an unrecoverable edit to a user file with
+            # no pre-image. The new scope is adopted only once it is accepted.
             try:
-                scope = resolve(diag, adapter, root)
+                new_scope = resolve(diag, adapter, root)
+                if use_git:
+                    refuse_ignored(root, new_scope.full)
+                scope = new_scope
             except ScopeError:
                 pass
+            except RefusedError as exc:
+                return _result("refused", turn, branch, str(exc), undo)
 
         key = f"{action_text}\n{gen.text}"
         stalls = stalls + 1 if key in seen else 0
@@ -286,7 +297,11 @@ def _find(root: Path, symbol: str) -> str:
         return "find needs a symbol, e.g. `find computeRadius`"
     hits: list[str] = []
     for path in sorted(root.rglob("*.py")):
-        if _SKIP.intersection(path.parts):
+        # Relative parts only. Matched against the absolute path, a repo that
+        # merely LIVES under a directory named `venv` or `node_modules` had
+        # every one of its files skipped, so `find` answered "not found" for
+        # every symbol in it.
+        if _SKIP.intersection(path.relative_to(root).parts):
             continue
         try:
             body = path.read_text(encoding="utf-8", errors="replace")
