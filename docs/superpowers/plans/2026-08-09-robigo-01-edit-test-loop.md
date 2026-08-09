@@ -1660,6 +1660,89 @@ git add src/robigo/context/render.py tests/test_render.py
 git commit -m "feat: prompt rendering with codec-specific help only"
 ```
 
+#### Amendment (ruled 2026-08-09): nothing in rendering may crash or say "None"
+
+Two defects in the reference code above.
+
+**1. Unhandled reads.** `path.read_text(encoding="utf-8")` raises
+`UnicodeDecodeError` on a non-UTF-8 file and `FileNotFoundError` on one
+deleted between scope resolution and rendering. Either is an uncaught
+exception, which the global constraints forbid. A file that cannot be read is
+neither a model result nor an infrastructure failure — so report it in place,
+in the prompt, and carry on.
+
+**2. `diag.file is None` renders the word "None".** The location line branches
+only on `diag.line`, so a `Diagnostic(False, None, None, …)` produces
+`"None  tests timed out after 300s"`. That case is **reachable**: Task 4's
+timeout path and its no-anchor fallback both return `file=None`.
+
+```python
+_UNREADABLE = "<unreadable or not valid UTF-8; not shown>\n"
+
+
+def _read(path: Path) -> str | None:
+    """None when the file cannot be read. Callers substitute a marker: a
+    file vanishing or being binary must not end the run."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+```
+
+Both loops substitute the marker, and the signatures loop must do so
+*instead of* calling `signatures_of` — passing the marker through `ast.parse`
+would swallow it and emit nothing:
+
+```python
+    for path in scope.full:
+        text = _read(path)
+        parts.append(f"--- {_rel(path, root)} ---")
+        parts.append(text if text is not None else _UNREADABLE)
+    for path in scope.signatures:
+        text = _read(path)
+        parts.append(f"--- {_rel(path, root)} (signatures only) ---")
+        parts.append(signatures_of(text) if text is not None else _UNREADABLE)
+```
+
+and the location line branches on both fields:
+
+```python
+    if diag.file and diag.line:
+        where = f"{diag.file}:{diag.line}"
+    elif diag.file:
+        where = diag.file
+    else:
+        where = "(location unknown)"
+```
+
+Three tests:
+
+```python
+def test_an_unreadable_file_is_reported_in_place_not_raised(tmp_path: Path):
+    scope = _scope(tmp_path)
+    (tmp_path / "a.py").write_bytes(b"\xff\xfe not utf-8\n")
+    diag = Diagnostic(False, "a.py", 2, "boom", "raw")
+    out = render(scope, diag, (), "search_replace", tmp_path)
+    assert "unreadable" in out
+
+
+def test_a_missing_signature_file_is_reported_in_place(tmp_path: Path):
+    scope = _scope(tmp_path)
+    (tmp_path / "b.py").unlink()
+    diag = Diagnostic(False, "a.py", 2, "boom", "raw")
+    out = render(scope, diag, (), "search_replace", tmp_path)
+    assert "unreadable" in out
+
+
+def test_a_diagnostic_with_no_file_never_renders_the_word_None(tmp_path: Path):
+    # Reachable: the adapter returns file=None for a timed-out suite and
+    # for a failure it could not anchor in the repo.
+    diag = Diagnostic(False, None, None, "tests timed out after 300s", "")
+    out = render(_scope(tmp_path), diag, (), "search_replace", tmp_path)
+    assert "location unknown" in out
+    assert "None:" not in out
+```
+
 ---
 
 ### Task 7: Safety — path refusals and the git envelope
@@ -2614,7 +2697,15 @@ def run(
             diag = adapter.run(root, None)
             if diag.passed:
                 return _result("pass", turn, branch, "tests pass")
-            scope = resolve(diag, adapter, root)
+            # Mid-loop re-resolution can fail where the first one could not:
+            # a timed-out or unanchorable run returns file=None, and resolve
+            # refuses that. Keep the scope we already have and let the model
+            # see the new diagnostic — aborting here would throw away a
+            # recoverable turn (and, unguarded, crash out of the loop).
+            try:
+                scope = resolve(diag, adapter, root)
+            except ScopeError:
+                pass
 
         key = f"{action_text}\n{gen.text}"
         stalls = stalls + 1 if key in seen else 0
