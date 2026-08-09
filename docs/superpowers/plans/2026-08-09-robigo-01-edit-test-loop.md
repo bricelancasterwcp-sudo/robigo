@@ -14,7 +14,7 @@
 - `requires-python = ">=3.12"`.
 - Package root is `src/robigo/`; import paths are `robigo.<module>`.
 - Files stay in the 200–400 line band; 800 is a hard ceiling.
-- Type annotations on every function signature. `from __future__ import annotations` at the top of every module.
+- Type annotations on every **non-test** function signature. pytest test functions are exempt: `-> None` there carries no information, and the constraint exists to pin production interfaces. `from __future__ import annotations` at the top of every module.
 - **Ollama requests MUST send `truncate: false` at the TOP level of the request body, never inside `options`** — nested there the daemon ignores it and silently front-truncates (spec §9 law 5).
 - **Never set a context window above the model's training context** (spec §9 law 1).
 - Infrastructure failures and model results are never conflated in either direction (spec §9 law 10).
@@ -147,6 +147,14 @@ def test_rejects_a_second_action():
 def test_a_verb_word_inside_a_payload_is_not_a_second_action():
     text = "patch a.py\n```\nrun the thing\n```\n"
     assert parse(text).payload == "run the thing\n"
+
+
+def test_an_indented_fence_is_still_a_payload():
+    # Both fence checks must tolerate indentation equally. Small models
+    # indent erratically, and a payload rejected as "no fenced payload"
+    # teaches the model the wrong lesson while burning a turn.
+    text = "patch a.py\n  ```\n  x = 1\n  ```\n"
+    assert parse(text).payload == "  x = 1\n"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -258,7 +266,10 @@ def _read_payload(
             f"'patch {arg}' needs a fenced payload immediately after the "
             f"header line, opened and closed with ```."
         )
-    lang = _FENCE.match(lines[open_at]).group(1)
+    # Stripped for the same reason as _next_fence: matching the raw line
+    # here returns None for an indented fence and the .group(1) below
+    # raises AttributeError instead of parsing.
+    lang = _FENCE.match(lines[open_at].strip()).group(1)
     for close_at in range(open_at + 1, len(lines)):
         if lines[close_at].strip() == "```":
             body = "\n".join(lines[open_at + 1 : close_at])
@@ -271,7 +282,10 @@ def _read_payload(
 
 def _next_fence(lines: list[str], start: int) -> int | None:
     for i in range(start, len(lines)):
-        if _FENCE.match(lines[i]):
+        # Stripped, to match the closing-fence check in _read_payload.
+        # Asymmetry here rejects an indented payload with a message
+        # claiming no payload exists.
+        if _FENCE.match(lines[i].strip()):
             return i
         if lines[i].strip():
             return None
@@ -759,6 +773,326 @@ Expected: PASS, 5 tests
 ```bash
 git add src/robigo/adapters tests/test_adapter_python.py
 git commit -m "feat: pytest adapter with deterministic tb=line diagnostics"
+```
+
+#### Amendment (ruled 2026-08-09): the interpreter must be discovered, not assumed
+
+`argv = ["python", ...]` above is a defect. `"python"` resolves from the
+subprocess `PATH`, so the suite only passes with an activated venv — and in
+production it is worse: installed via `uv tool install`, robigo lives in its
+own isolated venv, so `sys.executable` cannot see the *target project's*
+pytest either. The interpreter that runs a project's tests is the project's,
+not robigo's.
+
+Add to `adapters/base.py`:
+
+```python
+class AdapterError(Exception):
+    """The adapter cannot run the project's tests at all. Infrastructure,
+    never a model result: it maps to exit code 4 (spec section 6.1)."""
+```
+
+In `adapters/python_.py`, take the interpreter as constructor state,
+discover it per-root, and probe it once:
+
+```python
+    def __init__(self, python: str | None = None) -> None:
+        self._python = python
+
+    def _interpreter(self, root: Path) -> str:
+        """The project's interpreter, not robigo's. Checked in order, so a
+        repo with its own venv needs nothing activated."""
+        if self._python:
+            return self._python
+        for candidate in (root / ".venv/bin/python", root / "venv/bin/python"):
+            if candidate.is_file():
+                return str(candidate)
+        return "python"
+
+    def _preflight(self, python: str) -> None:
+        """Refuse loudly rather than fail per-run with a confusing
+        ModuleNotFoundError from inside a subprocess."""
+        try:
+            proc = subprocess.run(
+                [python, "-m", "pytest", "--version"],
+                capture_output=True, text=True, timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise AdapterError(f"cannot execute {python!r}: {exc}") from exc
+        if proc.returncode != 0:
+            raise AdapterError(
+                f"{python} cannot import pytest. Activate the project's "
+                f"virtualenv, or pass --python <path> to name the "
+                f"interpreter that has the project's test dependencies."
+            )
+```
+
+`run` resolves and probes before invoking, and uses the resolved path:
+
+```python
+        python = self._interpreter(root)
+        self._preflight(python)
+        argv = [python, "-m", "pytest", "--tb=line", "-q", "--no-header",
+                "-p", "no:cacheprovider"]
+```
+
+**The tests change accordingly.** Fixture repos under `tmp_path` have no
+venv, so they would fall through to PATH `python` and refuse. Every
+construction in `tests/test_adapter_python.py` becomes
+`PythonAdapter(python=sys.executable)` (add `import sys`) — the interpreter
+running the suite always has pytest, so the suite passes with or without
+activation. Add two tests:
+
+```python
+def test_a_project_venv_is_preferred_over_path(tmp_path: Path):
+    venv_python = tmp_path / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("")
+    assert PythonAdapter()._interpreter(tmp_path) == str(venv_python)
+
+
+def test_an_interpreter_without_pytest_is_refused_loudly(tmp_path: Path):
+    from robigo.adapters.base import AdapterError
+
+    fake = tmp_path / "fake-python"
+    fake.write_text("#!/bin/sh\nexit 1\n")
+    fake.chmod(0o755)
+    with pytest.raises(AdapterError) as e:
+        PythonAdapter(python=str(fake)).run(tmp_path, None)
+    assert "--python" in str(e.value)
+```
+
+Task 10's loop must catch `AdapterError` alongside `ModelError` and return
+the `infrastructure` outcome for it.
+
+#### Amendment 2 (ruled 2026-08-09): the anchor must be inside the repo
+
+The brief's rationale for `--tb=line` — "one deterministic line per failure"
+— is **false for collection errors**. A broken import or a `SyntaxError` in an
+imported module makes pytest print a full traceback, so "the first
+`path:line:` match anywhere" lands on framework internals. Reproduced:
+
+```
+ModuleNotFoundError → /usr/lib/python3.14/importlib/__init__.py:88
+SyntaxError         → .venv/.../_pytest/python.py:508
+```
+
+Both discard the real failure, and broken imports and syntax errors are
+among the most common things a model produces mid-loop. Since Task 5 anchors
+scope on `diag.file`, a location outside the repo shows the model code it
+cannot edit — worse than no anchor at all.
+
+**The rule: an anchor must be a path inside the repo that is not under a
+virtualenv.** Filter candidates rather than guessing at traceback shape, and
+prefer pytest's own `E   <Type>: <message>` line for the message when one is
+present, since that names the real failure.
+
+```python
+_FAIL_LINE = re.compile(r"^(?P<file>[^\s:][^:]*\.py):(?P<line>\d+):\s*(?P<msg>.*)$")
+_ERROR_LINE = re.compile(r"^E\s+(?P<msg>\S.*)$")
+_EXCLUDED = ("site-packages", "dist-packages", "/.venv/", "/venv/")
+
+
+    def _first_failure(self, raw: str, root: Path) -> Diagnostic:
+        root = root.resolve()
+        summary = self._error_summary(raw)
+        for line in raw.split("\n"):
+            match = _FAIL_LINE.match(line.strip())
+            if not match:
+                continue
+            rel = self._in_repo(match.group("file"), root)
+            if rel is None:
+                continue
+            return Diagnostic(
+                False, rel, int(match.group("line")),
+                summary or match.group("msg"), raw,
+            )
+        return Diagnostic(False, None, None, summary or "tests failed", raw)
+
+    def _in_repo(self, candidate: str, root: Path) -> str | None:
+        """Repo-relative path, or None when the location is outside the
+        project. An anchor the model cannot edit is worse than none."""
+        if any(fragment in candidate for fragment in _EXCLUDED):
+            return None
+        path = Path(candidate)
+        resolved = path if path.is_absolute() else root / path
+        try:
+            return str(resolved.resolve().relative_to(root))
+        except (ValueError, OSError):
+            return None
+
+    def _error_summary(self, raw: str) -> str | None:
+        """pytest's own `E   <Type>: <message>` line, which names the real
+        failure when a traceback replaces --tb=line's one-liner."""
+        for line in raw.split("\n"):
+            match = _ERROR_LINE.match(line.rstrip())
+            if match:
+                return match.group("msg")
+        return None
+```
+
+Note the path group no longer requires a leading `/`: pytest emits relative
+paths in traceback frames, and `_in_repo` resolves them against the root.
+
+**A timeout is a model result.** The main subprocess had no
+`TimeoutExpired` handling, so a model-written infinite loop propagated an
+uncaught exception — neither a model result nor an infrastructure error,
+violating the classification rule outright. The cause is almost always the
+patch just applied, so it is fed back:
+
+```python
+        try:
+            proc = subprocess.run(
+                argv, cwd=root, capture_output=True, text=True,
+                timeout=_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return Diagnostic(
+                False, None, None,
+                f"tests timed out after {_TIMEOUT_S}s — the last patch may "
+                f"not terminate", "",
+            )
+```
+
+**Three tests, covering exactly the reproduced cases:**
+
+```python
+def test_a_broken_import_anchors_in_the_repo_not_in_importlib(repo: Path):
+    (repo / "tests" / "test_bad.py").write_text("import nonexistent_xyz\n")
+    diag = PythonAdapter(python=sys.executable).run(repo, None)
+    assert diag.passed is False
+    assert diag.file == "tests/test_bad.py"
+    assert "nonexistent_xyz" in diag.message
+
+
+def test_a_syntax_error_anchors_in_the_repo_not_in_pytest(repo: Path):
+    (repo / "src" / "fog.py").write_text("def radius(t:\n")
+    diag = PythonAdapter(python=sys.executable).run(repo, None)
+    assert diag.file is not None
+    assert "site-packages" not in diag.file
+    assert diag.file.startswith(("src/", "tests/"))
+
+
+def test_a_hanging_suite_is_a_model_result_not_a_crash(repo: Path, monkeypatch):
+    monkeypatch.setattr("robigo.adapters.python_._TIMEOUT_S", 3)
+    (repo / "tests" / "test_fog.py").write_text(
+        "def test_spin():\n    while True:\n        pass\n"
+    )
+    diag = PythonAdapter(python=sys.executable).run(repo, None)
+    assert diag.passed is False
+    assert "timed out" in diag.message
+```
+
+#### Amendment 3 (ruled 2026-08-09): the anchor must be untrusted input
+
+Amendment 2 dropped the leading-`/` requirement so relative traceback frames
+could match. That made **captured stdout eligible**, and `_in_repo` never
+checked the path exists. Reproduced:
+
+```python
+print("nonexistent_config.py:999: totally unrelated fake path text")
+assert 1 == 2, "the real failure"
+# → Diagnostic(file="nonexistent_config.py", line=999)
+```
+
+The model authors the test code, so model output could steer where the tool
+believes the failure lives — attacking the property Amendment 2 restored. A
+second defect from the same code: `_error_summary` scanned all of `raw`, so a
+multi-failure run could staple one failure's message onto another's anchor.
+
+**Treat pytest's output as untrusted.** Three guards:
+
+```python
+_CAPTURED = re.compile(r"^-+ Captured .* -+$")
+
+
+    def _first_failure(self, raw: str, root: Path) -> Diagnostic:
+        root = root.resolve()
+        lines = raw.split("\n")
+        anchor = self._anchor(lines, root)
+        if anchor is None:
+            summary = self._error_summary(lines, 0)
+            return Diagnostic(False, None, None, summary or "tests failed", raw)
+        index, rel, number, tail = anchor
+        summary = self._error_summary(lines, index)
+        return Diagnostic(False, rel, number, summary or tail, raw)
+
+    def _anchor(self, lines: list[str], root: Path) -> tuple[int, str, int, str] | None:
+        """The first in-repo, on-disk location outside captured output.
+        Captured output is model-authored: a test that prints
+        'fake.py:999: x' must never redirect where the failure is."""
+        captured = False
+        for index, line in enumerate(lines):
+            if _CAPTURED.match(line.strip()):
+                captured = True
+                continue
+            if line.startswith(("=", "_")):
+                captured = False
+            if captured:
+                continue
+            match = _FAIL_LINE.match(line.strip())
+            if not match:
+                continue
+            rel = self._in_repo(match.group("file"), root)
+            if rel is not None:
+                return index, rel, int(match.group("line")), match.group("msg")
+        return None
+
+    def _in_repo(self, candidate: str, root: Path) -> str | None:
+        if any(fragment in candidate for fragment in _EXCLUDED):
+            return None
+        path = Path(candidate)
+        resolved = path if path.is_absolute() else root / path
+        try:
+            resolved = resolved.resolve()
+            relative = resolved.relative_to(root)
+        except (ValueError, OSError):
+            return None
+        if not resolved.is_file():
+            return None          # a fabricated path is not an anchor
+        return str(relative)
+
+    def _error_summary(self, lines: list[str], start: int) -> str | None:
+        """pytest's `E   <Type>: <message>`, searched FORWARD from the
+        anchor, so a message can never be attached to a different
+        failure's location."""
+        for line in lines[start:]:
+            match = _ERROR_LINE.match(line.rstrip())
+            if match:
+                return match.group("msg")
+        return None
+```
+
+Searching forward is correct for the shape pytest actually emits: the
+in-repo frame precedes its own `E` line in a traceback.
+
+**Three tests:**
+
+```python
+def test_model_authored_stdout_cannot_hijack_the_anchor(repo: Path):
+    (repo / "tests" / "test_fog.py").write_text(
+        "def test_x():\n"
+        "    print('nonexistent_config.py:999: totally unrelated fake path')\n"
+        "    assert 1 == 2, 'the real failure'\n"
+    )
+    diag = PythonAdapter(python=sys.executable).run(repo, None)
+    assert diag.file == "tests/test_fog.py"
+    assert "nonexistent_config" not in (diag.file or "")
+
+
+def test_a_path_that_does_not_exist_is_not_an_anchor(tmp_path: Path):
+    assert PythonAdapter()._in_repo("nonexistent_config.py", tmp_path) is None
+
+
+def test_the_summary_is_paired_with_the_anchor_not_the_first_failure():
+    lines = [
+        "E   AssertionError: an earlier unrelated failure",
+        "tests/test_b.py:2: AssertionError",
+        "E   AssertionError: the failure that belongs here",
+    ]
+    assert PythonAdapter()._error_summary(lines, 1) == (
+        "AssertionError: the failure that belongs here"
+    )
 ```
 
 ---
@@ -1996,7 +2330,9 @@ def run(
         scope = resolve(diag, adapter, root)
     except (RefusedError, ScopeError) as exc:
         return _result("refused", 0, None, str(exc))
-    except ModelError as exc:
+    except (ModelError, AdapterError) as exc:
+        # AdapterError means the project's tests cannot be run at all --
+        # infrastructure, never a model result (Task 4's amendment).
         return _result("infrastructure", 0, None, str(exc))
 
     branch = None

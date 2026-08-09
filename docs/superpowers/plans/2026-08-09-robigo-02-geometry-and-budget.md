@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - **Runtime dependencies: none.** Standard library only.
-- `requires-python = ">=3.12"`; `from __future__ import annotations` in every module.
+- `requires-python = ">=3.12"`; `from __future__ import annotations` in every module. Type annotations on every **non-test** function signature; pytest test functions are exempt.
 - **Never return a window above the model's training context.** `llama-server` refuses a slot larger than the model was trained on, and Ollama accepts it silently and rope-degrades (spec §9 law 1).
 - **The advertised context length is never the usable window** (spec §3.1). It is one of three inputs, and not the binding one.
 - Window and quantization are recorded, per-family, as covariates — never pooled (spec §3.2, §9 law 9).

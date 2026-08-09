@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - **Runtime dependencies: none.** Standard library only.
-- `requires-python = ">=3.12"`; `from __future__ import annotations` in every module.
+- `requires-python = ">=3.12"`; `from __future__ import annotations` in every module. Type annotations on every **non-test** function signature; pytest test functions are exempt.
 - **Stages run cheapest-first and gate each other.** A family that fails stage 1 never reaches stage 2 (spec §5).
 - **Stage 0 probes; it does not trust metadata.** The computed window from plan 02 is a *hypothesis* to be verified by an actual load (spec §5, stage 0).
 - **Every profile records `seeds` and `mode`.** Quick-mode numbers are never publishable; the reporter marks them (spec §5.5).
