@@ -38,6 +38,18 @@ _CODEC_HELP = {
 }
 
 
+_UNREADABLE = "<unreadable or not valid UTF-8; not shown>\n"
+
+
+def _read(path: Path) -> str | None:
+    """None when the file cannot be read. Callers substitute a marker: a
+    file vanishing or being binary must not end the run."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 @dataclass(frozen=True)
 class Turn:
     action: str
@@ -53,12 +65,19 @@ def render(
 ) -> str:
     parts = [SYSTEM, _CODEC_HELP[codec], ""]
     for path in scope.full:
+        text = _read(path)
         parts.append(f"--- {_rel(path, root)} ---")
-        parts.append(path.read_text(encoding="utf-8"))
+        parts.append(text if text is not None else _UNREADABLE)
     for path in scope.signatures:
+        text = _read(path)
         parts.append(f"--- {_rel(path, root)} (signatures only) ---")
-        parts.append(signatures_of(path.read_text(encoding="utf-8")))
-    where = f"{diag.file}:{diag.line}" if diag.line else str(diag.file)
+        parts.append(signatures_of(text) if text is not None else _UNREADABLE)
+    if diag.file and diag.line:
+        where = f"{diag.file}:{diag.line}"
+    elif diag.file:
+        where = diag.file
+    else:
+        where = "(location unknown)"
     parts += ["--- failing test ---", f"{where}  {diag.message}", ""]
     for turn in history:
         parts.append(f"you: {turn.action}\nresult: {turn.result}")

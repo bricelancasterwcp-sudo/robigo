@@ -45,3 +45,28 @@ def test_history_is_included_oldest_first(tmp_path: Path):
 def test_system_prompt_stays_small():
     # The window is the scarce resource; the fixed cost must stay bounded.
     assert len(SYSTEM) < 1800
+
+
+def test_an_unreadable_file_is_reported_in_place_not_raised(tmp_path: Path):
+    scope = _scope(tmp_path)
+    (tmp_path / "a.py").write_bytes(b"\xff\xfe not utf-8\n")
+    diag = Diagnostic(False, "a.py", 2, "boom", "raw")
+    out = render(scope, diag, (), "search_replace", tmp_path)
+    assert "unreadable" in out
+
+
+def test_a_missing_signature_file_is_reported_in_place(tmp_path: Path):
+    scope = _scope(tmp_path)
+    (tmp_path / "b.py").unlink()
+    diag = Diagnostic(False, "a.py", 2, "boom", "raw")
+    out = render(scope, diag, (), "search_replace", tmp_path)
+    assert "unreadable" in out
+
+
+def test_a_diagnostic_with_no_file_never_renders_the_word_None(tmp_path: Path):
+    # Reachable: the adapter returns file=None for a timed-out suite and
+    # for a failure it could not anchor in the repo.
+    diag = Diagnostic(False, None, None, "tests timed out after 300s", "")
+    out = render(_scope(tmp_path), diag, (), "search_replace", tmp_path)
+    assert "location unknown" in out
+    assert "None:" not in out
