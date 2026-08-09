@@ -1183,7 +1183,6 @@ one hot for five minutes by default — `memory.free` already excludes those
 bytes and subtracting them again understates the window by roughly the size
 of the model. Task 5 owns that ordering; state the precondition in
 `usable_window`'s docstring here so the caller cannot get it wrong silently.
-```
 
 ---
 
