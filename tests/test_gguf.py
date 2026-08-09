@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import struct
 from pathlib import Path
 
@@ -128,64 +129,100 @@ def test_an_absurd_kv_count_ends_at_the_first_missing_byte(tmp_path):
         read_metadata(path)
 
 
+def _find_ollama_blobs_dir() -> Path | None:
+    """Resolve Ollama models directory in priority order:
+    1. OLLAMA_MODELS environment variable + /blobs
+    2. ~/.ollama/models/blobs (default)
+    3. Common deployment paths (/mnt/extra/ollama-models/blobs, /var/lib/ollama/blobs)
+    """
+    candidates = []
+
+    # 1. Check OLLAMA_MODELS environment variable
+    ollama_models = os.environ.get("OLLAMA_MODELS")
+    if ollama_models:
+        candidates.append(Path(ollama_models) / "blobs")
+
+    # 2. Check default ~/.ollama/models/blobs
+    candidates.append(Path.home() / ".ollama" / "models" / "blobs")
+
+    # 3. Check common deployment paths
+    candidates.append(Path("/mnt/extra/ollama-models/blobs"))
+    candidates.append(Path("/var/lib/ollama/blobs"))
+
+    for blobs_dir in candidates:
+        if blobs_dir.is_dir():
+            # Check if it has at least one sha256-* file
+            if list(blobs_dir.glob("sha256-*")):
+                return blobs_dir
+
+    return None
+
+
+_ollama_blobs_dir = _find_ollama_blobs_dir()
+
+
 @pytest.mark.skipif(
-    not Path.home() / ".ollama" / "models" / "blobs" in list(
-        (Path.home() / ".ollama" / "models").glob("blobs")
-    ) if (Path.home() / ".ollama" / "models").exists() else True,
-    reason="No Ollama blobs directory"
+    _ollama_blobs_dir is None,
+    reason="No Ollama blobs directory found",
 )
 def test_real_gguf_blobs_parse():
     """Re-verification against real GGUF blobs from Ollama store.
-    This test is optional and skipped if no blobs are found on disk."""
-    blobs_dir = Path.home() / ".ollama" / "models" / "blobs"
-    if not blobs_dir.exists():
-        pytest.skip("No Ollama blobs directory")
+    Resolves the blobs directory via OLLAMA_MODELS env var or ~/.ollama/models/blobs.
+    Parses the largest GGUF blobs and verifies geometry extraction."""
+    assert _ollama_blobs_dir is not None, "Blobs directory should exist if test runs"
 
-    # Find the largest dozen GGUF blobs (by size)
-    blobs = sorted(
-        [f for f in blobs_dir.glob("sha256-*") if f.is_file()],
-        key=lambda p: p.stat().st_size,
-        reverse=True
-    )[:12]
-
-    if not blobs:
-        pytest.skip("No blobs found")
-
-    parsed = 0
-    failed = []
-
-    for blob_path in blobs:
+    # Find GGUF blobs (filter by magic bytes) and take the largest handful
+    gguf_blobs = []
+    for blob_path in _ollama_blobs_dir.glob("sha256-*"):
+        if not blob_path.is_file():
+            continue
         try:
-            # Verify it looks like a GGUF (magic bytes)
             with open(blob_path, "rb") as f:
                 magic = f.read(4)
-                if magic != b"GGUF":
-                    continue
+                if magic == b"GGUF":
+                    gguf_blobs.append(blob_path)
+        except (OSError, IOError):
+            pass
 
-            # Read and parse metadata
+    if not gguf_blobs:
+        pytest.skip("No GGUF files found in blobs directory")
+
+    # Take the largest 10
+    gguf_blobs = sorted(gguf_blobs, key=lambda p: p.stat().st_size, reverse=True)[:10]
+
+    parsed_count = 0
+    geometry_count = 0
+    failed = []
+
+    for blob_path in gguf_blobs:
+        try:
+            # Parse metadata
             metadata = read_metadata(blob_path)
+            parsed_count += 1
 
-            # Verify sane geometry can be extracted
+            # Verify geometry can be extracted and has required fields
             try:
                 geometry = from_model_info(metadata)
-                assert geometry.layers > 0
-                assert geometry.kv_heads > 0
-                assert geometry.training_ctx > 0
-                parsed += 1
+                # Verify required fields are present and integral
+                assert isinstance(geometry.layers, int) and geometry.layers > 0
+                assert isinstance(geometry.kv_heads, int) and geometry.kv_heads > 0
+                assert isinstance(geometry.training_ctx, int) and geometry.training_ctx > 0
+                geometry_count += 1
             except Exception as e:
-                # Metadata parsed but geometry extraction failed
-                # This is OK - not all blobs have complete geometry
+                # Geometry extraction failed - metadata parsed but incomplete
                 pass
         except GGUFError as e:
-            failed.append((blob_path.name, str(e)))
+            failed.append((blob_path.name, f"GGUFError: {str(e)[:60]}"))
         except Exception as e:
-            failed.append((blob_path.name, f"unexpected: {type(e).__name__}"))
+            failed.append((blob_path.name, f"{type(e).__name__}: {str(e)[:60]}"))
 
     # Report results
+    print(f"\nReal-blob re-verification: {parsed_count}/{len(gguf_blobs)} blobs parsed, "
+          f"{geometry_count} with complete geometry")
     if failed:
         failures_str = "\n".join(f"  {name}: {msg}" for name, msg in failed)
-        print(f"\nRe-verification results: {parsed} parsed, {len(failed)} failed")
-        print(f"Failures:\n{failures_str}")
+        print(f"Failed:\n{failures_str}")
 
-    # Success if at least some blobs parsed (not all blobs may have geometry)
-    assert parsed > 0 or len(blobs) == 0, f"Failed to parse any blobs: {failed}"
+    # Assert all tested blobs parsed successfully
+    assert len(failed) == 0, f"Expected all blobs to parse, but {len(failed)} failed"
+    assert parsed_count == len(gguf_blobs), f"Expected all {len(gguf_blobs)} blobs to parse"
