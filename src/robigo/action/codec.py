@@ -24,6 +24,18 @@ def apply_search_replace(original: str, payload: str) -> str:
             "<<<<<<< SEARCH, then the exact existing lines, then =======, "
             "then the replacement, then >>>>>>> REPLACE."
         )
+    # Before anything is applied: `finditer` silently discards whatever falls
+    # outside a matched span, so a payload whose last block is missing its
+    # `=======` or `>>>>>>> REPLACE` used to apply one of two intended edits
+    # and report success -- a half-edit, written and committed.
+    opened = payload.count("<<<<<<< SEARCH")
+    if opened != len(blocks):
+        raise PatchError(
+            f"this payload has {opened} SEARCH markers but only "
+            f"{len(blocks)} complete blocks, so {opened - len(blocks)} edit(s) "
+            f"would have been silently dropped. Every block needs all three "
+            f"markers: <<<<<<< SEARCH, =======, and >>>>>>> REPLACE."
+        )
     text = original
     for block in blocks:
         text = _apply_one(text, block.group("search"), block.group("replace"))

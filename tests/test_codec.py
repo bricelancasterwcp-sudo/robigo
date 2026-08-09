@@ -45,6 +45,21 @@ def test_an_ambiguous_search_block_is_refused():
     assert "2 times" in str(e.value)
 
 
+def test_a_dangling_trailing_marker_is_refused_rather_than_half_applied():
+    # Verified: a well-formed first block plus a second one missing its
+    # ======= and >>>>>>> REPLACE applied one of two intended edits and
+    # returned success. finditer drops whatever falls outside a match.
+    payload = (
+        _block("    r = compute(t)\n", "    r = compute(t) * 2\n")
+        + "<<<<<<< SEARCH\n    return r\n"
+    )
+    with pytest.raises(PatchError) as e:
+        apply_search_replace(FILE, payload)
+    message = str(e.value)
+    assert "2 SEARCH markers but only 1 complete blocks" in message
+    assert "1 edit(s) would have been silently dropped" in message
+
+
 def test_a_payload_with_no_blocks_is_refused():
     with pytest.raises(PatchError) as e:
         apply_search_replace(FILE, "just some code\n")

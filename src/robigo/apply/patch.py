@@ -26,7 +26,14 @@ def apply_patch(
     target = check_target(action.arg, root, scope, allow_test_edits)
     try:
         original = target.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
+    except UnicodeDecodeError as exc:
+        # Named separately: "may have been deleted" sent the model looking
+        # for a file that is sitting right there in an encoding robigo
+        # cannot round-trip. Same wording as `loop._read` and `render`.
+        raise PatchError(
+            f"{action.arg} is not valid UTF-8, so robigo cannot patch it."
+        ) from exc
+    except OSError as exc:
         raise PatchError(
             f"{action.arg} could not be read ({exc}), so it was not patched. "
             f"It may have been deleted, or may not be text -- use `read` to "

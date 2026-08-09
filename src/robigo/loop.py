@@ -286,7 +286,17 @@ def _read(root: Path, arg: str) -> str:
     if not path.is_file():
         return missing
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        # Strict, like every other surface. `errors="replace"` handed back
+        # text with U+FFFD in it that can never match as a SEARCH block, so a
+        # model that trusted it looped to the stall cap -- while `render`
+        # called the same file unreadable and `patch` called it possibly
+        # deleted, all in one turn.
+        return (
+            f"cannot read '{parts[0]}': not valid UTF-8, so robigo cannot "
+            f"patch it"
+        )
     except OSError as exc:
         return f"cannot read '{parts[0]}': {exc.strerror}"
     return text[:_READ_CAP] + "\n<truncated>\n" if len(text) > _READ_CAP else text
