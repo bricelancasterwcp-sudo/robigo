@@ -2121,3 +2121,97 @@ from a real run rather than constructed.
 - A window request above the training context is clamped, never granted.
 - An impossible scope refuses with the arithmetic printed, before any
   generation.
+
+---
+
+## Whole-branch review fix wave (ruled 2026-08-09)
+
+The whole-branch review found six defects that five passing per-task reviews
+could not see, exactly as `CARRIED-DEBT.md` lesson 2 predicts. Each is stated
+as the invariant to restore.
+
+**1. `GGUFError` escapes the CLI contract (Critical).** `gguf.py` defines it
+independent of `GeometryError`, `detect.py` does not wrap it, and `cli.py`
+catches only `(GeometryError, OSError)`. Grep confirms no production caller
+catches it. A truncated `--gguf` — the interrupted-download shape
+`tests/test_gguf.py` itself names — escapes as a traceback and exit 1, outside
+the five contract codes.
+
+*Invariant:* every failure to determine geometry reaches the caller as
+`GeometryError`, whatever its source. Wrap at `detect.py`, the boundary that
+promises geometry, rather than coupling `gguf.py` to `geometry.py` — the GGUF
+reader is deliberately standalone. Add a CLI test on a corrupt `--gguf`
+asserting a contract exit code.
+
+**2. Three raw exceptions escape `detect.py` (Critical).** All reproduced:
+`{"model_info": null}` → `AttributeError`, because `.get(k, {})` defaults only
+when the key is *absent*, never when its value is `null` — the same shape as
+the `.get("size", 0)` bug one level up. `{"models": null}` → `TypeError`.
+`size: Infinity` → `OverflowError`, which `geometry.py:40` catches *with a
+comment explaining why* while its sibling does not.
+
+*Invariant:* a malformed daemon response raises `GeometryError`. Validate the
+envelope's shape — `/api/show` a `dict`, `/api/tags`'s `models` a `list` — and
+catch `OverflowError` alongside `TypeError`/`ValueError`. Prefer one shared
+converter over three call sites drifting again.
+
+**3. `Budget.history = 200` under-reserves by 12x (Important).** Measured
+against `loop.py`'s `_READ_CAP = 4000` chars and two turns kept: two capped
+`read` results render to 2449 tokens. `fit()` therefore *accepts prompts that
+overflow* — at a comfortable window 4096 it returns rung 1 and the real prompt
+exceeds the window by 1095 tokens. That is the says-fits-then-truncates
+direction.
+
+*Invariant:* no fixed cost is a literal that a second module can contradict.
+Derive the default from the same constant `loop.py` caps reads with, times the
+turns it keeps, and round toward over-reserving — over-reserving costs scope,
+under-reserving costs the run. The exact figure belongs to the caller that
+knows its real turns; the *default* must be safe, not optimistic.
+
+**4. The refusal's arithmetic does not reconcile (Important).** `history` is
+subtracted from `scope_budget` but never printed, so the printed terms do not
+produce the printed total: `window 800 / system 60 / reserve 128 /
+diagnostic 60` shown against `available for scope 352`, where those terms give
+552. The law is that a refusal prints *the arithmetic*; a number the user
+cannot reproduce is not that. The existing test cannot see it — it passes
+`history=0` and only asserts three substrings exist.
+
+*Invariant:* every term subtracted appears in the message, and the printed
+terms reconcile to the printed total. Test with a non-zero `history`.
+
+**5. Invariant 2's own test cannot fail (Important).** `tests/test_budget.py`
+asserts `_cost(scope, root) == estimate_tokens(_scope_section(scope, root))`,
+but `_cost` *is* that expression — both sides are one call and `render` is
+never invoked. Proven by giving `render` a private copy of `_scope_section`
+differing only in the header delimiter: the whole suite stayed green. The
+delegation is real in shipped code, so this is a test defect, but it is the
+only thing holding the invariant the amendment was written for.
+
+*Invariant:* the test must relate the costed text to **`render`'s actual
+output** — assert the section appears verbatim inside `render(...)`. A test
+whose two sides are the same expression pins nothing.
+
+**6. `--kv-bits 8` doubles the window and is never sent to any server
+(Important).** Measured: codegemma with 896 MiB spare returns 2048 at 16 bits
+and 4096 at 8, but the server still allocates f16, so that window needs
+1792 MiB against 896 MiB — a 2.0x overcommit, OOM at load. Neither payload
+carries a cache-type field, and neither backend accepts one per request:
+Ollama takes `OLLAMA_KV_CACHE_TYPE` at server start, llama.cpp
+`--cache-type-k` at launch.
+
+*Ruling:* keep the flag, because robigo cannot set the server's KV type and
+should not pretend to — but it **describes** the server's existing
+configuration rather than requesting one. Say so in the flag's help, and say
+that a value the server does not match overcommits VRAM by that ratio. A flag
+whose help implies it changes the server is the defect; the arithmetic is
+correct given a truthfully-declared server.
+
+**7. Small ones in the same wave.** `degrade` raises for `step >= 5` but
+silently returns `self` for `0` and negatives — the reason given for the upper
+bound applies below the ladder too. And four added tests are not honest: a
+`pytest.raises(Exception)` broad enough to pass if the constructor itself
+raises; an `importorskip` on a module already imported at the top of the file,
+so it can never fire; a test that stubs `plan_window` but not `build_client`
+and therefore **POSTs to a real daemon**, violating the offline-tests
+constraint outright; and `estimate_tokens("x" * 36) == 11` under a name
+claiming it tests conservatism for code.
