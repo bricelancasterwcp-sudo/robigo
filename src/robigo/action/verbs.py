@@ -73,7 +73,9 @@ def _read_payload(
             f"'patch {arg}' needs a fenced payload immediately after the "
             f"header line, opened and closed with ```."
         )
-    lang = _FENCE.match(lines[open_at]).group(1)
+    # Stripped for the same reason as _next_fence: the opening fence may
+    # be indented, and the language tag still needs to be read off it.
+    lang = _FENCE.match(lines[open_at].strip()).group(1)
     for close_at in range(open_at + 1, len(lines)):
         if lines[close_at].strip() == "```":
             body = "\n".join(lines[open_at + 1 : close_at])
@@ -86,7 +88,10 @@ def _read_payload(
 
 def _next_fence(lines: list[str], start: int) -> int | None:
     for i in range(start, len(lines)):
-        if _FENCE.match(lines[i]):
+        # Stripped, to match the closing-fence check in _read_payload.
+        # Asymmetry here rejects an indented payload with a message
+        # claiming no payload exists.
+        if _FENCE.match(lines[i].strip()):
             return i
         if lines[i].strip():
             return None

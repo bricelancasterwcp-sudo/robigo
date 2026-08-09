@@ -63,3 +63,11 @@ def test_rejects_a_second_action():
 def test_a_verb_word_inside_a_payload_is_not_a_second_action():
     text = "patch a.py\n```\nrun the thing\n```\n"
     assert parse(text).payload == "run the thing\n"
+
+
+def test_an_indented_fence_is_still_a_payload():
+    # Both fence checks must tolerate indentation equally. Small models
+    # indent erratically, and a payload rejected as "no fenced payload"
+    # teaches the model the wrong lesson while burning a turn.
+    text = "patch a.py\n  ```\n  x = 1\n  ```\n"
+    assert parse(text).payload == "  x = 1\n"
