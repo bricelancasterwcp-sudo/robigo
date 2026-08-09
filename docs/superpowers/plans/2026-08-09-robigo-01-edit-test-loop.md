@@ -2172,10 +2172,13 @@ def apply_patch(
     original = target.read_text(encoding="utf-8")
     new_text = CODECS[codec](original, action.payload or "")
     if not adapter.syntax_ok(new_text):
+        # The word "syntax" is load-bearing: Step 1's test asserts on it,
+        # and the earlier draft of this message omitted it, so the test
+        # could not have passed against it.
         raise PatchError(
-            f"the result of this patch does not parse as valid "
-            f"{adapter.name}, so it was not written. Check brackets and "
-            f"indentation in the replacement lines."
+            f"applying this patch would leave {action.arg} with invalid "
+            f"{adapter.name} syntax, so it was not written. Check brackets "
+            f"and indentation in the replacement lines."
         )
     write_atomic(target, new_text)
     return target
