@@ -1,6 +1,7 @@
 # tests/test_loop.py
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -103,6 +104,17 @@ def test_a_passing_suite_refuses_before_any_generation(repo: Path):
     assert (result.outcome, result.exit_code) == ("refused", OUTCOMES["refused"])
     assert "failing test" in result.detail
     assert client.prompts == []
+
+
+def test_a_refused_run_still_leaves_a_meta_json(repo: Path):
+    # The wrapper's whole purpose, previously unguarded by any test.
+    (repo / "src" / "fog.py").write_text("def radius(t):\n    return t * 2\n")
+    result = run("fix", repo, _ScriptedClient(FIX),
+                 PythonAdapter(python=sys.executable), codec="search_replace")
+    assert result.outcome == "refused"
+    metas = list((repo / ".robigo" / "runs").glob("*/meta.json"))
+    assert len(metas) == 1
+    assert json.loads(metas[0].read_text())["outcome"] == "refused"
 
 
 def test_overflow_with_evidence_is_budget_exhausted_not_infrastructure(repo: Path):

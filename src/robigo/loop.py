@@ -1,7 +1,6 @@
 # src/robigo/loop.py
 from __future__ import annotations
 
-import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +21,7 @@ from robigo.apply.safety import (
 from robigo.context.render import Turn, render
 from robigo.context.scope import Scope, ScopeError, explicit, resolve
 from robigo.model.client import ContextOverflowError, Generation, ModelClient, ModelError
-from robigo.record import RunRecorder, next_run_id
+from robigo.record import RunRecorder, new_recorder, slug
 
 _READ_CAP = 4000
 _SKIP = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__", ".robigo"})
@@ -66,7 +65,7 @@ def run(
     """Wrapper only. `_execute` is the loop; this exists so `finish` runs on
     every return path without touching any of them."""
     if recorder is None:
-        recorder = RunRecorder(root, next_run_id(root, _slug(task)))
+        recorder = new_recorder(root, task)
     result = _execute(
         task, root, client, adapter, codec=codec, turn_cap=turn_cap,
         allow_test_edits=allow_test_edits, use_git=use_git,
@@ -115,7 +114,7 @@ def _execute(
             # refusal, not an infrastructure failure, and it must not leave
             # a `robigo/*` branch behind for a run that never really started.
             refuse_ignored(root, scope.full)
-            branch = start_branch(root, _slug(task))
+            branch = start_branch(root, slug(task))
             snapshot(root, "robigo: snapshot before first patch")
     except (RefusedError, ScopeError) as exc:
         return _result("refused", 0, branch, str(exc))
@@ -144,9 +143,11 @@ def _execute(
             # with none, there is nothing to preserve and it is a refusal.
             # Which check caught it does not matter -- only whether
             # evidence exists.
+            recorder.turn(prompt, f"<no reply: {exc}>", diag.raw)
             outcome = "budget_exhausted" if turn > 1 else "refused"
             return _result(outcome, turn, branch, str(exc))
         except ModelError as exc:
+            recorder.turn(prompt, f"<no reply: {exc}>", diag.raw)
             return _result("infrastructure", turn, branch, str(exc))
 
         action_text, result_text, applied, target = _take_turn(
@@ -260,7 +261,3 @@ def _find(root: Path, symbol: str) -> str:
                 if len(hits) >= 20:
                     return "\n".join(hits)
     return "\n".join(hits) or f"'{symbol}' not found"
-
-
-def _slug(task: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", task.lower()).strip("-")[:24] or "run"

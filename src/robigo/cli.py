@@ -6,9 +6,9 @@ import sys
 from pathlib import Path
 
 from robigo.adapters.python_ import PythonAdapter
-from robigo.loop import _slug, run
+from robigo.loop import OUTCOMES, run
 from robigo.model.client import LlamaCppClient, ModelClient, OllamaClient
-from robigo.record import RunRecorder, next_run_id
+from robigo.record import new_recorder
 
 _STOP = ("\nread ", "\nfind ", "\nrun\n", "\ndone ")
 
@@ -53,7 +53,10 @@ def main(argv: list[str] | None = None) -> int:
 
     adapter = PythonAdapter(python=str(args.python) if args.python else None)
     root = Path(args.root).resolve()
-    recorder = RunRecorder(root, next_run_id(root, _slug(args.task)))
+    if not root.is_dir():
+        print(f"--root {args.root} is not a directory")
+        return OUTCOMES["refused"]
+    recorder = new_recorder(root, args.task)
     result = run(
         args.task,
         root,

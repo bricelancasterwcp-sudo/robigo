@@ -2,7 +2,14 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from robigo.loop import RunResult
+
+_IGNORE_ALL = "*\n"
 
 
 def next_run_id(root: Path, slug: str) -> str:
@@ -16,25 +23,23 @@ def next_run_id(root: Path, slug: str) -> str:
 
 
 class RunRecorder:
-    """Prompts, raw replies, and adapter output, verbatim. Verbatim is the
-    point: trailing whitespace and line endings are exactly what breaks a
-    SEARCH block, so normalising here would erase the evidence. These
-    records are also corpus candidates (spec 5.1).
+    """Prompts, raw replies, and adapter output, verbatim.
 
-    A record is a diagnostic, not the product: a read-only `.robigo/`, a
-    full disk, or a permission error must not turn a passing repair into a
-    crash. The first write failure is remembered on `.error` (not raised)
-    and disables every write that follows, so the reason is not lost either.
+    Verbatim is the point: trailing whitespace and line endings are exactly
+    what break a SEARCH block, so normalising here would erase the evidence.
+    These records are also corpus candidates.
+
+    Nothing is created until something is written, so a run refused before it
+    starts leaves no directory behind — the same law `safety.py` applies to
+    branches. Once `error` is set, no further file is written, including
+    `meta.json`.
     """
 
     def __init__(self, root: Path, run_id: str) -> None:
         self.dir = root / ".robigo" / "runs" / run_id
         self.error: str | None = None
         self._turns = 0
-        try:
-            self.dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            self.error = f"cannot create {self.dir}: {exc}"
+        self._ready = False
 
     def turn(self, prompt: str, reply: str, adapter_raw: str) -> None:
         self._turns += 1
@@ -44,7 +49,7 @@ class RunRecorder:
         self._write(f"{stem}-adapter.txt", adapter_raw)
 
     def finish(
-        self, result, model: str, window: int, codec: str
+        self, result: RunResult, model: str, window: int, codec: str
     ) -> None:
         self._write("meta.json", json.dumps({
             "outcome": result.outcome, "turns": result.turns,
@@ -53,13 +58,42 @@ class RunRecorder:
             "codec": codec,
         }, indent=2, sort_keys=True))
 
+    def _ensure(self) -> bool:
+        """Create the tree on first write, and make `.robigo/` ignore itself
+        so `snapshot`'s `git add -A` can never commit robigo's transcripts
+        into the user's repository."""
+        if self._ready or self.error is not None:
+            return self.error is None
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            marker = self.dir.parent.parent / ".gitignore"
+            if not marker.exists():
+                marker.write_text(_IGNORE_ALL, encoding="utf-8")
+        except OSError as exc:
+            self.error = f"cannot create {self.dir}: {exc}"
+            return False
+        self._ready = True
+        return True
+
     def _write(self, name: str, text: str) -> None:
-        """Records are diagnostics. A write failure is remembered, not
-        raised: losing the transcript is bad, failing a completed repair
-        because the transcript could not be saved is worse."""
-        if self.error is not None:
+        """A write failure is remembered, not raised: losing the transcript
+        is bad, failing a completed repair because the transcript could not
+        be saved is worse. `UnicodeError` is caught alongside `OSError`
+        because a lone surrogate in a model reply raises
+        `UnicodeEncodeError` — a `ValueError`, not an `OSError` — which
+        would otherwise escape `run()` *after* the repair had landed."""
+        if not self._ensure():
             return
         try:
             (self.dir / name).write_text(text, encoding="utf-8", newline="")
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             self.error = f"cannot write {name}: {exc}"
+
+
+def slug(task: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", task.lower()).strip("-")[:24] or "run"
+
+
+def new_recorder(root: Path, task: str) -> RunRecorder:
+    """The single place a run id is named, so `cli` and `loop` cannot drift."""
+    return RunRecorder(root, next_run_id(root, slug(task)))
