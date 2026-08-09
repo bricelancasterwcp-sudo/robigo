@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -33,6 +34,14 @@ class PythonAdapter:
                 return str(candidate)
         return "python"
 
+    def _env(self) -> dict[str, str]:
+        # No bytecode: a .pyc written during our own test run would be
+        # committed by snapshot and then rewritten by the next run, and
+        # `git checkout <branch>` would abort on it — breaking the undo
+        # recipe the CLI prints. Do not "optimise" this away by restoring
+        # the bytecode cache.
+        return {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+
     def _preflight(self, python: str) -> None:
         """Refuse loudly rather than fail per-run with a confusing
         ModuleNotFoundError from inside a subprocess."""
@@ -40,6 +49,7 @@ class PythonAdapter:
             proc = subprocess.run(
                 [python, "-m", "pytest", "--version"],
                 capture_output=True, text=True, timeout=60,
+                env=self._env(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise AdapterError(f"cannot execute {python!r}: {exc}") from exc
@@ -60,7 +70,7 @@ class PythonAdapter:
         try:
             proc = subprocess.run(
                 argv, cwd=root, capture_output=True, text=True,
-                timeout=_TIMEOUT_S,
+                timeout=_TIMEOUT_S, env=self._env(),
             )
         except subprocess.TimeoutExpired:
             return Diagnostic(

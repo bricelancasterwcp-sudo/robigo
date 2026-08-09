@@ -193,6 +193,87 @@ def test_the_printed_undo_recipe_really_restores_the_pre_run_tree(
     assert _tree(tmp_path) == before
 
 
+_NO_FIX = """patch src/fog.py
+```python
+<<<<<<< SEARCH
+    return t
+=======
+    return t + 0
+>>>>>>> REPLACE
+```
+"""
+
+_FIX_AGAIN = """patch src/fog.py
+```python
+<<<<<<< SEARCH
+    return t + 0
+=======
+    return t * 2
+>>>>>>> REPLACE
+```
+"""
+
+
+def test_the_undo_recipe_works_in_a_repo_that_does_not_ignore_pycache(
+    tmp_path: Path, capsys, monkeypatch
+):
+    """The other half of the Critical, which naming the branch could not fix.
+
+    A `.pyc` written by robigo's own test run was committed by `snapshot`,
+    rewritten by the next run, and `git checkout <branch>` then aborted on it:
+    *"Your local changes to the following files would be overwritten"*. The
+    fix is upstream -- the adapter's subprocess never writes bytecode -- so
+    there is nothing to commit and nothing to rewrite.
+    """
+    import robigo.cli as cli_module
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    # A .gitignore that says nothing about bytecode: the shape robigo's own
+    # fixtures create, and the shape the recipe used to abort in.
+    (tmp_path / ".gitignore").write_text("secret.txt\n")
+    (tmp_path / "src" / "fog.py").write_text("def radius(t):\n    return t\n")
+    (tmp_path / "tests" / "test_fog.py").write_text(
+        "import sys\nsys.path.insert(0, 'src')\nfrom fog import radius\n\n"
+        "def test_radius():\n    assert radius(2) == 4\n"
+    )
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-qm", "init")
+
+    (tmp_path / "scratch1.py").write_text("WIP = 1\n")
+    monkeypatch.setattr(cli_module, "build_client",
+                        lambda args: _Scripted(_NO_FIX))
+    assert main(["--root", str(tmp_path), "--python", sys.executable,
+                 "--model", "m", "first"]) == 1        # stalled, but it branched
+
+    (tmp_path / "scratch2.py").write_text("WIP = 2\n")
+    before = _tree(tmp_path)
+    capsys.readouterr()
+    monkeypatch.setattr(cli_module, "build_client",
+                        lambda args: _Scripted(_FIX_AGAIN))
+    assert main(["--root", str(tmp_path), "--python", sys.executable,
+                 "--model", "m", "second"]) == 0
+    printed = capsys.readouterr().out
+
+    # Nothing bytecode-shaped is left behind, tracked or dirty. This is what
+    # made the checkout abort.
+    assert list(tmp_path.rglob("__pycache__")) == []
+    assert _git(tmp_path, "status", "--porcelain").stdout == ""
+    assert ".pyc" not in _git(tmp_path, "ls-files").stdout
+
+    recipe = [
+        line[line.index("git "):].split("#")[0].split()
+        for line in printed.splitlines() if "git checkout" in line
+    ]
+    assert len(recipe) == 2, printed
+    for argv in recipe:
+        done = _git(tmp_path, *argv[1:])
+        assert done.returncode == 0, (argv, done.stdout, done.stderr)
+    assert _tree(tmp_path) == before
+
+
 def test_a_raising_adapter_is_exit_4_not_a_traceback(tmp_path: Path, capsys,
                                                      monkeypatch):
     # An escaping exception is the "never conflated" law broken in the more
