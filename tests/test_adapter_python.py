@@ -99,3 +99,36 @@ def test_a_hanging_suite_is_a_model_result_not_a_crash(repo: Path, monkeypatch):
     diag = PythonAdapter(python=sys.executable).run(repo, None)
     assert diag.passed is False
     assert "timed out" in diag.message
+
+
+def test_model_authored_stdout_cannot_hijack_the_anchor(repo: Path):
+    (repo / "tests" / "test_fog.py").write_text(
+        "def test_x():\n"
+        "    print('nonexistent_config.py:999: totally unrelated fake path')\n"
+        "    assert 1 == 2, 'the real failure'\n"
+    )
+    diag = PythonAdapter(python=sys.executable).run(repo, None)
+    assert diag.file == "tests/test_fog.py"
+    assert "nonexistent_config" not in (diag.file or "")
+
+
+def test_a_path_that_does_not_exist_is_not_an_anchor(tmp_path: Path):
+    assert PythonAdapter()._in_repo("nonexistent_config.py", tmp_path, 1) is None
+
+
+def test_a_real_file_at_an_impossible_line_is_not_an_anchor(tmp_path: Path):
+    (tmp_path / "short.py").write_text("x = 1\n")
+    adapter = PythonAdapter()
+    assert adapter._in_repo("short.py", tmp_path, 1) == "short.py"
+    assert adapter._in_repo("short.py", tmp_path, 999) is None
+
+
+def test_the_summary_is_paired_with_the_anchor_not_the_first_failure():
+    lines = [
+        "E   AssertionError: an earlier unrelated failure",
+        "tests/test_b.py:2: AssertionError",
+        "E   AssertionError: the failure that belongs here",
+    ]
+    assert PythonAdapter()._error_summary(lines, 1) == (
+        "AssertionError: the failure that belongs here"
+    )

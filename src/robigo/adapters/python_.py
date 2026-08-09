@@ -73,36 +73,61 @@ class PythonAdapter:
 
     def _first_failure(self, raw: str, root: Path) -> Diagnostic:
         root = root.resolve()
-        summary = self._error_summary(raw)
-        for line in raw.split("\n"):
+        lines = raw.split("\n")
+        anchor = self._anchor(lines, root)
+        if anchor is None:
+            summary = self._error_summary(lines, 0)
+            return Diagnostic(False, None, None, summary or "tests failed", raw)
+        index, rel, number, tail = anchor
+        summary = self._error_summary(lines, index)
+        return Diagnostic(False, rel, number, summary or tail, raw)
+
+    def _anchor(self, lines: list[str], root: Path) -> tuple[int, str, int, str] | None:
+        for index, line in enumerate(lines):
             match = _FAIL_LINE.match(line.strip())
             if not match:
                 continue
-            rel = self._in_repo(match.group("file"), root)
-            if rel is None:
-                continue
-            return Diagnostic(
-                False, rel, int(match.group("line")),
-                summary or match.group("msg"), raw,
-            )
-        return Diagnostic(False, None, None, summary or "tests failed", raw)
+            number = int(match.group("line"))
+            rel = self._in_repo(match.group("file"), root, number)
+            if rel is not None:
+                return index, rel, number, match.group("msg")
+        return None
 
-    def _in_repo(self, candidate: str, root: Path) -> str | None:
-        """Repo-relative path, or None when the location is outside the
-        project. An anchor the model cannot edit is worse than none."""
+    def _in_repo(self, candidate: str, root: Path, number: int) -> str | None:
+        """Repo-relative path for a location that could plausibly be a real
+        failure site, or None.
+
+        An anchor the model cannot edit is worse than none, and a location
+        the model merely PRINTED is not a failure site — so the file must
+        exist and the line must fall inside it.
+
+        Residual, accepted: a model that prints "src/real.py:12: ..." —
+        naming a real file at a plausible line — can still misdirect the
+        anchor. Bounding captured output by layout was tried twice and
+        failed twice; the cost here is one wasted turn, and Task 5 refuses
+        an anchor that is not a real file.
+        """
         if any(fragment in candidate for fragment in _EXCLUDED):
             return None
         path = Path(candidate)
         resolved = path if path.is_absolute() else root / path
         try:
-            return str(resolved.resolve().relative_to(root))
+            resolved = resolved.resolve()
+            relative = resolved.relative_to(root)
+            if not resolved.is_file():
+                return None
+            body = resolved.read_text(encoding="utf-8", errors="replace")
+            if number < 1 or number > len(body.splitlines()):
+                return None
         except (ValueError, OSError):
             return None
+        return str(relative)
 
-    def _error_summary(self, raw: str) -> str | None:
-        """pytest's own `E   <Type>: <message>` line, which names the real
-        failure when a traceback replaces --tb=line's one-liner."""
-        for line in raw.split("\n"):
+    def _error_summary(self, lines: list[str], start: int) -> str | None:
+        """pytest's `E   <Type>: <message>`, searched FORWARD from the
+        anchor, so a message can never be attached to a different
+        failure's location."""
+        for line in lines[start:]:
             match = _ERROR_LINE.match(line.rstrip())
             if match:
                 return match.group("msg")
