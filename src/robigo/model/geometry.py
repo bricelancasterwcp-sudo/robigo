@@ -156,6 +156,8 @@ class WindowPlan:
     limited_by: str
     free_vram: int | None
     kv_per_token: int
+    weights_bytes: int
+    overhead_bytes: int
 
 
 def free_vram_bytes(runner: Callable[[], str] | None = None) -> int | None:
@@ -227,4 +229,10 @@ def usable_window(
         limited_by=limited_by,
         free_vram=free_vram,
         kv_per_token=per_token,
+        # Carried through so a caller printing a refusal (a window of 0
+        # cannot serve any request, and no degradation rung can help --
+        # the ladder shrinks the scope, not the KV cache) can show the
+        # exact arithmetic without a second, redundant measurement.
+        weights_bytes=weights_bytes,
+        overhead_bytes=overhead_bytes,
     )

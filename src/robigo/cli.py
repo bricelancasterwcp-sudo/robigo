@@ -97,6 +97,32 @@ def main(argv: list[str] | None = None) -> int:
     args.window = plan.window
     print(f"window {plan.window} (limited by {plan.limited_by}, "
           f"{plan.kv_per_token // 1024} KiB/token)")
+    if plan.window <= 0:
+        # No degradation rung can rescue this: the five-step ladder shrinks
+        # the SCOPE, not the KV cache, so a 0-token window has no scope
+        # small enough to fit it. Refused, not infrastructure -- nothing in
+        # the environment is broken, the model simply does not fit this
+        # card, and exit 4 is reserved for a harness that could not run at
+        # all. Stops here, before adapter/root setup, rather than printing
+        # this line and going on to build a prompt against a 0-token budget.
+        if plan.limited_by == "vram":
+            # limited_by can only be "vram" when free_vram was measured
+            # (usable_window only adds that limit when it is not None), so
+            # this division is safe by construction, not by a runtime check.
+            mib = 1024 * 1024
+            print(
+                f"refused  turns=0  window 0: free {plan.free_vram // mib} "
+                f"MiB - weights {plan.weights_bytes // mib} MiB - margin "
+                f"{plan.overhead_bytes // mib} MiB leaves no room for a "
+                f"single token at {plan.kv_per_token // 1024} KiB/token. "
+                f"Pick a smaller quantisation, a smaller model, or free VRAM."
+            )
+        else:
+            print(
+                f"refused  turns=0  window 0 (limited by {plan.limited_by}): "
+                f"nothing can run with a zero-token window."
+            )
+        return OUTCOMES["refused"]
 
     adapter = PythonAdapter(python=str(args.python) if args.python else None)
     root = Path(args.root).resolve()

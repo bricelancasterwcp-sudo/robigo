@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from robigo.model.detect import detect_geometry, plan_window, weights_bytes
-from robigo.model.geometry import GeometryError
+from robigo.model.geometry import GeometryError, WindowPlan
 
 # Repeated rather than imported from tests/test_geometry.py: cross-test
 # imports need tests/ to be an importable package, which it is not.
@@ -96,7 +96,8 @@ def test_cli_accepts_the_word_auto(monkeypatch, tmp_path: Path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     monkeypatch.setattr("robigo.cli.plan_window",
                         lambda *a, **k: pytest.importorskip("robigo.model.geometry")
-                        .WindowPlan(4096, "vram", None, 56 * 1024))
+                        .WindowPlan(4096, "vram", None, 56 * 1024,
+                                    8 * 1024**3, 256 * 1024**2))
     # The model does not exist, so this must end as infrastructure (4),
     # proving the window was resolved and the loop was entered.
     assert main(["--root", str(tmp_path), "--model", "nope",
@@ -112,6 +113,176 @@ def test_window_rejects_a_non_auto_non_integer_value(capsys):
     # codes, same as the pre-existing --scope-swallows-task usage error.
     assert main(["--model", "m", "--window", "not-a-number", "fix"]) == 64
     assert "--window" in capsys.readouterr().out
+
+
+# --- Amendment 2 (ruled 2026-08-09): a zero window must refuse, and two --
+# --- messages are wrong. -----------------------------------------------
+
+
+def test_cli_refuses_on_a_zero_window_with_arithmetic(monkeypatch, tmp_path: Path,
+                                                       capsys):
+    """window 0 means the weights plus margin already exceed free VRAM: not
+    one token fits, and no degradation rung can help, because the ladder
+    shrinks the SCOPE, not the KV cache. Must refuse (exit 3), not
+    infrastructure (exit 4) -- nothing is broken in the environment, the
+    model simply does not fit this card."""
+    from robigo.cli import main
+
+    monkeypatch.setattr(
+        "robigo.cli.plan_window",
+        lambda *a, **k: WindowPlan(
+            0, "vram", 14571 * 1024**2, 56 * 1024, 14540 * 1024**2, 256 * 1024**2
+        ),
+    )
+    code = main(["--root", str(tmp_path), "--model", "m", "fix"])
+    assert code == 3
+    out = capsys.readouterr().out
+    assert "refused" in out
+    # The arithmetic itself, not just that something was printed: a bare
+    # "window 0" is not actionable, per the amendment.
+    assert "free 14571 MiB" in out
+    assert "weights 14540 MiB" in out
+    assert "margin 256 MiB" in out
+    assert "56 KiB/token" in out
+
+
+def test_cli_zero_window_never_reaches_run(monkeypatch, tmp_path: Path):
+    """The regression this amendment exists to fix: today it prints the
+    line and continues into adapter setup. Guards specifically against that
+    by making `run` explode if it is ever reached."""
+    import robigo.cli as cli_module
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("run() must not be called for a zero window")
+
+    monkeypatch.setattr(
+        cli_module, "plan_window",
+        lambda *a, **k: WindowPlan(0, "vram", 1, 1024, 1, 1),
+    )
+    monkeypatch.setattr(cli_module, "run", _boom)
+    code = cli_module.main(["--root", str(tmp_path), "--model", "m", "fix"])
+    assert code == 3
+
+
+def test_cli_refuses_on_a_zero_window_from_a_non_vram_cause(monkeypatch,
+                                                             tmp_path: Path,
+                                                             capsys):
+    """A window of 0 is unusable regardless of which of the three limits
+    produced it (e.g. an explicit `--window 0`, which becomes user_cap=0).
+    The vram-specific arithmetic line only applies when vram is actually
+    why, so this checks the generic fallback names the real cause instead
+    of fabricating VRAM numbers that were not the reason.
+
+    `git init` first and the exact "zero-token window" phrase are both
+    load-bearing: without them, this test also passes when the zero-window
+    check is deleted entirely, because a non-git tmp_path refuses anyway
+    (via the unrelated "not a git repository" check) and its message
+    happens to contain both "refused" and "limited by user_cap" (from the
+    window line printed regardless) -- caught by mutation testing below.
+    """
+    import subprocess
+
+    from robigo.cli import main
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    monkeypatch.setattr(
+        "robigo.cli.plan_window",
+        lambda *a, **k: WindowPlan(0, "user_cap", None, 1024, 8 * 1024**3,
+                                    256 * 1024**2),
+    )
+    code = main(["--root", str(tmp_path), "--model", "m", "--window", "0", "fix"])
+    assert code == 3
+    out = capsys.readouterr().out
+    assert "nothing can run with a zero-token window" in out
+    assert "limited by user_cap" in out
+    assert "free" not in out  # no VRAM arithmetic fabricated for a non-vram cause
+
+
+def test_cli_refuses_end_to_end_when_weights_exceed_free_vram(monkeypatch,
+                                                               tmp_path: Path,
+                                                               capsys):
+    """Reproduces the amendment's own motivating example through the real
+    plan_window -> usable_window pipeline (not a stubbed WindowPlan): a
+    14.2 GB-class model on a card with 14571 MiB free must refuse with the
+    exact arithmetic the amendment quotes."""
+    from robigo.cli import main
+
+    monkeypatch.setattr(
+        "robigo.model.detect._show",
+        lambda model, host: {"model_info": QWEN7B},
+    )
+    monkeypatch.setattr(
+        "robigo.model.detect._tags",
+        lambda host: {"models": [{"name": "m", "size": 14540 * 1024**2}]},
+    )
+    monkeypatch.setattr("robigo.model.detect.free_vram_bytes",
+                        lambda: 14571 * 1024**2)
+    code = main(["--root", str(tmp_path), "--model", "m", "fix"])
+    assert code == 3
+    out = capsys.readouterr().out
+    assert "window 0 (limited by vram" in out
+    assert "free 14571 MiB" in out
+    assert "weights 14540 MiB" in out
+    assert "margin 256 MiB" in out
+
+
+def test_detect_geometry_llamacpp_message_offers_window_when_no_cap_given():
+    with pytest.raises(GeometryError) as e:
+        detect_geometry("llamacpp", "m", "", None)
+    msg = str(e.value)
+    assert "--gguf" in msg
+    assert "--window <int>" in msg
+
+
+def test_detect_geometry_llamacpp_message_does_not_recommend_the_flag_already_given():
+    """The exact defect: with --backend llamacpp --window 4096 and no
+    --gguf, the old message said 'Pass --gguf <path> ... or --window <int>'
+    -- recommending exactly what was just supplied."""
+    with pytest.raises(GeometryError) as e:
+        detect_geometry("llamacpp", "m", "", None, user_cap=4096)
+    msg = str(e.value)
+    assert "--gguf" in msg
+    assert "--window <int>" not in msg
+    assert "4096" in msg
+
+
+def test_weights_bytes_llamacpp_message_does_not_recommend_the_flag_already_given():
+    """Same defect, same fix, in weights_bytes' sibling message -- reached
+    directly by a caller that skips detect_geometry, even though the CLI's
+    real call order means detect_geometry's message is the one a user
+    actually sees first."""
+    with pytest.raises(GeometryError) as e:
+        weights_bytes("llamacpp", "m", "", None, user_cap=4096)
+    msg = str(e.value)
+    assert "--gguf" in msg
+    assert "--window <int>" not in msg
+    assert "4096" in msg
+
+
+def test_plan_window_forwards_user_cap_into_the_llamacpp_no_gguf_message():
+    with pytest.raises(GeometryError) as e:
+        plan_window("llamacpp", "m", "", 4096)
+    msg = str(e.value)
+    assert "--window <int>" not in msg
+    assert "4096" in msg
+
+
+def test_cli_llamacpp_no_gguf_message_does_not_recommend_window_already_given(
+    monkeypatch, capsys, tmp_path: Path
+):
+    """The coordinator's exact repro, through the real CLI: --backend
+    llamacpp --window 4096 with no --gguf must not tell the user to pass
+    --window <int>."""
+    from robigo.cli import main
+
+    monkeypatch.setattr("robigo.model.detect.free_vram_bytes", lambda: None)
+    code = main(["--root", str(tmp_path), "--model", "m", "--backend", "llamacpp",
+                 "--window", "4096", "fix"])
+    assert code == 4  # infrastructure: GeometryError caught by cli.main
+    out = capsys.readouterr().out
+    assert "--gguf" in out
+    assert "--window <int>" not in out
+    assert "4096" in out
 
 
 # --- Amendment (ruled 2026-08-09): /api/show does not return `size`. ------

@@ -22,7 +22,7 @@ def _stub_plan_window(*args, **kwargs) -> WindowPlan:
     not exist on any real daemon, so left unstubbed every one of them would
     hit a real /api/show over the network and fail on an unrelated 404
     before reaching what it actually tests."""
-    return WindowPlan(8192, "user_cap", None, 1024)
+    return WindowPlan(8192, "user_cap", None, 1024, 8 * 1024**3, 256 * 1024**2)
 
 
 def test_backend_selection_and_window_pass_through():

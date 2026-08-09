@@ -39,23 +39,58 @@ def _tags(host: str) -> dict:
         return json.loads(resp.read())
 
 
+def _no_gguf_message(what: str, user_cap: int | None) -> str:
+    """Wording depends on whether a cap was already given. With no cap,
+    `--window <int>` is a real alternative and worth naming. With one
+    already supplied, naming it back is the exact defect this function
+    exists to avoid: it once told a user who ran `--window 4096` with no
+    `--gguf` to pass `--window <int>`, recommending what they had just
+    supplied -- the same family as plan 01 shipping messages that named
+    flags which did not exist. Kept generic across both callers
+    (`detect_geometry`'s "KV geometry" and `weights_bytes`'s "weights
+    size") rather than naming "training context" specifically, since that
+    phrase is only true for the geometry caller."""
+    if user_cap is None:
+        return (
+            f"llama.cpp does not expose {what} over HTTP. Pass --gguf "
+            f"<path> so it can be measured, or --window <int>."
+        )
+    return (
+        f"llama.cpp does not expose {what} over HTTP, so it cannot be "
+        f"verified and --window {user_cap} cannot be safely honoured "
+        f"without it. Pass --gguf <path>."
+    )
+
+
 def detect_geometry(
-    backend: str, model: str, host: str, gguf_path: Path | None = None
+    backend: str,
+    model: str,
+    host: str,
+    gguf_path: Path | None = None,
+    *,
+    user_cap: int | None = None,
 ) -> Geometry:
     """Ollama publishes the geometry over HTTP; llama-server does not, so
-    on that path the GGUF file is the only source of truth."""
+    on that path the GGUF file is the only source of truth.
+
+    `user_cap` affects only the wording of a raised GeometryError, never the
+    logic: it lets the message say the honest thing when a --window value
+    was already supplied (see `_no_gguf_message`).
+    """
     if backend == "ollama":
         return from_model_info(_show(model, host).get("model_info", {}))
     if gguf_path is None:
-        raise GeometryError(
-            "llama.cpp does not expose KV geometry over HTTP. Pass "
-            "--gguf <path> so the window can be computed, or --window <int>."
-        )
+        raise GeometryError(_no_gguf_message("KV geometry", user_cap))
     return from_model_info(read_metadata(gguf_path))
 
 
 def weights_bytes(
-    backend: str, model: str, host: str, gguf_path: Path | None
+    backend: str,
+    model: str,
+    host: str,
+    gguf_path: Path | None,
+    *,
+    user_cap: int | None = None,
 ) -> int:
     """A real measured size, or a raise -- never a default.
 
@@ -73,14 +108,15 @@ def weights_bytes(
     tried first, then `f"{model}:latest"`. If neither matches, this raises
     GeometryError naming the model and listing what the daemon does know,
     rather than returning a number.
+
+    `user_cap` only changes the wording of the no-`--gguf` message, same as
+    `detect_geometry` (`_no_gguf_message`) -- in the CLI's actual call
+    order `plan_window` calls `detect_geometry` first, so that message is
+    the one a user sees; this one is reached by any direct caller instead.
     """
     if backend != "ollama":
         if gguf_path is None:
-            raise GeometryError(
-                "llama.cpp does not expose weights size over HTTP. Pass "
-                "--gguf <path> so the weights size can be measured, or "
-                "--window <int>."
-            )
+            raise GeometryError(_no_gguf_message("weights size", user_cap))
         return gguf_path.stat().st_size
     models = _tags(host).get("models", [])
     by_name = {
@@ -123,8 +159,8 @@ def plan_window(
     call), rather than relying on that fact staying true.
     """
     free = free_vram_bytes()
-    geometry = detect_geometry(backend, model, host, gguf_path)
-    weights = weights_bytes(backend, model, host, gguf_path)
+    geometry = detect_geometry(backend, model, host, gguf_path, user_cap=user_cap)
+    weights = weights_bytes(backend, model, host, gguf_path, user_cap=user_cap)
     return usable_window(
         geometry,
         free_vram=free,
