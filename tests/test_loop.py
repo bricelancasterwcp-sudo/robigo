@@ -267,6 +267,16 @@ def test_no_scope_paths_falls_back_to_import_traced_scope(repo: Path, monkeypatc
     assert result.outcome == "pass"
 
 
+def test_a_nul_in_a_patch_path_is_a_model_facing_refusal(repo: Path):
+    # Verified escape route before I6: `resolve()` raises ValueError on an
+    # embedded NUL, which left the loop as a traceback and wrote no record.
+    client = _ScriptedClient(FIX.replace("src/fog.py", "a\x00b.py"), FIX)
+    result = run("fix", repo, client, PythonAdapter(python=sys.executable),
+                 codec="search_replace")
+    assert result.outcome == "pass"
+    assert "PATCH REJECTED" in client.prompts[1]
+
+
 def test_a_mid_loop_adapter_failure_is_infrastructure(repo: Path):
     from robigo.adapters.base import AdapterError
 

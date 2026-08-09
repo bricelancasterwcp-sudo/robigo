@@ -1,6 +1,7 @@
 # tests/test_cli.py
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -77,6 +78,54 @@ def test_scope_flag_defaults_to_none(tmp_path: Path, monkeypatch):
     cli_module.main(["--root", str(tmp_path), "--python", sys.executable,
                      "--model", "m", "fix it"])
     assert captured["scope_paths"] is None
+
+
+def test_a_raising_adapter_is_exit_4_not_a_traceback(tmp_path: Path, capsys,
+                                                     monkeypatch):
+    # An escaping exception is the "never conflated" law broken in the more
+    # damaging direction: a traceback exits 1, which the contract defines as
+    # `stalled` -- a model result.
+    import robigo.cli as cli_module
+
+    class _Exploding:
+        name = "python"
+        test_command = "pytest"
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def run(self, root, filt):
+            raise RuntimeError("adapter blew up")
+
+        def imports(self, path, root):
+            return []
+
+        def syntax_ok(self, text):
+            return True
+
+    monkeypatch.setattr(cli_module, "PythonAdapter", _Exploding)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    code = main(["--root", str(tmp_path), "--python", sys.executable,
+                 "--model", "m", "fix it"])
+    assert code == 4
+    assert "internal error" in capsys.readouterr().out
+    # The record must exist even though the loop never returned.
+    metas = list((tmp_path / ".robigo" / "runs").glob("*/meta.json"))
+    assert len(metas) == 1
+    assert json.loads(metas[0].read_text())["outcome"] == "infrastructure"
+
+
+def test_a_usage_error_never_aliases_a_contract_exit_code(capsys):
+    # --scope is greedy, so this swallows the task and argparse exits 2 --
+    # which is `budget_exhausted`. It must not be reported as one.
+    code = main(["--model", "m", "--scope", "src", "fix the test"])
+    assert code == 64
+    assert "usage" in capsys.readouterr().err.lower()
+
+
+def test_help_exits_zero(capsys):
+    assert main(["--help"]) == 0
+    assert "--scope" in capsys.readouterr().out
 
 
 @pytest.mark.live

@@ -12,6 +12,9 @@ from robigo.record import new_recorder
 
 _STOP = ("\nread ", "\nfind ", "\nrun\n", "\ndone ")
 
+# EX_USAGE from sysexits.h, deliberately outside the five contract codes.
+_EX_USAGE = 64
+
 
 def build_client(args: argparse.Namespace) -> ModelClient:
     kind = LlamaCppClient if args.backend == "llamacpp" else OllamaClient
@@ -48,8 +51,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scope", type=Path, nargs="+", default=None,
                         metavar="PATH",
                         help="files or directories to work in, instead of "
-                             "tracing imports from the failing test")
-    args = parser.parse_args(argv)
+                             "tracing imports from the failing test. Greedy: "
+                             "put it AFTER the task, or it swallows the task")
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        # argparse exits 2 on a usage error, and 2 is `budget_exhausted` in
+        # the contract. A harness-level mistake must not alias a run outcome.
+        return _EX_USAGE if exc.code else 0
 
     adapter = PythonAdapter(python=str(args.python) if args.python else None)
     root = Path(args.root).resolve()
@@ -57,18 +66,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"--root {args.root} is not a directory")
         return OUTCOMES["refused"]
     recorder = new_recorder(root, args.task)
-    result = run(
-        args.task,
-        root,
-        build_client(args),
-        adapter,
-        codec=args.codec,
-        turn_cap=args.turn_cap,
-        allow_test_edits=args.allow_test_edits,
-        use_git=args.use_git,
-        scope_paths=args.scope,
-        recorder=recorder,
-    )
+    try:
+        result = run(
+            args.task,
+            root,
+            build_client(args),
+            adapter,
+            codec=args.codec,
+            turn_cap=args.turn_cap,
+            allow_test_edits=args.allow_test_edits,
+            use_git=args.use_git,
+            scope_paths=args.scope,
+            recorder=recorder,
+        )
+    except Exception as exc:
+        # KeyboardInterrupt is deliberately not caught: the user asking to
+        # stop is not an infrastructure failure.
+        print(f"infrastructure  turns=0  internal error: {exc!r}")
+        return OUTCOMES["infrastructure"]
     print(f"{result.outcome}  turns={result.turns}  {result.detail}")
     if result.branch:
         print(f"branch {result.branch} — `git checkout -` to undo everything")

@@ -67,17 +67,21 @@ def run(
     every return path without touching any of them."""
     if recorder is None:
         recorder = new_recorder(root, task)
-    result = _execute(
-        task, root, client, adapter, codec=codec, turn_cap=turn_cap,
-        allow_test_edits=allow_test_edits, use_git=use_git,
-        stall_cap=stall_cap, scope_paths=scope_paths, recorder=recorder,
-    )
-    recorder.finish(
-        result,
-        model=getattr(client, "model", "?"),
-        window=getattr(client, "window", 0),
-        codec=codec,
-    )
+    model, window = getattr(client, "model", "?"), getattr(client, "window", 0)
+    try:
+        result = _execute(
+            task, root, client, adapter, codec=codec, turn_cap=turn_cap,
+            allow_test_edits=allow_test_edits, use_git=use_git,
+            stall_cap=stall_cap, scope_paths=scope_paths, recorder=recorder,
+        )
+    except BaseException as exc:
+        # An escaping exception is infrastructure, never a model result, and
+        # the record must exist either way. Re-raised so the traceback
+        # survives for debugging; `cli.main` is what turns it into exit 4.
+        result = _result("infrastructure", 0, None, f"internal error: {exc!r}")
+        recorder.finish(result, model=model, window=window, codec=codec)
+        raise
+    recorder.finish(result, model=model, window=window, codec=codec)
     return result
 
 
