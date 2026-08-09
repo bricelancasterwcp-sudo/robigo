@@ -9,6 +9,7 @@ _BLOCK = re.compile(
     r"^<<<<<<< SEARCH\n(?P<search>.*?)^=======\n(?P<replace>.*?)^>>>>>>> REPLACE\s*$",
     re.MULTILINE | re.DOTALL,
 )
+_OPEN_LINE = re.compile(r"^<<<<<<< SEARCH$", re.MULTILINE)
 
 
 class PatchError(Exception):
@@ -28,18 +29,32 @@ def apply_search_replace(original: str, payload: str) -> str:
     # outside a matched span, so a payload whose last block is missing its
     # `=======` or `>>>>>>> REPLACE` used to apply one of two intended edits
     # and report success -- a half-edit, written and committed.
-    opened = payload.count("<<<<<<< SEARCH")
-    if opened != len(blocks):
-        raise PatchError(
-            f"this payload has {opened} SEARCH markers but only "
-            f"{len(blocks)} complete blocks, so {opened - len(blocks)} edit(s) "
-            f"would have been silently dropped. Every block needs all three "
-            f"markers: <<<<<<< SEARCH, =======, and >>>>>>> REPLACE."
-        )
+    _refuse_dangling_markers(payload, blocks)
     text = original
     for block in blocks:
         text = _apply_one(text, block.group("search"), block.group("replace"))
     return text
+
+
+def _refuse_dangling_markers(payload: str, blocks: list[re.Match[str]]) -> None:
+    """A SEARCH marker on its own line but outside every matched block means
+    an edit the regex silently dropped. Counted line-anchored and outside the
+    matched spans, so neither a marker quoted inside a body nor one appearing
+    mid-line is mistaken for a dropped edit — a file carrying conflict-marker
+    text must still be patchable."""
+    spans = [block.span() for block in blocks]
+    dangling = [
+        match
+        for match in _OPEN_LINE.finditer(payload)
+        if not any(start <= match.start() < end for start, end in spans)
+    ]
+    if dangling:
+        raise PatchError(
+            f"{len(dangling)} SEARCH marker(s) in this payload are not part of "
+            f"a complete block, so that many edit(s) would have been silently "
+            f"dropped. Every block needs all three markers on their own lines: "
+            f"<<<<<<< SEARCH, =======, and >>>>>>> REPLACE."
+        )
 
 
 def _apply_one(text: str, search: str, replace: str) -> str:

@@ -56,8 +56,36 @@ def test_a_dangling_trailing_marker_is_refused_rather_than_half_applied():
     with pytest.raises(PatchError) as e:
         apply_search_replace(FILE, payload)
     message = str(e.value)
-    assert "2 SEARCH markers but only 1 complete blocks" in message
-    assert "1 edit(s) would have been silently dropped" in message
+    assert "1 SEARCH marker(s) in this payload are not part of a complete block" in message
+    assert "silently dropped" in message
+
+
+def test_a_marker_quoted_inside_a_body_is_not_a_dropped_edit():
+    # A file carrying conflict-marker text must still be patchable.
+    original = 'MARKER = "old"\n'
+    payload = (
+        "<<<<<<< SEARCH\n"
+        'MARKER = "old"\n'
+        "=======\n"
+        'MARKER = "<<<<<<< SEARCH2"\n'
+        ">>>>>>> REPLACE\n"
+    )
+    assert apply_search_replace(original, payload) == 'MARKER = "<<<<<<< SEARCH2"\n'
+
+
+def test_a_marker_on_its_own_line_inside_a_body_is_not_a_dropped_edit():
+    # A file with unresolved merge markers: the SEARCH body legitimately
+    # contains a line that is exactly the marker.
+    original = "<<<<<<< SEARCH\nx = 1\n"
+    payload = (
+        "<<<<<<< SEARCH\n"
+        "<<<<<<< SEARCH\n"
+        "x = 1\n"
+        "=======\n"
+        "x = 2\n"
+        ">>>>>>> REPLACE\n"
+    )
+    assert apply_search_replace(original, payload) == "x = 2\n"
 
 
 def test_a_payload_with_no_blocks_is_refused():
