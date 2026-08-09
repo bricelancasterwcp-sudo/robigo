@@ -20,6 +20,29 @@ class Scope:
     anchor: Path
     full: tuple[Path, ...]
     signatures: tuple[Path, ...]
+    anchor_window: tuple[int, int] | None = None
+    anchor_line: int | None = None
+    """The diagnostic's line, 1-indexed, carried here rather than recomputed:
+    `degrade` has no access to the `Diagnostic` that built this `Scope`, and
+    windowing must centre on the failing line, not the file's midpoint
+    (amendment 2026-08-09, invariant 1). Defaults to None so every existing
+    construction -- including every one in tests/test_*.py that predates this
+    field -- stays valid, and so a diagnostic with no line degrades to the
+    old midpoint behaviour instead of raising."""
+
+    def degrade(self, step: int) -> Scope:
+        """One step down a FIXED ladder (spec section 3). Fixed rather
+        than heuristic so the result is reproducible and testable without
+        a model."""
+        if step <= 1:
+            return self
+        if step == 2:
+            return Scope(self.anchor, self.full, (), self.anchor_window, self.anchor_line)
+        if step == 3:
+            return Scope(self.anchor, (self.anchor,), self.full[1:], None, self.anchor_line)
+        return Scope(
+            self.anchor, (self.anchor,), self.full[1:], (-60, 60), self.anchor_line
+        )
 
 
 def _anchor(diag_file: str, root: Path) -> Path:
@@ -60,7 +83,10 @@ def resolve(
             for path in adapter.imports(parent, root):
                 if path not in full and path not in signatures:
                     signatures.append(path)
-    return Scope(anchor=anchor, full=tuple(full), signatures=tuple(signatures))
+    return Scope(
+        anchor=anchor, full=tuple(full), signatures=tuple(signatures),
+        anchor_line=diag.line,
+    )
 
 
 def explicit(diag: Diagnostic, root: Path, paths: Sequence[Path]) -> Scope:
@@ -83,7 +109,7 @@ def explicit(diag: Diagnostic, root: Path, paths: Sequence[Path]) -> Scope:
         for path in found:
             if path.is_file() and path not in full:
                 full.append(path)
-    return Scope(anchor=anchor, full=tuple(full), signatures=())
+    return Scope(anchor=anchor, full=tuple(full), signatures=(), anchor_line=diag.line)
 
 
 def signatures_of(text: str) -> str:

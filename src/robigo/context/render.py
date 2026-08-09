@@ -66,7 +66,23 @@ def render(
     parts = [SYSTEM, _CODEC_HELP[codec], ""]
     for path in scope.full:
         text = _read(path)
-        parts.append(f"--- {_rel(path, root)} ---")
+        label = _rel(path, root)
+        if text is not None and path == scope.anchor and scope.anchor_window:
+            windowed = _window_text(text, scope.anchor_window, scope.anchor_line)
+            if windowed != text:
+                # Only claim a window when it actually removed something
+                # (invariant 3): a span wider than the file is a no-op, and
+                # labelling a no-op as "windowed" is as false as the label
+                # this replaced, which claimed the failure was included
+                # while centring on the file's midpoint instead of it.
+                text = windowed
+                label += (
+                    f" (windowed around line {scope.anchor_line})"
+                    if scope.anchor_line is not None
+                    else " (windowed around the file's midpoint; failing "
+                    "line unknown)"
+                )
+        parts.append(f"--- {label} ---")
         parts.append(text if text is not None else _UNREADABLE)
     for path in scope.signatures:
         text = _read(path)
@@ -90,3 +106,27 @@ def _rel(path: Path, root: Path) -> str:
         return str(path.relative_to(root))
     except ValueError:
         return str(path)
+
+
+def _window_text(text: str, span: tuple[int, int], anchor_line: int | None) -> str:
+    """The single implementation of anchor windowing. `budget._window`
+    delegates here rather than reimplementing it, so the two cannot
+    diverge: a second copy would let the estimate say a prompt fits while
+    the rendered prompt it never saw does not.
+
+    Centres on `anchor_line` (1-indexed, carried on the `Scope` -- never on
+    a `Diagnostic` passed in separately, even by a caller that has one:
+    `budget._cost` has no `Diagnostic` at all, so if this centred on one,
+    the two sites could disagree about where the window sits whenever they
+    were called with a stale or different diagnostic than the one the
+    `Scope` was built from. Deriving the centre from the `Scope` alone is
+    what keeps agreement structural rather than a matter of callers
+    behaving.) Falls back to the file's midpoint only when `anchor_line` is
+    None -- a diagnostic with no line -- which is the pre-amendment
+    behaviour and the only case left where it is honest."""
+    lines = text.split("\n")
+    if anchor_line is not None:
+        center = max(0, min(anchor_line - 1, len(lines) - 1))
+    else:
+        center = len(lines) // 2
+    return "\n".join(lines[max(0, center + span[0]) : center + span[1]])

@@ -92,11 +92,24 @@ def test_a_missing_anchor_says_what_to_do(repo: Path):
     assert "--scope" in str(e.value)
 
 
+def test_resolve_carries_the_diagnostics_line_onto_the_scope(repo: Path):
+    # degrade() has no Diagnostic to consult when it windows the anchor
+    # (amendment 2026-08-09, invariant 1), so the failing line has to
+    # arrive on the Scope itself, from here.
+    scope = resolve(_diag("tests/test_fog.py"), PythonAdapter(), repo)
+    assert scope.anchor_line == 4
+
+
 def test_explicit_anchors_on_the_diagnostic_and_keeps_only_named_paths(repo: Path):
     scope = explicit(_diag("tests/test_fog.py"), repo, [Path("src/fog.py")])
     assert scope.anchor == repo / "tests" / "test_fog.py"
     assert scope.full == (repo / "tests" / "test_fog.py", repo / "src" / "fog.py")
     assert scope.signatures == ()
+
+
+def test_explicit_carries_the_diagnostics_line_onto_the_scope(repo: Path):
+    scope = explicit(_diag("tests/test_fog.py"), repo, [Path("src/fog.py")])
+    assert scope.anchor_line == 4
 
 
 def test_explicit_does_not_infer_signature_hops(repo: Path):
