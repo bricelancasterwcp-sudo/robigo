@@ -3376,7 +3376,14 @@ def test_exit_code_is_3_outside_a_git_repo(tmp_path: Path):
 @pytest.mark.live
 def test_live_one_real_repair(tmp_path: Path):
     """One real generation end to end. Asserts the plumbing works, NOT
-    that the model succeeds -- a failure here is a valid result."""
+    that the model succeeds -- a failure here is a valid result.
+
+    Uses the 0.5B deliberately. This machine shares its GPU with another
+    long-running experiment, so a 7B's 8.1GB will not fit; and since the
+    assertion tolerates exit 1, model capability is irrelevant to what
+    this test checks. It must skip cleanly rather than fail when the
+    daemon is down or the model is not pulled.
+    """
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "m.py").write_text("def double(x):\n    return x\n")
     (tmp_path / "test_m.py").write_text(
@@ -3384,11 +3391,21 @@ def test_live_one_real_repair(tmp_path: Path):
         "def test_double():\n    assert double(2) == 4\n"
     )
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    import urllib.error
+    import urllib.request
+
+    try:
+        urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=10)
+    except (urllib.error.URLError, OSError):
+        pytest.skip("ollama daemon not reachable")
+
     code = main([
-        "--root", str(tmp_path), "--model", "qwen2.5-coder:7b-instruct-q8_0",
-        "--window", "8192", "make the failing test pass",
+        "--root", str(tmp_path), "--model", "qwen2.5-coder:0.5b-instruct-q8_0",
+        "--window", "4096", "make the failing test pass",
     ])
-    assert code in (0, 1)
+    # 0 pass, 1 stalled, 4 infrastructure (model not pulled). Capability is
+    # not under test; an uncaught traceback would be.
+    assert code in (0, 1, 4)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
