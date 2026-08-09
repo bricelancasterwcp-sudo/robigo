@@ -49,7 +49,7 @@ def test_scope_flag_is_parsed_and_forwarded_to_run(tmp_path: Path, monkeypatch):
     captured = {}
 
     def fake_run(task, root, client, adapter, *, codec, turn_cap,
-                 allow_test_edits, use_git, scope_paths):
+                 allow_test_edits, use_git, scope_paths, recorder):
         captured["scope_paths"] = scope_paths
         return RunResult("pass", 1, 0, None, "ok")
 
@@ -69,7 +69,7 @@ def test_scope_flag_defaults_to_none(tmp_path: Path, monkeypatch):
     captured = {}
 
     def fake_run(task, root, client, adapter, *, codec, turn_cap,
-                 allow_test_edits, use_git, scope_paths):
+                 allow_test_edits, use_git, scope_paths, recorder):
         captured["scope_paths"] = scope_paths
         return RunResult("pass", 1, 0, None, "ok")
 

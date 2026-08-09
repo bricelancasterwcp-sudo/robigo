@@ -22,6 +22,7 @@ from robigo.apply.safety import (
 from robigo.context.render import Turn, render
 from robigo.context.scope import Scope, ScopeError, explicit, resolve
 from robigo.model.client import ContextOverflowError, Generation, ModelClient, ModelError
+from robigo.record import RunRecorder, next_run_id
 
 _READ_CAP = 4000
 _SKIP = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__", ".robigo"})
@@ -60,6 +61,39 @@ def run(
     use_git: bool = True,
     stall_cap: int = 3,
     scope_paths: Sequence[Path] | None = None,
+    recorder: RunRecorder | None = None,
+) -> RunResult:
+    """Wrapper only. `_execute` is the loop; this exists so `finish` runs on
+    every return path without touching any of them."""
+    if recorder is None:
+        recorder = RunRecorder(root, next_run_id(root, _slug(task)))
+    result = _execute(
+        task, root, client, adapter, codec=codec, turn_cap=turn_cap,
+        allow_test_edits=allow_test_edits, use_git=use_git,
+        stall_cap=stall_cap, scope_paths=scope_paths, recorder=recorder,
+    )
+    recorder.finish(
+        result,
+        model=getattr(client, "model", "?"),
+        window=getattr(client, "window", 0),
+        codec=codec,
+    )
+    return result
+
+
+def _execute(
+    task: str,
+    root: Path,
+    client: ModelClient,
+    adapter: Adapter,
+    *,
+    codec: str,
+    turn_cap: int = 8,
+    allow_test_edits: bool = False,
+    use_git: bool = True,
+    stall_cap: int = 3,
+    scope_paths: Sequence[Path] | None = None,
+    recorder: RunRecorder,
 ) -> RunResult:
     branch: str | None = None
     try:
@@ -118,6 +152,7 @@ def run(
         action_text, result_text, applied, target = _take_turn(
             gen, root, scope, adapter, codec, allow_test_edits
         )
+        recorder.turn(prompt, gen.text, diag.raw)
         history = (history + (Turn(action_text, result_text),))[-2:]
 
         if applied:

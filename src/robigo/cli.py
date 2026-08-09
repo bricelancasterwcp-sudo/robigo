@@ -6,8 +6,9 @@ import sys
 from pathlib import Path
 
 from robigo.adapters.python_ import PythonAdapter
-from robigo.loop import run
+from robigo.loop import _slug, run
 from robigo.model.client import LlamaCppClient, ModelClient, OllamaClient
+from robigo.record import RunRecorder, next_run_id
 
 _STOP = ("\nread ", "\nfind ", "\nrun\n", "\ndone ")
 
@@ -51,9 +52,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     adapter = PythonAdapter(python=str(args.python) if args.python else None)
+    root = Path(args.root).resolve()
+    recorder = RunRecorder(root, next_run_id(root, _slug(args.task)))
     result = run(
         args.task,
-        Path(args.root).resolve(),
+        root,
         build_client(args),
         adapter,
         codec=args.codec,
@@ -61,10 +64,13 @@ def main(argv: list[str] | None = None) -> int:
         allow_test_edits=args.allow_test_edits,
         use_git=args.use_git,
         scope_paths=args.scope,
+        recorder=recorder,
     )
     print(f"{result.outcome}  turns={result.turns}  {result.detail}")
     if result.branch:
         print(f"branch {result.branch} — `git checkout -` to undo everything")
+    if recorder.error:
+        print(f"run record unavailable: {recorder.error}")
     return result.exit_code
 
 
