@@ -111,6 +111,41 @@ def test_repeating_an_identical_failing_patch_stalls(repo: Path):
     assert (result.outcome, result.exit_code) == ("stalled", 1)
 
 
+def test_the_stall_cap_ends_the_run_on_the_expected_turn(repo: Path):
+    # Both existing stall tests end `stalled` whether the threshold is
+    # `stall_cap - 1` or `stall_cap`, so the arithmetic itself was unguarded.
+    # Only the turn number distinguishes them.
+    miss = FIX.replace("    return t\n", "    return t;\n")
+    result = run("fix", repo, _ScriptedClient(miss, miss, miss, miss, miss),
+                 PythonAdapter(python=sys.executable),
+                 codec="search_replace", stall_cap=3, turn_cap=8)
+    assert result.outcome == "stalled"
+    assert result.turns == 3
+
+
+def test_a_mid_loop_scope_failure_keeps_the_previous_scope(repo: Path):
+    # An unanchorable diagnostic (a timeout, or a failure the adapter could
+    # not place in the repo) makes the mid-loop re-resolve raise. Nothing
+    # pinned the guard, so removing it -- which now escapes `run` outright --
+    # left all 122 tests green.
+    from robigo.adapters.base import Diagnostic
+
+    adapter = PythonAdapter(python=sys.executable)
+    real_run, calls = adapter.run, {"n": 0}
+
+    def anchorless(root, filt):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            return Diagnostic(False, None, None, "tests failed", "raw tail")
+        return real_run(root, filt)
+
+    adapter.run = anchorless  # type: ignore[method-assign]
+    result = run("fix", repo, _ScriptedClient(FIX, "read src/fog.py"), adapter,
+                 codec="search_replace", turn_cap=2)
+    assert (result.outcome, result.turns) == ("stalled", 2)
+    assert calls["n"] > 1
+
+
 def test_the_turn_cap_ends_the_run(repo: Path):
     result = run("fix", repo, _ScriptedClient("run", "run", "run", "run"),
                  PythonAdapter(python=sys.executable),

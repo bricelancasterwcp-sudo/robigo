@@ -91,6 +91,22 @@ def test_nothing_is_created_until_something_is_written(tmp_path: Path):
     assert not (tmp_path / ".robigo").exists()
 
 
+def test_a_write_failure_after_the_tree_exists_is_remembered_not_raised(tmp_path: Path):
+    # The OSError arm of _write, which nothing reached: the existing tests
+    # either fail in _ensure (before any write) or raise UnicodeEncodeError.
+    # Narrowing the catch to UnicodeError left all 122 tests green, and the
+    # escape would abort a run whose repair had already landed.
+    recorder = RunRecorder(tmp_path, "fog-1")
+    recorder.turn("p", "r", "a")
+    recorder.dir.chmod(0o500)
+    try:
+        recorder.turn("p2", "r2", "a2")           # must not raise
+        assert recorder.error is not None
+        assert "cannot write" in recorder.error
+    finally:
+        recorder.dir.chmod(0o700)
+
+
 def test_an_unwritable_root_is_remembered_not_raised(tmp_path: Path):
     blocked = tmp_path / "blocked"
     blocked.mkdir()

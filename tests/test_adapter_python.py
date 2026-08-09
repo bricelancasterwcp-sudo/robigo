@@ -123,6 +123,34 @@ def test_a_real_file_at_an_impossible_line_is_not_an_anchor(tmp_path: Path):
     assert adapter._in_repo("short.py", tmp_path, 999) is None
 
 
+def test_the_error_summary_never_reaches_back_past_its_anchor(tmp_path: Path):
+    # The forward-scoping guarantee five fix rounds were spent on. The
+    # multi-failure test below passes through the `tail` branch, so the
+    # fallback's scoping was untested: `lines[start:]` -> `lines` left all
+    # 122 tests green. This raw output takes the fallback, because the
+    # anchor's own tail is a frame marker rather than a message.
+    (tmp_path / "a.py").write_text("x = 1\n")
+    raw = "\n".join([
+        "E   AssertionError: AN-EARLIER-FAILURE",
+        "a.py:1: in radius",
+        "E   ValueError: ITS-OWN-FAILURE",
+    ])
+    diag = PythonAdapter()._first_failure(raw, tmp_path)
+    assert diag.file == "a.py"
+    assert diag.message == "ValueError: ITS-OWN-FAILURE"
+
+
+def test_a_site_packages_path_inside_the_repo_is_not_an_anchor(tmp_path: Path):
+    # `.venv/lib/.../site-packages` IS relative_to(root) in the layout the
+    # adapter itself prefers, so containment alone does not reject it. An
+    # anchor the model cannot edit is worse than no anchor.
+    vendored = tmp_path / ".venv" / "lib" / "python3.12" / "site-packages"
+    vendored.mkdir(parents=True)
+    (vendored / "pluggy.py").write_text("x = 1\n")
+    candidate = ".venv/lib/python3.12/site-packages/pluggy.py"
+    assert PythonAdapter()._in_repo(candidate, tmp_path, 1) is None
+
+
 def test_a_multi_failure_run_pairs_the_message_with_its_own_anchor(repo: Path):
     (repo / "tests" / "test_fog.py").write_text(
         "def test_a():\n    assert 1 == 2, 'FAILURE-A'\n"
