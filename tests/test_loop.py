@@ -383,3 +383,7 @@ def test_a_mid_loop_adapter_failure_is_infrastructure(repo: Path):
     adapter.run = flaky  # type: ignore[method-assign]
     result = run("fix", repo, _ScriptedClient(FIX), adapter, codec="search_replace")
     assert (result.outcome, result.exit_code) == ("infrastructure", 4)
+    # It says what actually failed. "git failed: pytest vanished" sent every
+    # reader of the record looking at git.
+    assert "pytest vanished" in result.detail
+    assert "git failed" not in result.detail

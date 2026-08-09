@@ -121,14 +121,16 @@ def commit_all(root: Path, message: str, paths: Sequence[Path]) -> None:
 
 def _ignored(root: Path, paths: Sequence[Path]) -> list[str]:
     """Which of these paths git ignores. `check-ignore` exits 1 when none
-    match, which is not an error — so no check=True here."""
+    match, which is not an error — so no check=True here. Split on lines, not
+    on whitespace: `.split()` tore `my notes/secret.py` into two paths that
+    exist nowhere, and the refusal named neither of them."""
     if not paths:
         return []
     proc = subprocess.run(
         ["git", "check-ignore", "--", *(str(path) for path in paths)],
         cwd=root, capture_output=True, text=True,
     )
-    return proc.stdout.split()
+    return proc.stdout.splitlines()
 
 
 def _commit(root: Path, message: str, pathspec: list[str]) -> None:

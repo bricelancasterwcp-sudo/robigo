@@ -198,7 +198,11 @@ def _execute(
                 if target is not None:
                     commit_all(root, f"robigo: {action_text}", [target])
                 diag = adapter.run(root, None)
-            except (subprocess.CalledProcessError, FileNotFoundError, AdapterError) as exc:
+            except AdapterError as exc:
+                # Not git's fault. Blaming git for a vanished pytest sent
+                # every reader of the record looking in the wrong place.
+                return _result("infrastructure", turn, branch, str(exc), undo)
+            except (subprocess.CalledProcessError, FileNotFoundError) as exc:
                 return _result("infrastructure", turn, branch, f"git failed: {exc}", undo)
             if diag.passed:
                 return _result("pass", turn, branch, "tests pass", undo)

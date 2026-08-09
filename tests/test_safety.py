@@ -113,6 +113,17 @@ def test_an_ignored_scope_file_is_refused(repo: Path):
     assert "ignored by git" in str(e.value)
 
 
+def test_an_ignored_path_containing_a_space_is_named_whole(repo: Path):
+    # `.split()` tore the path into two fragments that exist nowhere, so the
+    # refusal named neither the file nor anything the user could act on.
+    (repo / "my notes").mkdir()
+    (repo / "my notes" / "secret.py").write_text("x = 1\n")
+    (repo / ".gitignore").write_text("my notes/\n")
+    with pytest.raises(RefusedError) as e:
+        refuse_ignored(repo, [repo / "my notes" / "secret.py"])
+    assert "my notes/secret.py" in str(e.value)
+
+
 def test_snapshot_with_no_ignored_scope_files_proceeds(repo: Path):
     start_branch(repo, "fog")
     refuse_ignored(repo, [repo / "src.py"])
