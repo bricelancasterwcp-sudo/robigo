@@ -71,8 +71,16 @@ def test_missing_geometry_raises_rather_than_guessing():
 
 
 def test_geometry_is_frozen():
+    # Construction happens OUTSIDE the `with` block, on purpose: the old
+    # version wrapped `from_model_info(QWEN7B).layers = 99` as one line
+    # inside `pytest.raises(Exception)`, so a regression that made
+    # `from_model_info` itself raise for an unrelated reason would still
+    # satisfy the context manager and report this test green without ever
+    # reaching the mutation it claims to test (ruled 2026-08-09,
+    # whole-branch review, item 7).
+    geometry = from_model_info(QWEN7B)
     with pytest.raises(Exception):
-        from_model_info(QWEN7B).layers = 99  # type: ignore[misc]
+        geometry.layers = 99  # type: ignore[misc]
 
 
 def test_key_and_value_dims_are_summed_separately():
