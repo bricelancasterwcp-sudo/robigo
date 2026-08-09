@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from robigo.context.scope import Scope, signatures_of
+from robigo.context.scope import Scope
 
 CHARS_PER_TOKEN = 3.3
 """Calibrated for code. Deliberately crude: it exists to catch an overrun
@@ -51,7 +51,7 @@ def fit(scope: Scope, budget: Budget, root: Path) -> tuple[Scope, int]:
     """The first degradation step whose rendered scope fits, or refuse."""
     for step in range(1, MAX_STEP):
         candidate = scope.degrade(step)
-        if _cost(candidate) <= budget.scope_budget:
+        if _cost(candidate, root) <= budget.scope_budget:
             return candidate, step
     raise BudgetExhausted(
         f"scope cannot fit the window after all {MAX_STEP - 1} degradation "
@@ -59,30 +59,30 @@ def fit(scope: Scope, budget: Budget, root: Path) -> tuple[Scope, int]:
         f"  window {budget.window}   system {budget.system}   "
         f"reserve {budget.reserve_out}   diagnostic {budget.diagnostic}\n"
         f"  available for scope {budget.scope_budget}   "
-        f"smallest scope {_cost(scope.degrade(MAX_STEP - 1))}\n"
+        f"smallest scope {_cost(scope.degrade(MAX_STEP - 1), root)}\n"
         f"Narrow it with --scope, or use a model with a larger window."
     )
 
 
-def _cost(scope: Scope) -> int:
-    total = 0
-    for path in scope.full:
-        text = path.read_text(encoding="utf-8")
-        if path == scope.anchor and scope.anchor_window:
-            text = _window(text, scope.anchor_window, scope.anchor_line)
-        total += estimate_tokens(text)
-    for path in scope.signatures:
-        total += estimate_tokens(signatures_of(path.read_text(encoding="utf-8")))
-    return total
+def _cost(scope: Scope, root: Path) -> int:
+    """The scope's cost, computed from the exact text `render` would emit
+    for it -- never from a second, independently-summed idea of the same
+    files (amendment 2, ruled 2026-08-09). `diag`, `history`, and `codec`
+    are deliberately NOT threaded in here: those are the caller's fixed
+    costs and are already seated in `Budget`; only the scope's own text has
+    to agree with what render prints for it."""
+    return estimate_tokens(_section(scope, root))
 
 
-def _window(text: str, span: tuple[int, int], anchor_line: int | None) -> str:
-    """Imported from render rather than reimplemented: two copies of this
-    would drift, and the drift shows up as an estimate that says a prompt
-    fits when the server disagrees. `anchor_line` is threaded through
-    unchanged from `scope.anchor_line` -- never recomputed here -- so the
-    centre this computes and the centre `render` prints are the same value
-    by construction, not by coincidence (amendment 2026-08-09, invariant 2)."""
-    from robigo.context.render import _window_text
+def _section(scope: Scope, root: Path) -> str:
+    """Imported from render rather than reimplemented: two copies of the
+    scope's own text were the root cause of amendment 2's three findings --
+    a cost that omitted the header/label tokens the prompt actually
+    contains, a cost that raised where render degrades cleanly to a
+    placeholder, and an honest-fallback label with no test at all. This is
+    the `_window_text`/`_window` delegation pattern from invariant 2,
+    widened to cover the whole scope section rather than only the windowed
+    span."""
+    from robigo.context.render import _scope_section
 
-    return _window_text(text, span, anchor_line)
+    return _scope_section(scope, root)

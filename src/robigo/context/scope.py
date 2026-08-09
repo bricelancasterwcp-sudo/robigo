@@ -33,16 +33,22 @@ class Scope:
     def degrade(self, step: int) -> Scope:
         """One step down a FIXED ladder (spec section 3). Fixed rather
         than heuristic so the result is reproducible and testable without
-        a model."""
+        a model. `step` must be 1-4: `fit` never asks for more than that
+        (rungs 1-4, then refusal), and a caller that miscomputes a step
+        beyond 4 gets a ValueError rather than rung 4's scope handed back
+        silently as if it were something further down the ladder
+        (amendment 2, ruled 2026-08-09)."""
         if step <= 1:
             return self
         if step == 2:
             return Scope(self.anchor, self.full, (), self.anchor_window, self.anchor_line)
         if step == 3:
             return Scope(self.anchor, (self.anchor,), self.full[1:], None, self.anchor_line)
-        return Scope(
-            self.anchor, (self.anchor,), self.full[1:], (-60, 60), self.anchor_line
-        )
+        if step == 4:
+            return Scope(
+                self.anchor, (self.anchor,), self.full[1:], (-60, 60), self.anchor_line
+            )
+        raise ValueError(f"degrade() step must be between 1 and 4, got {step}")
 
 
 def _anchor(diag_file: str, root: Path) -> Path:

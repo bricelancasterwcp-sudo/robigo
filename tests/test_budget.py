@@ -57,15 +57,21 @@ def diag() -> Diagnostic:
 
 
 # Measured against the fixture above, reserve_out=128 system=60 diagnostic=60
-# history=0 (248 tokens fixed cost), AFTER invariant 1 (centre on anchor_line
-# rather than the file's midpoint):
+# history=0 (248 tokens fixed cost), AFTER amendment 2 (cost includes the
+# "--- {label} ---" headers and windowing suffix, matching exactly what
+# render emits rather than file contents alone):
 #
 #   rung | cost | saves | window band that lands fit() here | width
 #   -----|------|-------|-------------------------------------|------
-#   1    | 1958 |   --  | >= 2206                             |  --
-#   2    | 1827 |  131  | 2075 - 2205                          | 131
-#   3    | 1584 |  243  | 1832 - 2074                          | 243
-#   4    |  445 | 1139  | 693  - 1831                          | 1139
+#   1    | 1977 |   --  | >= 2225                             |  --
+#   2    | 1836 |  141  | 2084 - 2224                          | 141
+#   3    | 1599 |  237  | 1847 - 2083                          | 237
+#   4    |  469 | 1130  | 717  - 1846                          | 1130
+#
+# (Amendment 1's pre-amendment-2 table read 1958/1827/1584/445 -- every rung
+# rose by the header/label tokens amendment 2 added to the estimate; the
+# *shape* -- rung 2 barely above rung 1, rung 4 far below rung 3 -- is
+# unchanged, as expected since the same files still degrade the same way.)
 #
 # Each rung test below picks its window from the MIDDLE of its band, not an
 # edge (amendment: "a budget picked at a band edge is one estimator tweak
@@ -101,28 +107,28 @@ def test_a_generous_window_keeps_the_full_scope(scope: Scope, tmp_path: Path):
 def test_dropping_hop_two_signatures_is_what_step_two_saves(scope: Scope, tmp_path: Path):
     # Rung 2 in isolation: hop-2's signatures (40 `def` lines) are gone but
     # hop-1 is still full text. This is the rung the original test never
-    # pinned -- its own band (2075-2205) is what makes it distinguishable
-    # from rung 3 at all.
-    fitted, step = fit(scope, Budget(2140, 128, 60, 60, 0), tmp_path)
+    # pinned -- its own band is what makes it distinguishable from rung 3
+    # at all.
+    fitted, step = fit(scope, Budget(2154, 128, 60, 60, 0), tmp_path)
     assert step == 2
     assert fitted.full == scope.full
     assert fitted.signatures == ()
 
 
 def test_a_tight_window_reduces_hop_one_to_signatures(scope: Scope, tmp_path: Path):
-    # Corrected per amendment: at step 3, hop-1 has become a signature, not
-    # vanished. `signatures == ()` was rung 2's shape, not rung 3's.
-    fitted, step = fit(scope, Budget(1953, 128, 60, 60, 0), tmp_path)
+    # Corrected per amendment 1: at step 3, hop-1 has become a signature,
+    # not vanished. `signatures == ()` was rung 2's shape, not rung 3's.
+    fitted, step = fit(scope, Budget(1965, 128, 60, 60, 0), tmp_path)
     assert step == 3
     assert fitted.full == (scope.anchor,)
     assert fitted.signatures == (scope.full[1],)
 
 
 def test_windowing_the_anchor_is_the_last_rung_before_refusal(scope: Scope, tmp_path: Path):
-    # Rung 4 in isolation, from the middle of its own band (693-1831) --
-    # pre-amendment this band was empty (cost(4) == cost(3)) so no window
-    # could ever land fit() here at all.
-    fitted, step = fit(scope, Budget(1263, 128, 60, 60, 0), tmp_path)
+    # Rung 4 in isolation, from the middle of its own band -- pre-amendment
+    # this band was empty (cost(4) == cost(3)) so no window could ever land
+    # fit() here at all.
+    fitted, step = fit(scope, Budget(1282, 128, 60, 60, 0), tmp_path)
     assert step == 4
     assert fitted.anchor_window is not None
 
@@ -151,6 +157,15 @@ def test_degrade_preserves_the_anchor_line_at_every_step(scope: Scope):
     # branch specifically.
     for step in (2, 3, 4):
         assert scope.degrade(step).anchor_line == scope.anchor_line
+
+
+def test_degrade_rejects_a_step_beyond_the_ladder(scope: Scope):
+    # Amendment 2: step >= 5 used to fall through to rung 4's scope
+    # silently. `fit` never asks for one, but a caller that miscomputes a
+    # step must get a ValueError, not a plausible-looking scope one rung
+    # short of what it asked for.
+    with pytest.raises(ValueError):
+        scope.degrade(5)
 
 
 def test_windowing_the_anchor_is_what_shrinks_step_four(scope: Scope, diag: Diagnostic, tmp_path: Path):
@@ -196,15 +211,48 @@ def test_a_window_that_would_not_shrink_the_file_is_not_labelled_as_one(tmp_path
     assert "windowed" not in out
 
 
-def test_the_cost_estimate_and_the_render_window_use_the_identical_text(scope: Scope):
-    # Invariant 2, direct: budget._window must delegate to
-    # render._window_text rather than reimplement it, and both must derive
-    # the centre from the Scope's own anchor_line -- never from a
-    # Diagnostic passed in separately, since budget._cost never receives
-    # one at all and a second centring rule could disagree with render's.
-    from robigo.context.budget import _window
-    from robigo.context.render import _window_text
+def test_a_windowed_scope_with_no_known_line_is_labelled_honestly(tmp_path: Path):
+    # Amendment 2, finding 3: anchor_window set but anchor_line None (an
+    # adapter that could not determine a line) had NO test at all -- a
+    # regression that collapsed the fallback branch to print the literal
+    # "windowed around line None" would have left the pre-amendment-2
+    # suite fully green. Needs a file long enough that the window still
+    # shrinks it (a no-op window would suppress the label entirely and
+    # never reach this branch), so this reuses the 400-line anchor text.
+    (tmp_path / "big.py").write_text(_anchor_text())
+    unknown_line = Scope(
+        tmp_path / "big.py", (tmp_path / "big.py",), (), (-60, 60), None,
+    )
+    unknown_diag = Diagnostic(False, "big.py", None, "AssertionError", "raw")
+    out = render(unknown_line, unknown_diag, (), "search_replace", tmp_path)
+    assert "None" not in out
+    assert "windowed around the file's midpoint" in out
 
-    text = scope.anchor.read_text(encoding="utf-8")
-    span = (-60, 60)
-    assert _window(text, span, scope.anchor_line) == _window_text(text, span, scope.anchor_line)
+
+def test_the_estimate_equals_the_cost_of_what_render_emits(scope: Scope, tmp_path: Path):
+    # Invariant 2, made structural per amendment 2: not "close to" -- two
+    # implementations of the same text drift, and the drift is invisible
+    # until a prompt the arithmetic called safe comes back truncated.
+    # Exercises all four rungs, since each has a different shape (whole
+    # files, dropped signatures, hop-one-as-signature, windowed anchor).
+    from robigo.context.budget import _cost
+    from robigo.context.render import _scope_section
+
+    for step in (1, 2, 3, 4):
+        candidate = scope.degrade(step)
+        assert _cost(candidate, tmp_path) == estimate_tokens(
+            _scope_section(candidate, tmp_path)
+        )
+
+
+def test_an_unreadable_file_is_costed_the_way_it_is_rendered(scope: Scope, tmp_path: Path):
+    # render substitutes a placeholder for an unreadable file; the estimate
+    # must cost that same placeholder rather than raising. A crash here is
+    # worse than a bad number: fit's one guarantee is fit-or-refuse-with-
+    # arithmetic, never a crash instead of either.
+    from robigo.context.budget import _cost
+    from robigo.context.render import _scope_section
+
+    (tmp_path / "hop1.py").write_bytes(b"\xff\xfe not utf-8")
+    cost = _cost(scope, tmp_path)  # must not raise
+    assert cost == estimate_tokens(_scope_section(scope, tmp_path))
