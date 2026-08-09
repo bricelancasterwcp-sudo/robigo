@@ -2002,6 +2002,66 @@ prints **below** its advertised 8192, limited by `vram`, at 448 KiB/token.
 That second line is the whole point of this plan — an advertised window the
 card cannot actually hold.
 
+#### Amendment (ruled 2026-08-09): `/api/show` does not return `size`
+
+Verified against the live daemon before this task was dispatched, and the
+plan's `weights_bytes` is wrong on its Ollama path.
+
+`POST /api/show` returns exactly these top-level keys: `capabilities`,
+`details`, `license`, `model_info`, `modelfile`, `modified_at`, `system`,
+`template`, `tensors`. **There is no `size`.** So
+
+```python
+return int(_show(model, host).get("size", 0))
+```
+
+silently returns **0** for every Ollama model, and the `.get(..., 0)` default is
+what hides it — the same "plausible-looking default" this plan forbids
+elsewhere, in the same dangerous direction.
+
+Zero weights means `usable_window` believes the whole card is free. Measured on
+this box: free VRAM 14571 MiB, and `qwen2vl` weighs 14540 MiB. Correctly, spare
+is `14571 − 14540 − 256 < 0`, so the window is 0 and the run must refuse. With
+`weights_bytes` returning 0, spare becomes 14315 MiB and the window comes back
+as its full advertised **128000** — a request that cannot possibly be served.
+The failure converts "this model does not fit" into the largest window in the
+table.
+
+`GET /api/tags` **does** carry `size`, per model, and needs no model load. Each
+entry has `capabilities, details, digest, model, modified_at, name, size` —
+confirmed `qwen2.5-coder:7b-instruct-q8_0` → 8,098,539,207 bytes (7.54 GiB).
+
+**Invariant: `weights_bytes` never guesses.** It returns a real measured size
+or raises. There is no default, because a wrong weights figure is invisible
+until the server refuses the slot or the allocation OOMs.
+
+Take the size from `/api/tags`, matching the model by name. 12 of the 30 names
+on this box end in `:latest`, so a bare `model` argument may need that suffix
+appended to match — try the exact name first, then `f"{model}:latest"`. If
+neither matches, raise `GeometryError` naming the model and listing what the
+daemon does know, rather than returning a number.
+
+Falsification tests, both offline with an injected responder — no test may
+contact a daemon:
+
+```python
+def test_weights_come_from_tags_not_show(...):
+    """/api/show has no `size` field at all. A .get(..., 0) default here
+    reports a 0-byte model and hands back the largest window in the table."""
+    ...  # a responder whose /api/show lacks `size` and whose /api/tags has it;
+         # assert the real byte count is returned
+
+
+def test_an_unknown_model_raises_rather_than_reporting_zero_weights(...):
+    ...  # /api/tags without the requested model; assert GeometryError naming it
+```
+
+Add one `@pytest.mark.live` test — the marker already means "requires a running
+model daemon" (`pyproject.toml:19-20`) and is deselected by default — asserting
+that the real `/api/show` response for a locally-present model still lacks
+`size`, so this regression is caught if Ollama ever adds the field back and the
+workaround becomes unnecessary.
+
 ---
 
 ## Done when
