@@ -22,23 +22,33 @@ _Shape = TypeVar("_Shape", dict, list)
 
 
 def _shaped(value: object, empty: _Shape) -> _Shape:
-    """A daemon response field, coerced to the shape a caller needs.
+    """ANY value, coerced to the shape a caller needs -- not just a field
+    already known to be present-but-wrong. `json.loads` on an HTTP body can
+    hand back a dict, a list, a string, a number, a bool, or `None`: nothing
+    about the JSON grammar promises an object at the top level, and nothing
+    about `.get(key, default)` protects a caller from finding out the hard
+    way, because `.get` itself does not exist on a list or a string.
 
-    `.get(key, default)` only substitutes `default` when `key` is ABSENT,
-    never when its value is JSON `null` -- the same shape as the
-    `.get("size", 0)` bug this plan already fixed once (see
-    `weights_bytes`'s docstring). `{"model_info": null}` used to reach
-    `from_model_info(None)`, and `None.get(...)` raised a raw
-    AttributeError; `{"models": null}` used to reach `for entry in None`, a
-    raw TypeError. Both are malformed-response shapes, not Python bugs, and
-    must become `GeometryError` like every other malformed field this
-    module rejects. One converter shared by both call sites, rather than
-    two independent shape checks that already drifted into three raw
-    exceptions once."""
+    Round 1 of this fix applied `_shaped` only to the INNER field
+    (`model_info`, `models`), after the outer envelope's own `.get(...)`
+    call had already run unguarded -- so `/api/show` or `/api/tags`
+    returning a JSON array (a proxy or error page), a bare string, or `None`
+    still raised a raw AttributeError calling `.get` on the envelope itself,
+    before `_shaped` was ever reached. The whole-branch review named this
+    exact shape directly. Applied at BOTH levels now, at both call sites:
+    the envelope itself, and the field pulled out of it -- one converter,
+    reused twice per caller, rather than a converter that only guards one
+    of the two `.get` calls it sits between."""
     return value if isinstance(value, type(empty)) else empty
 
 
-def _show(model: str, host: str) -> dict:
+def _show(model: str, host: str) -> object:
+    """Returns whatever `json.loads` hands back -- NOT `dict`. A `/api/show`
+    body is not guaranteed to be a JSON object: a proxy, a captive portal,
+    or a misconfigured host can all return an array or a bare string, and
+    the previous `-> dict` annotation asserted a guarantee this function
+    cannot make. Every caller runs the result through `_shaped(..., {})`
+    before calling `.get` on it."""
     req = urllib.request.Request(
         f"{(host or OLLAMA_HOST).rstrip('/')}/api/show",
         data=json.dumps({"model": model}).encode(),
@@ -48,12 +58,16 @@ def _show(model: str, host: str) -> dict:
         return json.loads(resp.read())
 
 
-def _tags(host: str) -> dict:
+def _tags(host: str) -> object:
     """`GET /api/tags`: the only Ollama endpoint that carries `size`, and the
     only one this module calls that is guaranteed not to need `model` at all
     -- confirmed 2026-08-09 that `/api/show` itself does not load the model
     either (free VRAM measured unchanged before/after), but `weights_bytes`
-    still uses this endpoint rather than that fact, per the amendment."""
+    still uses this endpoint rather than that fact, per the amendment.
+
+    Returns whatever `json.loads` hands back -- NOT `dict`, same reasoning
+    as `_show`. Every caller runs the result through `_shaped(..., {})`
+    before calling `.get` on it."""
     req = urllib.request.Request(f"{(host or OLLAMA_HOST).rstrip('/')}/api/tags")
     with urllib.request.urlopen(req, timeout=60) as resp:
         return json.loads(resp.read())
@@ -98,7 +112,8 @@ def detect_geometry(
     was already supplied (see `_no_gguf_message`).
     """
     if backend == "ollama":
-        info = _shaped(_show(model, host).get("model_info"), {})
+        show_response = _shaped(_show(model, host), {})
+        info = _shaped(show_response.get("model_info"), {})
         return from_model_info(info)
     if gguf_path is None:
         raise GeometryError(_no_gguf_message("KV geometry", user_cap))
@@ -152,7 +167,8 @@ def weights_bytes(
         if gguf_path is None:
             raise GeometryError(_no_gguf_message("weights size", user_cap))
         return gguf_path.stat().st_size
-    models = _shaped(_tags(host).get("models"), [])
+    tags_response = _shaped(_tags(host), {})
+    models = _shaped(tags_response.get("models"), [])
     by_name = {
         entry.get("name"): entry for entry in models if isinstance(entry, dict)
     }

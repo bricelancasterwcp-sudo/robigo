@@ -454,6 +454,47 @@ def test_an_infinite_tags_size_raises_geometry_error_not_overflow_error(monkeypa
     assert "m" in str(e.value)
 
 
+# --- Round 2 (ruled 2026-08-09): the envelope itself, not just its fields --
+#
+# Round 1's `_shaped` guarded `model_info`/`models` after `.get(...)` had
+# already been called, unguarded, on the raw `/api/show`/`/api/tags` body.
+# `json.loads` on an HTTP response can hand back anything JSON allows at the
+# top level -- a list (a proxy or error page, named directly in the
+# whole-branch review), a bare string, or `null` -- and none of those have
+# `.get`. Six raw AttributeErrors were reproduced against the round-1 code:
+# both endpoints, times {list, str, None}.
+
+
+@pytest.mark.parametrize("bad_envelope", [[], ["unexpected", "array"], "oops", None])
+def test_a_non_dict_show_envelope_raises_geometry_error_not_attribute_error(
+    monkeypatch, bad_envelope
+):
+    """A JSON array, string, or null body from /api/show -- a proxy or
+    error page, a captive portal, a misconfigured host -- used to reach
+    `bad_envelope.get("model_info")` directly, before `_shaped` ever ran,
+    raising a raw AttributeError (list/str/NoneType have no `.get`). The
+    whole-branch review named the list case explicitly."""
+    monkeypatch.setattr("robigo.model.detect._show",
+                        lambda model, host: bad_envelope)
+    with pytest.raises(GeometryError) as e:
+        detect_geometry("ollama", "m", "")
+    assert "architecture" in str(e.value)
+
+
+@pytest.mark.parametrize("bad_envelope", [[], ["unexpected", "array"], "oops", None])
+def test_a_non_dict_tags_envelope_raises_geometry_error_not_attribute_error(
+    monkeypatch, bad_envelope
+):
+    """Same shape, the /api/tags sibling: `bad_envelope.get("models")` used
+    to raise a raw AttributeError before `_shaped` on the inner field was
+    ever reached."""
+    monkeypatch.setattr("robigo.model.detect._tags",
+                        lambda host: bad_envelope)
+    with pytest.raises(GeometryError) as e:
+        weights_bytes("ollama", "m", "", None)
+    assert "m" in str(e.value)
+
+
 @pytest.mark.live
 def test_real_api_show_still_lacks_size():
     """Regression sentinel for the workaround this amendment introduced: if
