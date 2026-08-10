@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 
 from robigo.profile.schema import (
@@ -122,3 +123,43 @@ def test_envelope_fidelity_just_below_the_minimum_is_unusable():
 
 def test_envelope_fidelity_just_above_the_minimum_is_not_unusable():
     assert verdict_for(0.51, _READY_CODECS, 32768) == "READY"
+
+
+# --- Structural coverage: every field must be wired, not just equal --------
+#
+# Whole-object equality (test_round_trips_through_json) catches VALUE drift,
+# but it cannot catch a field that was never wired into to_json/from_json at
+# all: if the field carries a default, from_json fills the gap silently,
+# the original carries the same default, and equality holds even though the
+# JSON never mentioned it. These walk the actual serialised structure and
+# demand every dataclass field appear as a key somewhere in it, independent
+# of what value it holds.
+
+
+def _collect_keys(obj: object) -> set[str]:
+    """Every dict key present anywhere in a JSON-like structure, at any
+    nesting depth (``codecs`` maps a name to a nested object, and
+    ``seeds``/``mode``/``corpus`` live under ``measured``)."""
+    keys: set[str] = set()
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            keys.add(key)
+            keys |= _collect_keys(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            keys |= _collect_keys(item)
+    return keys
+
+
+def test_every_profile_field_is_wired_into_the_json_payload():
+    payload = json.loads(_profile().to_json())
+    keys = _collect_keys(payload)
+    missing = [f.name for f in dataclasses.fields(Profile) if f.name not in keys]
+    assert not missing, f"Profile field(s) missing from the JSON payload: {missing}"
+
+
+def test_every_codec_result_field_is_wired_into_a_serialised_codec_entry():
+    payload = json.loads(_profile().to_json())
+    entry = payload["codecs"]["search_replace"]
+    missing = [f.name for f in dataclasses.fields(CodecResult) if f.name not in entry]
+    assert not missing, f"CodecResult field(s) missing from a codec entry: {missing}"
