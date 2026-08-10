@@ -171,3 +171,83 @@ Then run the CLI **twice in a row** against a real model and confirm both runs r
 - Every prompt sent satisfies `estimate_tokens(prompt) + num_predict <= window`.
 - Two consecutive CLI runs against the same model report the same window.
 - A real CLI run with `--window` low enough to force degradation sends a prompt at a degraded rung, records that rung, and reaches the model — **corrected 2026-08-09**: this bullet previously required the run to *complete a repair*, which is a property of the model, not of robigo. A 1.5b–7b local model frequently fails a repair for reasons visible in its own output (malformed action, wrong file, mismatched SEARCH block), and no amount of correct wiring changes that. What this slice must demonstrate is that degradation happens, is recorded, and produces a prompt the server accepts.
+
+---
+
+## Whole-branch review fix wave (ruled 2026-08-09)
+
+Five Importants, all reproduced end to end by the review. Finding 1 is a defect
+in my own amendment and it changes the design; the rest are honesty fixes in
+records and messages.
+
+**1. Make measurement the authority in BOTH directions.** The amendment above
+said "arithmetic proposes, measurement decides" and then wired measurement into
+the *accept* path only. `fit()`'s own arithmetic-only `BudgetExhausted`
+propagates unguarded, so a run whose smallest rung really fits is refused —
+reproduced at window 608 / reserve 64, where rung 4's real rendered prompt costs
+544 and `544 + 64 == 608` fits exactly, while the seated arithmetic said
+`291 > 290`. One token. The same asymmetry has a milder twin (review Minor 6):
+because the seated terms were measured against the *undegraded* scope, `fit` can
+also propose a rung **lower** than necessary, dropping a file's body for a
+1-token artifact, and the step-down never steps back up.
+
+Both directions have one root cause: the stopping point is chosen by an estimate
+of an estimate, then corrected in one direction only. So stop correcting and
+choose it by measurement:
+
+*Invariant 4, restated.* Select the rung by walking the ladder in its fixed
+order — rung 1 upward — rendering each candidate and taking **the first whose
+rendered prompt measures as fitting**: `estimate_tokens(prompt) + reserve_out <=
+window`. If none of rungs 1 through `MAX_STEP - 1` fits, refuse. This yields the
+largest rung that actually fits, makes the invariant true by construction rather
+than by correction, and removes both the false refusal and the needless
+over-degradation. At most four renders per turn, of files already read.
+
+`fit` keeps its tests and stays the module's arithmetic API — it is what
+produces the refusal's arithmetic for the message. It is simply no longer the
+authority on where the ladder stops. Say that in `_select_rung`'s docstring, and
+correct the docstring's current claim that it refuses "only once rung
+`MAX_STEP - 1` … still does not fit", which is what this finding falsified.
+
+**2. A refusal in which nothing was generated must record zero turns.** The
+`BudgetExhausted` arm passes `turn` (=1) where every other pre-generation
+refusal passes `0`. Reproduced: `outcome=refused turns=1 rung=None`, zero
+`generate` calls, and a run directory holding no turn transcript at all. The
+plan's own criterion says "refuses **before turn 1**". Plan 03 will read `turns`
+beside `rung`, and `turns=1, rung=null, 0 transcripts` is three claims that
+contradict each other. The `ContextOverflowError` arm is different and correct —
+a request really was sent there.
+
+**3. Record the rung sequence, not the last rung.** `record.py`'s comment says
+the field lets a run that silently degraded be told apart from one that never
+left rung 1. It cannot: only the last turn's rung survives. Reproduced over a
+real two-hop repo with per-turn rungs `[1, 2, 3, 1]` — recorded as `1`,
+identical to a run that never degraded. Replace the scalar with the **per-turn
+sequence**; it is strictly more information, it is unambiguous, and plan 03 —
+the field's only consumer, and the next slice — can derive the last, the worst,
+or the shape of the degradation from it. Update the comment to describe what is
+actually stored.
+
+**4. Do not print a computed figure under a measurement's name.**
+`WindowPlan.free_vram` now carries free-plus-this-model's-residency, and the
+window-0 refusal prints it as `free {N} MiB` — a number `nvidia-smi` never
+reported, followed by advice to "free VRAM" when part of the shortfall is the
+model's own residency already credited back. Name it for what it is in the
+message. Keep the field itself differing between a cold and a hot call: that
+difference is what kills the double-credit mutation.
+
+**5. Declare `num_predict` on the `ModelClient` Protocol.** The loop reads
+`getattr(client, "num_predict", 0)`, which the Protocol does not declare, so a
+conforming client silently gets `reserve_out = 0`. The review built one and sent
+a prompt occupying 1730 of a 1730-token window with **nothing left for the
+reply**, while invariant 4 read as satisfied. One line on the Protocol closes
+it. Note `tests/test_window_auto.py`'s `_AbsentModel` is such a client today, so
+the silent default is already load-bearing for a test — fix the test rather than
+keeping the default.
+
+Not in this wave, to be carried in `CARRIED-DEBT.md` instead: the duplicated
+`:latest`-matching rule and refusal-advice sentence; `usable_window`'s docstring
+still stating the precondition this branch removed; the now-unreachable
+`SYSTEM_TOKENS`/`DIAGNOSTIC_TOKENS`/`_default_history_tokens` defaults; `/api/ps`
+having no captured contract for its *resident* shape; and the two-reads race
+between free VRAM and residency.
