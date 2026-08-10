@@ -161,8 +161,9 @@ class Verdict:
 class SuiteState:
     """One suite run, parsed into the shape stage 4's judging step needs:
     is this repo green, and did the run that produced these numbers actually
-    finish. `incomplete` is non-None whenever it did not -- a collection
-    error, a `-x` early exit, an INTERNALERROR -- in which case `broken` and
+    finish. `incomplete` is non-None whenever `_run_did_not_complete` sees a
+    collection error or an INTERNALERROR -- an abnormal exit code, an
+    interruption marker in the text, or both -- in which case `broken` and
     `executed` describe a run that never ran everything, and no caller may
     compare them against a baseline as though it did (plan 04's process
     lesson 2, `docs/CARRIED-DEBT.md`: a mutant that broke a module's import
@@ -170,6 +171,24 @@ class SuiteState:
     three tests never ran at all -- the runner's own `Interrupted` line and
     non-zero exit code were both there and both discarded by the code that
     lesson was written about).
+
+    `incomplete` does NOT catch a silent `PYTEST_ADDOPTS=-x` early exit --
+    verified directly: a truncated run reporting `broken=1`, a shrunk
+    `executed`, exit code 1, and no `Interrupted:`/`INTERNALERROR` text
+    anywhere leaves `incomplete` at `None`. `_run_did_not_complete` only
+    fires on an abnormal exit code or an interruption-marker substring, and
+    an `-x` exit is neither (still exits 1, prints no interruption text) --
+    its own docstring says so explicitly: "`PYTEST_ADDOPTS=-x` does NOT
+    trip this check on its own ... that case is caught downstream by
+    `verify`'s own executed-total comparison against the baseline, not
+    here" (`verify.py:300-304`). `suite_state()` takes no `baseline`
+    parameter and cannot make that comparison itself, so a caller that
+    needs this case caught MUST compare `.executed` against its own
+    baseline before trusting `.broken`, exactly as `verify()` does --
+    skipping that comparison silently reintroduces the exact false
+    positive this project already paid for once (ambient `PYTEST_ADDOPTS=
+    -x` turned a real 2-failure mutant's report into exactly 1, which the
+    OLD `verify()` scored as a clean "exactly one net new failure").
 
     `broken_ids` names every currently-broken test's node id, in the order
     the runner reported them -- the same list invariant 6 (`verify`) uses to
