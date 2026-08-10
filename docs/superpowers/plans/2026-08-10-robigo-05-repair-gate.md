@@ -155,7 +155,7 @@ def test_no_window_flag_still_passes_none(monkeypatch):
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `python -m pytest tests/test_cli_profile.py -v`
+Run: `.venv/bin/python -m pytest tests/test_cli_profile.py -v`
 Expected: FAIL — `unrecognized arguments: --window`.
 
 - [ ] **Step 3: Implement**
@@ -181,7 +181,7 @@ And change the call from `None` to `args.window`:
 
 - [ ] **Step 4: Run to verify they pass**
 
-Run: `python -m pytest tests/test_cli_profile.py -v`
+Run: `.venv/bin/python -m pytest tests/test_cli_profile.py -v`
 Expected: PASS.
 
 - [ ] **Step 5: Prove the ceiling invariant against the real function (P2.1)**
@@ -268,7 +268,7 @@ def test_unwrappable_records_leave_the_rate_identical_and_are_named(tmp_path):
 
 - [ ] **Step 2: Run it**
 
-Run: `python -m pytest tests/test_cli_profile.py::test_unwrappable_records_leave_the_rate_identical_and_are_named -v`
+Run: `.venv/bin/python -m pytest tests/test_cli_profile.py::test_unwrappable_records_leave_the_rate_identical_and_are_named -v`
 Expected: PASS — this behaviour already exists (plan 04 task 4 built it). **This step is a characterization test, deliberately.** If it FAILS, stop and report BLOCKED: the spec's P1.2 assumption about existing behaviour is wrong, and every rate in this plan is affected.
 
 - [ ] **Step 3: Write the failing test for the CLI wiring**
@@ -340,7 +340,7 @@ In `report.run_profile`, add the two keyword parameters and thread `fixtures` in
 
 - [ ] **Step 6: Run all tests**
 
-Run: `python -m pytest tests/ -q`
+Run: `.venv/bin/python -m pytest tests/ -q`
 Expected: all green, count ≥ 626.
 
 - [ ] **Step 7: Mutation-test**
@@ -431,7 +431,7 @@ def test_a_run_outside_the_clone_raises(tmp_path):
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `python -m pytest tests/test_suite_state.py -v`
+Run: `.venv/bin/python -m pytest tests/test_suite_state.py -v`
 Expected: FAIL — `cannot import name 'SuiteState'`.
 
 - [ ] **Step 3: Implement in `verify.py`**
@@ -468,7 +468,7 @@ def suite_state(repo: Path, runner: Runner, package: str) -> SuiteState:
 
 - [ ] **Step 4: Run to verify they pass**
 
-Run: `python -m pytest tests/test_suite_state.py -v`
+Run: `.venv/bin/python -m pytest tests/test_suite_state.py -v`
 Expected: PASS. If `_assert_in_clone`'s real signature or raising behaviour differs from the Verified Externals block, report BLOCKED with the true behaviour rather than adapting the test to whatever it does.
 
 - [ ] **Step 5: Mutation-test**
@@ -663,7 +663,7 @@ def test_a_stalled_run_is_a_real_model_failure_not_an_exclusion(tmp_path, monkey
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `python -m pytest tests/test_repair.py -v`
+Run: `.venv/bin/python -m pytest tests/test_repair.py -v`
 Expected: FAIL — no module `robigo.profile.repair`.
 
 - [ ] **Step 3: Implement `repair.py`**
@@ -804,7 +804,7 @@ def attempt_repair(
 
 - [ ] **Step 4: Run to verify they pass**
 
-Run: `python -m pytest tests/test_repair.py -v`
+Run: `.venv/bin/python -m pytest tests/test_repair.py -v`
 Expected: PASS. Note `run` and `suite_state` are imported into `repair`'s namespace so the tests' `monkeypatch.setattr(R, ...)` works — do not change to `from robigo import loop; loop.run(...)`.
 
 - [ ] **Step 5: Mutation-test each rule**
@@ -964,7 +964,7 @@ Also store `attempts` on the module for Task 6 — return them by adding `all_at
 
 - [ ] **Step 4: Run to verify they pass**
 
-Run: `python -m pytest tests/test_repair.py -v`
+Run: `.venv/bin/python -m pytest tests/test_repair.py -v`
 Expected: PASS.
 
 - [ ] **Step 5: Mutation-test**
@@ -1068,7 +1068,7 @@ def test_repeats_counts_every_repeat_not_just_consecutive_ones():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `python -m pytest tests/test_discipline.py tests/test_loop.py -v`
+Run: `.venv/bin/python -m pytest tests/test_discipline.py tests/test_loop.py -v`
 Expected: FAIL — no module `robigo.profile.discipline`; `RunResult` has no `repeats`.
 
 - [ ] **Step 3: Implement `repeats` in `loop.py`**
@@ -1136,7 +1136,7 @@ Replace both `Attempt(...)` constructions' hardcoded `0` with `result.repeats` (
 
 - [ ] **Step 6: Run everything**
 
-Run: `python -m pytest tests/ -q`
+Run: `.venv/bin/python -m pytest tests/ -q`
 Expected: all green.
 
 - [ ] **Step 7: Prove invariant 7.1 — stage 5 costs nothing**
@@ -1272,7 +1272,7 @@ Do **not** compute `best` by constructing a throwaway `Profile`; call the same `
 
 - [ ] **Step 4: Run to verify they pass, then run everything**
 
-Run: `python -m pytest tests/ -q`
+Run: `.venv/bin/python -m pytest tests/ -q`
 Expected: all green.
 
 - [ ] **Step 5: Add the new rows to `render_table`**
@@ -1355,8 +1355,8 @@ Implement: read `git rev-parse HEAD` in `--repo`, compare against the records' `
 Project law — the worst user-facing defect so far was invisible to 300 passing tests and appeared on the *second* consecutive run.
 
 ```bash
-python -m robigo profile --model qwen2.5-coder:7b --window 8192 --seeds 1
-python -m robigo profile --model qwen2.5-coder:7b --window 8192 --seeds 1
+.venv/bin/python -m robigo profile --model qwen2.5-coder:7b --window 8192 --seeds 1
+.venv/bin/python -m robigo profile --model qwen2.5-coder:7b --window 8192 --seeds 1
 ```
 
 Both must complete and print a coherent table. Record both outputs in the task report. A `window 0`, a `not measured` where something was measured, or a message naming a flag that was passed is a defect to fix now, not to report.
@@ -1385,7 +1385,7 @@ For each candidate actually clone it and measure — do not judge from reputatio
 
 ```bash
 git clone --no-hardlinks --depth 1 <url> /tmp/cand && cd /tmp/cand
-python -m pytest -q 2>&1 | tail -5
+.venv/bin/python -m pytest -q 2>&1 | tail -5
 ```
 
 Record for each: URL, licence, HEAD SHA, test count, wall clock, `broken` count.
@@ -1397,7 +1397,7 @@ Do not proceed to Step 3 without an explicit choice. This is a human gate, not a
 - [ ] **Step 3: Generate the corpus at ~120 candidates to yield ~100 records**
 
 ```bash
-python -m robigo corpus --repo /path/to/chosen --out docs/corpus/<name>.json \
+.venv/bin/python -m robigo corpus --repo /path/to/chosen --out docs/corpus/<name>.json \
     --max-records 120 --time-budget 5400
 ```
 
@@ -1428,7 +1428,7 @@ Spec §10: ~12 h of unattended GPU time should run once, correctly.
 - [ ] **Step 1: Run the full pipeline at N=5 records, 2 seeds**
 
 ```bash
-python -m robigo profile --model qwen2.5-coder:7b --window 8192 \
+.venv/bin/python -m robigo profile --model qwen2.5-coder:7b --window 8192 \
     --corpus docs/corpus/<name>.json --repo /path/to/clone --seeds 2
 ```
 
@@ -1455,7 +1455,7 @@ Do not proceed to Task 11 with a known defect. The dry run exists precisely so t
 - [ ] **Step 1: Run the publishable profile**
 
 ```bash
-python -m robigo profile --model qwen2.5-coder:7b --window 8192 \
+.venv/bin/python -m robigo profile --model qwen2.5-coder:7b --window 8192 \
     --corpus docs/corpus/<name>.json --repo /path/to/clone --full \
     --record docs/transcripts/qwen7b-stage4.jsonl
 ```
