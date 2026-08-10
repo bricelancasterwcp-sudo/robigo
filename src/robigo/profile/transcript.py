@@ -88,10 +88,19 @@ class CallReplayer:
     Within a single key, rows ARE replayed positionally: recording the same
     (model, prompt, seed) twice (e.g. a repeat-rate measurement re-running
     one prompt) appends two rows under one key, and replay hands them back
-    in the order they were recorded, one row per call. A call for a key
-    that was never recorded, and a call for a key that has already
-    returned every row recorded under it, both raise `TranscriptMiss` --
-    running out is running out, whichever way it happened.
+    in the order they were recorded, one row per call.
+
+    A call for a key that was never recorded, and a call for a key that
+    has already returned every row recorded under it, both raise
+    `TranscriptMiss` -- but with distinct messages, because they call for
+    different fixes. "Never recorded" means the prompt or seed drifted
+    from the fixture: the fix is to look at what changed in the code.
+    "Already used" (drained) means this call site now asks for this exact
+    (model, prompt, seed) more times than were recorded: the fix is to
+    re-record, probably with more seeds. A caller (or a human reading the
+    exception) must be able to tell which happened from the message alone
+    -- `key not in self._queues` (never recorded) is checked separately
+    from an empty-but-present queue (drained).
     """
 
     def __init__(self, path: Path) -> None:
@@ -110,15 +119,23 @@ class CallReplayer:
 
     def generate(self, prompt: str, *, seed: int) -> Generation:
         key = key_for(self.model, prompt, seed)
-        queue = self._queues.get(key)
+        if key not in self._queues:
+            raise TranscriptMiss(
+                f"no reply was ever recorded for model {self.model!r}, "
+                f"seed {seed}, and this prompt ({len(prompt)} chars) -- "
+                "this exact call was never recorded. The prompt, seed, or "
+                "model changed since the transcript was made -- re-record "
+                "it."
+            )
+        queue = self._queues[key]
         if not queue:
             raise TranscriptMiss(
-                f"no recorded reply left for model {self.model!r}, seed "
-                f"{seed}, and this prompt ({len(prompt)} chars). Either "
-                "this exact call was never recorded, or replay has already "
-                "used every reply recorded for it. The prompt, seed, or "
-                "call count changed since the transcript was made -- "
-                "re-record it."
+                f"every reply recorded for model {self.model!r}, seed "
+                f"{seed}, and this prompt ({len(prompt)} chars) has "
+                "already been used by replay. This call site is asking "
+                "for this exact (model, prompt, seed) more times than the "
+                "transcript has replies for -- re-record it, probably "
+                "with more seeds."
             )
         row = queue.pop(0)
         return Generation(

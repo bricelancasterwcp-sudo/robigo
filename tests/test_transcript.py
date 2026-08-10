@@ -53,14 +53,20 @@ def test_replay_preserves_the_truncated_flag(tmp_path: Path):
 def test_a_missing_key_is_a_loud_failure_not_a_silent_skip(tmp_path: Path):
     # Fails if a prompt that was never recorded returns "" (or anything)
     # instead of raising -- that would let a stage silently measure a
-    # broken fixture as a real (bad) result.
+    # broken fixture as a real (bad) result. Also fails if the message
+    # doesn't name this specific cause ("never recorded") or if it also
+    # claims the drained-transcript cause -- the fix for "never recorded"
+    # (look at what changed in the code) differs from the fix for
+    # "drained" (re-record with more seeds), and a reader can only act on
+    # the right one if the message names exactly one.
     path = tmp_path / "t.jsonl"
     CallRecorder(_Client(), path).generate("recorded", seed=1)
     with pytest.raises(TranscriptMiss) as e:
         CallReplayer(path).generate("never recorded", seed=1)
-    # A changed prompt must fail visibly: silently re-running the model
-    # would make a "reproduced" profile meaningless.
-    assert "re-record" in str(e.value)
+    message = str(e.value)
+    assert "re-record" in message
+    assert "never recorded" in message
+    assert "already been used" not in message
 
 
 def test_a_call_past_the_end_of_the_transcript_is_a_loud_failure(tmp_path: Path):
@@ -68,12 +74,56 @@ def test_a_call_past_the_end_of_the_transcript_is_a_loud_failure(tmp_path: Path)
     # single recorded row returns that row again instead of raising --
     # that would let a loop that calls generate() more times than the
     # fixture has replies loop the last reply forever instead of stopping.
+    # Also fails if the message doesn't name this specific cause
+    # ("already been used" -- drained) or if it also claims the
+    # never-recorded cause: a drained transcript calls for re-recording
+    # with more seeds, not for auditing what changed in the code, and a
+    # message that can't commit to one cause can't tell the reader which
+    # fix applies.
     path = tmp_path / "t.jsonl"
     CallRecorder(_Client(), path).generate("only call", seed=1)
     replayer = CallReplayer(path)
     replayer.generate("only call", seed=1)
-    with pytest.raises(TranscriptMiss):
+    with pytest.raises(TranscriptMiss) as e:
         replayer.generate("only call", seed=1)
+    message = str(e.value)
+    assert "re-record" in message
+    assert "already been used" in message
+    assert "never recorded" not in message
+
+
+def test_never_recorded_and_drained_are_distinguishable_by_cause(
+    tmp_path: Path,
+):
+    # Cross-checks the two tests above against each other, using the SAME
+    # prompt for both calls and varying only the seed (one unrecorded, one
+    # drained) so the two exceptions differ only in which branch raised
+    # them, not in incidental call-site content.
+    #
+    # This deliberately does NOT assert `str(a) != str(b)`: an earlier
+    # version of this test did, using a longer/different prompt for the
+    # never-recorded case, and a mutation that collapsed both raise sites
+    # into one shared message template still passed it -- because the
+    # message embeds `len(prompt)` and `seed`, and those differed between
+    # the two calls anyway, so the strings differed for a reason unrelated
+    # to whether the CAUSE was actually distinguished. Asserting on the
+    # fixed, cause-naming phrases directly (as this test and the two above
+    # do) is what a merged-message mutation cannot survive.
+    path = tmp_path / "t.jsonl"
+    CallRecorder(_Client(), path).generate("only call", seed=1)
+    replayer = CallReplayer(path)
+    replayer.generate("only call", seed=1)  # consumes the one recorded row
+
+    with pytest.raises(TranscriptMiss) as never_recorded:
+        replayer.generate("only call", seed=2)  # same prompt, unrecorded seed
+    with pytest.raises(TranscriptMiss) as drained:
+        replayer.generate("only call", seed=1)  # same prompt, drained seed
+
+    never_message, drained_message = str(never_recorded.value), str(drained.value)
+    assert "never recorded" in never_message
+    assert "already been used" not in never_message
+    assert "already been used" in drained_message
+    assert "never recorded" not in drained_message
 
 
 def test_repeated_calls_to_the_same_prompt_and_seed_replay_in_recorded_order(
