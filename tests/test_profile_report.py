@@ -1,0 +1,427 @@
+# tests/test_profile_report.py
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from robigo.loop import OUTCOMES
+from robigo.model.client import ContextOverflowError, Generation
+from robigo.model.geometry import WindowPlan
+from robigo.profile.fixtures import FIXTURES
+from robigo.profile.report import profile_path, render_table, run_profile
+from robigo.profile.schema import SUPPORTED_FLOOR, Profile
+from robigo.profile.transcript import CallRecorder, CallReplayer
+
+# weights_bytes/overhead_bytes are required positional fields of the real
+# WindowPlan (src/robigo/model/geometry.py) but are read by nothing this
+# module exercises -- only .window, .limited_by and .kv_per_token matter to
+# run_profile/render_table. The task-6 brief's own PLAN literal has only
+# four fields, which raises TypeError against the shipped six-field
+# dataclass (the same stale-sample defect test_stage0.py and test_stage1.py
+# already found in earlier tasks; see the task-6 report). Set to 0 here for
+# the same reason those files did.
+PLAN = WindowPlan(window=8192, limited_by="vram", free_vram=None,
+                  kv_per_token=56 * 1024, weights_bytes=0, overhead_bytes=0)
+
+
+class _Good:
+    model = "m"
+    # Present so this fake can also be wrapped in CallRecorder/CallReplayer
+    # (see test_a_profile_replays_identically_from_a_transcript and the CLI
+    # round-trip test below) -- the brief's own `_Good` literal omits both,
+    # which raises AttributeError inside CallRecorder.__init__ the moment
+    # it reads client.window (same class of stale-sample defect as the
+    # four-field WindowPlan; mirrors test_stage1.py's `_Scripted` fake).
+    window = 8192
+    num_predict = 512
+
+    def generate(self, prompt: str, *, seed: int) -> Generation:
+        if "read src/target.py" in prompt:
+            return Generation("read src/target.py", 5, 2, False)
+        fixture = next((f for f in FIXTURES if f.filename in prompt), None)
+        if fixture:
+            return Generation(
+                f"patch {fixture.filename}\n```python\n<<<<<<< SEARCH\n"
+                f"{fixture.original}=======\n{fixture.expect}>>>>>>> REPLACE\n```\n",
+                20, 10, False,
+            )
+        return Generation("ok", 1, 1, False)
+
+
+class _CannotEnvelope(_Good):
+    """Fails stage 1 on every seed. The assertion that stage 2 never runs
+    lives IN the fake, not in a post-hoc check on the result: a call whose
+    prompt names one of the stage-2 fixtures raises, so if `run_profile`
+    ever reached stage 2 after this gate should have closed, the call
+    itself -- not just its absence from `codecs` -- blows up the test.
+
+    The brief's own version of this fake raises on ANY prompt that isn't
+    the envelope one, which also fires on stage 0's window-verification
+    probe (plain filler text, sent before stage 1 even runs) -- a false
+    positive that made the test fail every time for a reason unrelated to
+    what it claims to check. Narrowed here to fire only on a stage-2-shaped
+    prompt (one naming a FIXTURES filename, `landing_prompt`'s own marker),
+    which stage 0 and stage 1's fixed prompts never contain."""
+
+    def generate(self, prompt: str, *, seed: int) -> Generation:
+        if "read src/target.py" in prompt:
+            return Generation("I would read the file.", 5, 2, False)
+        if any(fixture.filename in prompt for fixture in FIXTURES):
+            raise AssertionError("stage 2 must not run after stage 1 fails")
+        return super().generate(prompt, seed=seed)
+
+
+class _EnvelopeOkNothingLands(_Good):
+    """Passes stage 1 (drives the envelope perfectly, every seed) but never
+    lands a codec edit in stage 2. Distinct from `_CannotEnvelope`: here
+    stage 2 genuinely RUNS and genuinely finds nothing, rather than never
+    running at all -- the two must be distinguishable in the resulting
+    `Profile`, which is the whole reason `Profile.dropped` exists."""
+
+    def generate(self, prompt: str, *, seed: int) -> Generation:
+        if "read src/target.py" in prompt:
+            return Generation("read src/target.py", 5, 2, False)
+        return Generation("I refuse to patch that.", 5, 2, False)
+
+
+class _HalfEnvelope(_Good):
+    """Exactly half of stage 1's seeds drive the envelope correctly --
+    fidelity lands EXACTLY on ENVELOPE_FIDELITY_MIN (0.5), not above or
+    below it. Pins the gate's `>=` (matching verdict_for's own boundary):
+    a `>` mutant would close the gate here even though 0.5 is the
+    documented cutoff for "usable"."""
+
+    def generate(self, prompt: str, *, seed: int) -> Generation:
+        if "read src/target.py" in prompt:
+            if seed == 1:
+                return Generation("read src/target.py", 5, 2, False)
+            return Generation("nope", 5, 2, False)
+        return super().generate(prompt, seed=seed)
+
+
+class _WindowNeverVerifies(_Good):
+    """Every stage-0 probe is rejected, at every size the bisection tries
+    -- including the smallest one -- so `stage0.window` stays 0 and
+    `verified` stays False. Stage 1 and stage 2 behave exactly like
+    `_Good`, isolating run_profile's `usable_window` field from
+    everything else this fake could otherwise affect."""
+
+    def generate(self, prompt: str, *, seed: int) -> Generation:
+        if "read src/target.py" in prompt or any(
+            fixture.filename in prompt for fixture in FIXTURES
+        ):
+            return super().generate(prompt, seed=seed)
+        raise ContextOverflowError("rejected")
+
+
+class _ShrinksWindowBelowTheFloor(_Good):
+    """Accepts stage-0 probes only up to 4096 tokens' worth of characters
+    -- below SUPPORTED_FLOOR, and below PLAN.window(8192) -- so
+    stage0_window's bisection VERIFIES a real window smaller than the
+    plan, rather than either fully accepting or fully rejecting it. Stage
+    1 and stage 2 behave exactly like `_Good`, isolating verdict/window
+    interaction from everything else."""
+
+    _ACCEPTED_CHARS = 4096 * 3  # mirrors stages._CHARS_PER_TOKEN
+
+    def generate(self, prompt: str, *, seed: int) -> Generation:
+        if "read src/target.py" in prompt or any(
+            fixture.filename in prompt for fixture in FIXTURES
+        ):
+            return super().generate(prompt, seed=seed)
+        if len(prompt) > self._ACCEPTED_CHARS:
+            raise ContextOverflowError("too big")
+        return Generation("ok", 1, 1, False)
+
+
+def _run(client, **kw):
+    args = dict(model="m", quant="q8_0", family="fam", seeds=1, mode="quick")
+    return run_profile(client, PLAN, **{**args, **kw})
+
+
+def test_a_good_model_profiles_ready_and_records_provenance():
+    # Fails if stage 2 is never reached for a family that clears stage 1
+    # (verdict would stay LIMITED/UNUSABLE), if usable_window silently
+    # diverges from the verified plan, or if seeds/mode are dropped or
+    # swapped on their way into the Profile.
+    profile = _run(_Good())
+    assert profile.verdict == "READY"
+    assert profile.usable_window == 8192
+    assert (profile.seeds, profile.mode) == (1, "quick")
+
+
+def test_stage_one_failure_gates_stage_two():
+    # Fails (via the fake's own AssertionError) if run_profile ever calls
+    # stage2_codecs after stage 1 measured fidelity below the gate -- not
+    # merely if codecs ends up non-empty. Also fails if dropped does not
+    # name stage 2, or if the gate lets a low-fidelity family read READY.
+    profile = _run(_CannotEnvelope())
+    assert profile.verdict == "UNUSABLE"
+    assert profile.codecs == {}
+    assert any("stage 2" in d for d in profile.dropped)
+
+
+def test_a_stage_two_run_that_lands_nothing_differs_from_one_that_never_ran():
+    # This is the assertion the task exists to protect: an empty `codecs`
+    # dict must mean ONLY "stage 2 never ran", never "stage 2 ran and
+    # landed nothing" -- those are different facts and must stay visibly
+    # different in the Profile. Fails if run_profile pools both outcomes
+    # into an empty dict, or if it adds a spurious "stage 2" drop note for
+    # a stage 2 that genuinely executed.
+    ran_and_landed_nothing = _run(_EnvelopeOkNothingLands())
+    never_ran = _run(_CannotEnvelope())
+
+    assert ran_and_landed_nothing.codecs != {}
+    assert all(r.lands == 0.0 for r in ran_and_landed_nothing.codecs.values())
+    assert not any("stage 2" in d for d in ran_and_landed_nothing.dropped)
+
+    assert never_ran.codecs == {}
+    assert any("stage 2" in d for d in never_ran.dropped)
+
+
+def test_stage_one_fidelity_exactly_at_the_gate_still_opens_it():
+    # Fails if the gate uses `>` instead of `>=` -- a family measured at
+    # exactly the documented cutoff must still reach stage 2, the same
+    # boundary verdict_for itself treats as usable (spec: both sides of
+    # this comparison must agree on 0.5, or a family sits in a state
+    # where run_profile skipped stage 2 but verdict_for would not have
+    # called it UNUSABLE from fidelity alone).
+    profile = _run(_HalfEnvelope(), seeds=2)
+    assert profile.envelope_fidelity == 0.5
+    assert profile.codecs != {}
+    assert not any("stage 2" in d for d in profile.dropped)
+
+
+def test_a_totally_unverified_window_is_reported_as_the_unverified_zero():
+    # Fails if run_profile falls back to the unverified plan.window when
+    # stage 0 could not confirm ANY window at all -- that fallback would
+    # report a hypothesis nothing ever tested as though it were measured,
+    # exactly the defect class this task exists to prevent. (The brief's
+    # own sample line, `stage0.window or plan.window`, does this; not
+    # used here -- see the report for detail.)
+    profile = _run(_WindowNeverVerifies())
+    assert profile.usable_window == 0
+    assert any("stage 0" in d for d in profile.dropped)
+
+
+def test_verdict_uses_the_verified_window_not_the_unverified_plan():
+    # Fails if verdict_for is ever called with plan.window instead of the
+    # window stage 0 actually verified: this family's REAL window (4096)
+    # sits below SUPPORTED_FLOOR even though the plan it started from
+    # (8192, at the floor) does not, so a verdict computed from the
+    # unverified plan would wrongly read READY instead of LIMITED.
+    profile = _run(_ShrinksWindowBelowTheFloor())
+    assert profile.usable_window < SUPPORTED_FLOOR
+    assert profile.verdict == "LIMITED"
+
+
+def test_the_table_names_the_window_limit_and_the_mode():
+    # Fails if render_table drops the limiting factor, the mode string, or
+    # the not-publishable warning a quick run must carry.
+    table = render_table(_run(_Good()))
+    assert "vram" in table
+    assert "quick" in table
+    # A quick profile must be visibly unquotable.
+    assert "not publishable" in table
+
+
+def test_a_full_run_is_not_marked_unpublishable():
+    # The other direction of the assertion above: fails if "not
+    # publishable" is unconditional (present regardless of mode) rather
+    # than gated on mode != "full".
+    table = render_table(_run(_Good(), seeds=10, mode="full"))
+    assert "not publishable" not in table
+
+
+def test_a_full_run_records_ten_seeds_and_full_mode():
+    # Fails if run_profile ignores its seeds/mode arguments (e.g. a
+    # provenance field hardcoded to "quick"/1, which the quick-mode tests
+    # above alone could never catch since they also pass seeds=1/quick).
+    profile = _run(_Good(), seeds=10, mode="full")
+    assert (profile.seeds, profile.mode) == (10, "full")
+
+
+def test_a_profile_replays_identically_from_a_transcript(tmp_path: Path):
+    # Fails if any stage sends a prompt that is not a pure function of
+    # (model, prompt, seed) -- e.g. one derived from wall-clock time or
+    # call count -- which would make the replayed run diverge from the
+    # recorded one despite reading the same transcript.
+    path = tmp_path / "t.jsonl"
+    live = _run(CallRecorder(_Good(), path))
+    replayed = _run(CallReplayer(path))
+    assert replayed.to_json() == live.to_json()
+
+
+def test_the_written_profile_round_trips_through_the_filesystem(tmp_path: Path):
+    # The JSON is the artifact this task exists to produce -- an
+    # in-memory-only comparison (already covered by test_profile_schema.py)
+    # cannot prove a file written to disk and read back is usable. Fails if
+    # to_json/from_json disagree on any field (a type coercion, a missing
+    # key, an ordering-sensitive comparison) that in-memory equality alone
+    # would not exercise.
+    profile = _run(_Good())
+    target = tmp_path / "profile.json"
+    target.write_text(profile.to_json(), encoding="utf-8")
+
+    reloaded = Profile.from_json(json.loads(target.read_text(encoding="utf-8")))
+    assert reloaded == profile
+
+
+# --- CLI wiring: `robigo profile`, its --full/--seeds handling, and its --
+# write to profile_path -----------------------------------------------------
+
+
+def _stub_plan_window(*args, **kwargs) -> WindowPlan:
+    # Same reasoning as test_cli.py's own _stub_plan_window: these tests
+    # are about argument wiring and file output, not window detection, and
+    # model "m" does not exist on any real daemon.
+    return PLAN
+
+
+def test_leading_profile_argument_dispatches_to_profile_main(monkeypatch):
+    # Fails if `main` still routes a leading "profile" argv element into
+    # the ordinary task parser (which requires --model and would behave
+    # completely differently), instead of into profile_main.
+    import robigo.cli as cli_module
+
+    captured = {}
+
+    def fake_profile_main(argv: list[str]) -> int:
+        captured["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(cli_module, "profile_main", fake_profile_main)
+    code = cli_module.main(["profile", "--model", "m", "--full"])
+    assert code == 0
+    assert captured["argv"] == ["--model", "m", "--full"]
+
+
+def test_full_flag_requests_ten_seeds_and_full_mode(monkeypatch, tmp_path: Path):
+    # This is the test the task calls out by name: a run_profile call that
+    # always receives seeds=3/mode="quick" regardless of --full would still
+    # pass every OTHER test in this file (they mostly exercise seeds=1 or
+    # pass seeds/mode straight through in-process), so this has to inspect
+    # what profile_main actually hands run_profile when --full is given,
+    # not just what a hand-built run_profile call produces.
+    import robigo.cli as cli_module
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(cli_module, "plan_window", _stub_plan_window)
+    monkeypatch.setattr(cli_module, "build_client", lambda args: _Good())
+
+    captured = {}
+    real_run_profile = cli_module.run_profile
+
+    def spy_run_profile(client, plan, **kw):
+        captured.setdefault("calls", []).append(kw)
+        return real_run_profile(client, plan, **kw)
+
+    monkeypatch.setattr(cli_module, "run_profile", spy_run_profile)
+
+    code = cli_module.profile_main(["--model", "m", "--full"])
+    assert code == 0
+    assert (captured["calls"][0]["seeds"], captured["calls"][0]["mode"]) == (10, "full")
+
+
+def test_without_full_flag_the_default_seed_count_is_used_and_marked_quick(
+    monkeypatch, tmp_path: Path
+):
+    # The other direction of the test above: fails if --full's absence is
+    # not correctly wired to the (default) quick mode and the default seed
+    # count, or if seeds/mode get swapped between the two branches.
+    import robigo.cli as cli_module
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(cli_module, "plan_window", _stub_plan_window)
+    monkeypatch.setattr(cli_module, "build_client", lambda args: _Good())
+
+    captured = {}
+    real_run_profile = cli_module.run_profile
+
+    def spy_run_profile(client, plan, **kw):
+        captured.setdefault("calls", []).append(kw)
+        return real_run_profile(client, plan, **kw)
+
+    monkeypatch.setattr(cli_module, "run_profile", spy_run_profile)
+
+    code = cli_module.profile_main(["--model", "m"])
+    assert code == 0
+    assert (captured["calls"][0]["seeds"], captured["calls"][0]["mode"]) == (3, "quick")
+
+
+def test_profile_main_exits_refused_when_the_verdict_is_unusable(
+    monkeypatch, tmp_path: Path
+):
+    # None of the other CLI-level tests ever produce an UNUSABLE verdict
+    # (they all use _Good), so a profile_main that always `return 0`
+    # regardless of profile.verdict would otherwise pass this whole file.
+    # Fails if the exit code stops tracking the verdict, in either
+    # direction: 0 for UNUSABLE, or non-zero for READY/LIMITED.
+    import robigo.cli as cli_module
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(cli_module, "plan_window", _stub_plan_window)
+    monkeypatch.setattr(cli_module, "build_client", lambda args: _CannotEnvelope())
+
+    code = cli_module.profile_main(["--model", "m", "--seeds", "1"])
+    assert code == OUTCOMES["refused"]
+
+
+def test_the_record_flag_writes_a_transcript_that_replays_the_same_profile(
+    monkeypatch, tmp_path: Path
+):
+    # Fails if --record is accepted but silently ignored (client never
+    # wrapped in CallRecorder), which would leave no transcript on disk, or
+    # if the transcript it writes does not actually reproduce the profile
+    # profile_main itself printed.
+    import robigo.cli as cli_module
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(cli_module, "plan_window", _stub_plan_window)
+    monkeypatch.setattr(cli_module, "build_client", lambda args: _Good())
+    transcript = tmp_path / "recorded.jsonl"
+
+    code = cli_module.profile_main([
+        "--model", "m", "--seeds", "1", "--record", str(transcript),
+    ])
+    assert code == 0
+    assert transcript.exists() and transcript.stat().st_size > 0
+
+    written = Profile.from_json(
+        json.loads(profile_path("m").read_text(encoding="utf-8"))
+    )
+    replayed = _run(CallReplayer(transcript), seeds=1, mode="quick",
+                    quant="unknown", family="m", model="m")
+    assert written == replayed
+
+
+def test_profile_main_writes_a_profile_that_round_trips_through_the_filesystem(
+    monkeypatch, tmp_path: Path
+):
+    # Exercises the actual write path in cli.profile_main (path.write_text),
+    # not just Profile.to_json/from_json in memory. Fails if profile_main
+    # writes somewhere other than profile_path(family), writes a payload
+    # from_json cannot parse back, or writes a profile that disagrees with
+    # what an independent replay of the same transcript produces.
+    import robigo.cli as cli_module
+
+    transcript = tmp_path / "t.jsonl"
+    # Record with the exact client, plan, and seed count profile_main will
+    # use below (seeds=1, quick, no --full) so replay lines up call-for-call.
+    _run(CallRecorder(_Good(), transcript), seeds=1, mode="quick")
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(cli_module, "plan_window", _stub_plan_window)
+
+    code = cli_module.profile_main([
+        "--model", "m", "--seeds", "1", "--replay", str(transcript),
+    ])
+    assert code == 0
+
+    written_path = profile_path("m")
+    assert written_path == tmp_path / "robigo" / "profiles" / "m.json"
+    on_disk = Profile.from_json(json.loads(written_path.read_text(encoding="utf-8")))
+
+    expected = _run(CallReplayer(transcript), seeds=1, mode="quick", quant="unknown",
+                    family="m", model="m")
+    assert on_disk == expected

@@ -8,7 +8,19 @@ SUPPORTED_FLOOR = 8192
 that works at 4096 works everywhere, but a 4096 family should never be
 recommended for agentic work (spec 3.1)."""
 
-_ENVELOPE_MIN = 0.5
+ENVELOPE_FIDELITY_MIN = 0.5
+"""Below this, `verdict_for` reports UNUSABLE regardless of window or
+codecs (spec 5, stage 1 gates the rest). Public -- not just an internal
+threshold of this module's own function -- because `robigo.profile.report.
+run_profile` gates stage 2 on this exact same question ("can this family
+drive the envelope at all") and must use the identical number, not a
+second 0.5 written by hand at the call site. Two independent literals that
+happen to agree today is exactly how a threshold drifts silently: a future
+change to the number here, without a matching edit at the other site,
+would make `run_profile` run stage 2 for a family `verdict_for` still
+calls UNUSABLE (or the reverse), and either way `dropped` would then
+describe a gate that no longer matches what the profile's own verdict is
+built from."""
 _LANDING_MIN = 0.5
 
 
@@ -98,7 +110,7 @@ class Profile:
 def verdict_for(
     envelope_fidelity: float, codecs: dict[str, CodecResult], usable_window: int
 ) -> str:
-    if envelope_fidelity < _ENVELOPE_MIN:
+    if envelope_fidelity < ENVELOPE_FIDELITY_MIN:
         return "UNUSABLE"
     best = max((r.lands for r in codecs.values()), default=0.0)
     if usable_window < SUPPORTED_FLOOR or best < _LANDING_MIN:

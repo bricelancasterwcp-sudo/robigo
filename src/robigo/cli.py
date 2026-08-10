@@ -10,6 +10,8 @@ from robigo.loop import OUTCOMES, run
 from robigo.model.client import LlamaCppClient, ModelClient, OllamaClient
 from robigo.model.detect import plan_window
 from robigo.model.geometry import GeometryError
+from robigo.profile.report import profile_path, render_table, run_profile
+from robigo.profile.transcript import CallRecorder, CallReplayer
 from robigo.record import new_recorder
 
 # No stop sequences. They were matched against the whole stream, payload
@@ -37,6 +39,18 @@ def build_client(args: argparse.Namespace) -> ModelClient:
 
 
 def main(argv: list[str] | None = None) -> int:
+    dispatch = sys.argv[1:] if argv is None else argv
+    if dispatch and dispatch[0] == "profile":
+        # Collision, considered and accepted: a normal `robigo` invocation
+        # whose TASK positional is the single literal word "profile" (e.g.
+        # `robigo profile --model m` meant as "fix the thing named
+        # profile", not the profiler subcommand) is swallowed by this
+        # dispatch and routed to `profile_main` instead. The flat parser
+        # below has no subcommand concept to disambiguate the two without
+        # a bigger parser rework, and "profile" alone is not a plausible
+        # free-form task description in practice, so the collision is left
+        # in place rather than papered over.
+        return profile_main(list(dispatch[1:]))
     parser = argparse.ArgumentParser(prog="robigo")
     parser.add_argument("task")
     parser.add_argument("--root", default=".")
@@ -185,6 +199,75 @@ def main(argv: list[str] | None = None) -> int:
     if recorder.error:
         print(f"run record unavailable: {recorder.error}")
     return result.exit_code
+
+
+def profile_main(argv: list[str]) -> int:
+    """`robigo profile` -- run stages 0-2 against one model and write the
+    result to `profile_path(family)`. Nothing reads that file yet (plan 04
+    wires it into `robigo run`); this only produces and records it."""
+    parser = argparse.ArgumentParser(prog="robigo profile")
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--backend", choices=("ollama", "llamacpp"), default="ollama")
+    parser.add_argument("--host", default=None)
+    parser.add_argument("--gguf", type=Path, default=None)
+    parser.add_argument("--seeds", type=int, default=3)
+    parser.add_argument("--full", action="store_true",
+                        help="all stages at 10 seeds; the only publishable mode")
+    parser.add_argument("--record", type=Path, default=None)
+    parser.add_argument("--replay", type=Path, default=None)
+    parser.add_argument("--kv-bits", dest="kv_bits", type=int,
+                        choices=(16, 8), default=16)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        # Same reasoning as main()'s own usage-error handling above: 2 is
+        # budget_exhausted in the run-outcome contract, so a harness-level
+        # argparse mistake must not alias it.
+        return _EX_USAGE if exc.code else 0
+
+    # --full is the ONLY publishable mode (spec 5.5): a quick run's
+    # provenance (seeds, mode) travels with every number it produced so it
+    # can never be quoted as a result later, but it must actually be
+    # DIFFERENT provenance, not a "full" flag that gets ignored downstream.
+    seeds = 10 if args.full else args.seeds
+    mode = "full" if args.full else "quick"
+    try:
+        plan = plan_window(args.backend, args.model, args.host or "", None,
+                           kv_bits=args.kv_bits, gguf_path=args.gguf)
+    except (GeometryError, OSError) as exc:
+        print(f"cannot determine the usable window: {exc}")
+        return OUTCOMES["infrastructure"]
+
+    client: ModelClient = (
+        CallReplayer(args.replay) if args.replay else build_client(
+            argparse.Namespace(backend=args.backend, model=args.model,
+                               window=plan.window, host=args.host,
+                               num_predict=1024)
+        )
+    )
+    if args.record:
+        client = CallRecorder(client, args.record)
+
+    family = args.model.replace(":", "-").replace("/", "-")
+    profile = run_profile(client, plan, model=args.model, quant=_quant(args.model),
+                          family=family, seeds=seeds, mode=mode,
+                          kv_bits=args.kv_bits)
+    print(render_table(profile))
+    path = profile_path(family)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(profile.to_json(), encoding="utf-8")
+    print(f"written to {path}")
+    return 0 if profile.verdict != "UNUSABLE" else OUTCOMES["refused"]
+
+
+def _quant(model: str) -> str:
+    """A rough quant tag pulled from the model's own tag string (e.g. the
+    `q8_0` in `qwen2.5-coder:7b-instruct-q8_0`) -- there is no registry to
+    ask, so this is a naming-convention heuristic, not a measurement, and
+    `"unknown"` when the tail does not look like one is the honest answer
+    for a model whose tag does not follow that convention."""
+    tail = model.rsplit("-", 1)[-1]
+    return tail if tail.lower().startswith("q") else "unknown"
 
 
 if __name__ == "__main__":
