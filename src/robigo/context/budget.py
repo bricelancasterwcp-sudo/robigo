@@ -21,7 +21,15 @@ the real cost is measurable -- `measure()` derives it from the exact
 preamble text `render` emits, ~211-233 tokens depending on codec -- this
 stops being the number `Budget` is built with. It survives only as
 `Budget.system`'s dataclass default: the fallback for a caller building a
-`Budget` directly with no diag/history in hand to measure against."""
+`Budget` directly with no diag/history in hand to measure against.
+
+The "~211-233" figure is codec alone holding everything else fixed; it is
+NOT the whole story. `measure()`'s seated `system` also shifts by +/-1
+token with the *scope* passed in, because `estimate_tokens` is
+`int(len/CHARS_PER_TOKEN) + 1` -- not additive -- and `_fixed_costs` seats
+`system` as a delta between two prefixes that both include the scope's own
+text (task 2, invariant 4's amendment). Do not cache this per codec alone,
+and do not read the range above as the full domain it is measured over."""
 DIAGNOSTIC_TOKENS = 600
 """Same status as `SYSTEM_TOKENS`, and for the same reason: a guess, kept
 only as `Budget.diagnostic`'s fallback default. The real cost is a single

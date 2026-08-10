@@ -128,6 +128,7 @@ class _Scripted:
 
     model = "scripted"
     window = 8192
+    num_predict = 256
 
     def __init__(self, *replies: str) -> None:
         self.replies = list(replies)

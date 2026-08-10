@@ -15,7 +15,17 @@ from robigo.model.client import Generation
 
 class _ScriptedClient:
     """A model whose replies are fixed. The loop must be testable with no
-    GPU, or it cannot be tested at all."""
+    GPU, or it cannot be tested at all.
+
+    `window`/`num_predict` are generous class defaults, not tuned to any
+    fixture here: this file's repos are a handful of tiny files, so any
+    window in the thousands leaves the ladder's rung 1 comfortably
+    unexercised -- these tests are about the turn loop, not the ladder
+    (see test_loop_budget.py for that)."""
+
+    model = "scripted"
+    window = 8192
+    num_predict = 256
 
     def __init__(self, *replies: str, truncated: bool = False) -> None:
         self.replies = list(replies)

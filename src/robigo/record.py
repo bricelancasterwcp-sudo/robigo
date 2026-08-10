@@ -57,6 +57,10 @@ class RunRecorder:
             "exit_code": result.exit_code, "branch": result.branch,
             "detail": result.detail, "model": model, "window": window,
             "codec": codec,
+            # Invariant 7: the rung the run last needed, so a run that
+            # silently degraded and one that never left rung 1 leave
+            # different records -- not just the same "pass" outcome.
+            "rung": result.rung,
             # What an undo needs, so a transcript read weeks later can still
             # say where the run came from.
             "original_branch": undo.original_branch if undo else None,
