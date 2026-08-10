@@ -8,7 +8,7 @@ import pytest
 from robigo.model.client import Generation, ModelError, ServerContextOverflowError
 from robigo.model.geometry import WindowPlan
 from robigo.profile.stages import Stage0, stage0_window
-from robigo.profile.transcript import CallRecorder, CallReplayer, TranscriptMiss
+from robigo.profile.transcript import CallRecorder, CallReplayer
 
 # weights_bytes/overhead_bytes are required positional fields of the real
 # WindowPlan (src/robigo/model/geometry.py) but are not read by stage0_window
@@ -171,9 +171,8 @@ def test_a_recorded_stage0_run_replays_without_the_client(tmp_path: Path):
     # the *same* plan (e.g. a seed derived from id(client) or time.time()),
     # which would make the replayed call raise TranscriptMiss instead of
     # reproducing the recorded profile. Uses _Accepts (verified on the
-    # first probe, one call, no rejection) because CallRecorder can only
-    # record calls that return -- see the test directly below for the case
-    # where the run also includes a rejection.
+    # first probe, one call, no rejection) -- the case where the run also
+    # includes a rejection is the test directly below.
     path = tmp_path / "stage0.jsonl"
     recorder = CallRecorder(_Accepts(), path)
     recorded = stage0_window(recorder, PLAN)
@@ -185,22 +184,33 @@ def test_a_recorded_stage0_run_replays_without_the_client(tmp_path: Path):
                                           note="probe accepted")
 
 
-def test_a_run_that_hits_a_rejection_does_not_yet_replay(tmp_path: Path):
-    # Documents a real limitation this task found, not a stage0_window
-    # bug: CallRecorder.generate (Task 2, transcript.py) calls the wrapped
-    # client directly and only writes a transcript row AFTER a successful
-    # return -- `gen = self._client.generate(...)` is unguarded, so a call
-    # that raises ServerContextOverflowError leaves no row behind. The
-    # test above proves stage0_window's own prompt/seed construction IS
-    # fully deterministic; the gap is in what CallRecorder captures, not
-    # in what stage0_window sends. A recorded run whose bisection ever hit
-    # a rejection therefore replays as TranscriptMiss on that exact call,
-    # not as the recorded rejection -- fails if CallRecorder is changed to
-    # also record raising calls without this test being revisited (that
-    # would be a real improvement; it should change this test's shape,
-    # not silently leave it stale).
+def test_a_run_that_hits_a_rejection_replays_identically(tmp_path: Path):
+    # This is the acceptance test for the Task 2 amendment ("record
+    # outcomes, not just replies", ruled 2026-08-10). It used to document a
+    # real gap (renamed from test_a_run_that_hits_a_rejection_does_not_yet
+    # _replay): CallRecorder.generate wrote a transcript row only after a
+    # successful return, so a call that raised ServerContextOverflowError
+    # left no row, and a recorded run whose bisection ever hit a rejection
+    # -- precisely the run worth recording, since it's the one that found
+    # a planned window that didn't hold -- replayed as TranscriptMiss on
+    # the very first rejected probe instead of reproducing the run.
+    #
+    # CallRecorder now catches ModelError, records the outcome (including
+    # which exact exception type), and re-raises; CallReplayer reconstructs
+    # that exact type on replay. Fails end-to-end if either half regresses:
+    # if a rejected probe goes unrecorded again, the live run
+    # (stage0_window(CallRecorder(...), PLAN)) itself raises TranscriptMiss
+    # on the *replay* line below, before the two variables are ever
+    # compared -- pytest would report an unhandled exception, not an
+    # assertion failure, which is itself diagnostic of which half broke.
     path = tmp_path / "stage0.jsonl"
-    stage0_window(CallRecorder(_Rejects(until=6000), path), PLAN)
+    live = stage0_window(CallRecorder(_Rejects(until=6000), path), PLAN)
 
-    with pytest.raises(TranscriptMiss):
-        stage0_window(CallReplayer(path), PLAN)
+    replayed = stage0_window(CallReplayer(path), PLAN)
+
+    assert replayed == live
+    # Sanity: this run actually exercises a rejection (otherwise the test
+    # would pass trivially, the same way test_a_recorded_stage0_run_
+    # replays_without_the_client already covers the no-rejection case).
+    assert live.window < PLAN.window
+    assert live.verified is True

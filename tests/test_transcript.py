@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from robigo.model.client import Generation
+from robigo.model.client import (
+    ContextOverflowError,
+    Generation,
+    ModelError,
+    ServerContextOverflowError,
+)
 from robigo.profile.transcript import CallRecorder, CallReplayer, TranscriptMiss, key_for
 
 
@@ -19,6 +24,22 @@ class _Client:
 
     def generate(self, prompt: str, *, seed: int) -> Generation:
         self.calls += 1
+        return Generation(f"reply to {prompt} @{seed}", 10, 5, False)
+
+
+class _RaisesOnce(_Client):
+    """Raises `error` on its first call, then answers normally -- for
+    testing that a rejection mid-transcript doesn't stop later calls from
+    being recorded or replayed."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self._error = error
+
+    def generate(self, prompt: str, *, seed: int) -> Generation:
+        self.calls += 1
+        if self.calls == 1:
+            raise self._error
         return Generation(f"reply to {prompt} @{seed}", 10, 5, False)
 
 
@@ -48,6 +69,97 @@ def test_replay_preserves_the_truncated_flag(tmp_path: Path):
 
     CallRecorder(_Cut(), path).generate("p", seed=1)
     assert CallReplayer(path).generate("p", seed=1).truncated is True
+
+
+def test_recording_a_rejection_still_raises_it_live(tmp_path: Path):
+    # Fails if CallRecorder swallows the exception instead of re-raising
+    # after recording it -- the live caller (stage 0's bisection, which
+    # catches ContextOverflowError to decide "smaller" vs "give up") must
+    # see exactly what it would have seen unwrapped. A CallRecorder that
+    # records but doesn't re-raise would silently change live behaviour
+    # merely by being wrapped in a CallRecorder, independent of replay.
+    path = tmp_path / "t.jsonl"
+    recorder = CallRecorder(_RaisesOnce(ServerContextOverflowError("too big")), path)
+    with pytest.raises(ServerContextOverflowError):
+        recorder.generate("p", seed=1)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ModelError("connection refused"),
+        ContextOverflowError("prompt plus reserve exceeds window"),
+        ServerContextOverflowError("too big"),
+    ],
+    ids=["ModelError", "ContextOverflowError", "ServerContextOverflowError"],
+)
+def test_a_recorded_rejection_replays_by_its_exact_type(
+    tmp_path: Path, error: ModelError
+):
+    # Fails if replay re-raises a generic ModelError (or any type other
+    # than the one that was actually recorded) instead of the exact
+    # recorded exception class -- stage 0 catches ServerContextOverflowError
+    # specifically to distinguish "the server rejected this size" from
+    # "the model is broken", and a replay that flattens the type would
+    # change stage 0's bisection behaviour under replay while a test that
+    # only asserts "something raised" would not catch it. Parametrized
+    # over all three ModelError-family types so the fix isn't just
+    # special-cased to ServerContextOverflowError.
+    path = tmp_path / "t.jsonl"
+    with pytest.raises(type(error)):
+        CallRecorder(_RaisesOnce(error), path).generate("p", seed=1)
+
+    with pytest.raises(type(error)) as e:
+        CallReplayer(path).generate("p", seed=1)
+    # `pytest.raises(type(error))` alone would also accept a subclass
+    # (e.g. ServerContextOverflowError satisfies `isinstance(x, ModelError)`
+    # too) -- assert the exact type to actually pin reconstruction, not
+    # just "some compatible exception came back".
+    assert type(e.value) is type(error)
+    assert str(e.value) == str(error)
+
+
+def test_a_rejection_does_not_stop_later_calls_from_being_recorded(
+    tmp_path: Path,
+):
+    # Fails if catching the exception leaves the recorder unable to append
+    # further rows (e.g. a broken file handle, or an early return that
+    # skips subsequent calls) -- a real profiler run keeps probing after a
+    # rejection (that's the whole point of stage 0's bisection), so one
+    # failed call must not be the last thing on the transcript.
+    path = tmp_path / "t.jsonl"
+    recorder = CallRecorder(_RaisesOnce(ServerContextOverflowError("too big")), path)
+    with pytest.raises(ServerContextOverflowError):
+        recorder.generate("first", seed=1)
+    second = recorder.generate("second", seed=2)
+
+    assert len(path.read_text().strip().split("\n")) == 2
+    replayer = CallReplayer(path)
+    with pytest.raises(ServerContextOverflowError):
+        replayer.generate("first", seed=1)
+    assert replayer.generate("second", seed=2) == second
+
+
+def test_a_non_model_error_is_not_recorded_and_propagates_unwrapped(
+    tmp_path: Path,
+):
+    # Fails if CallRecorder's except clause is broadened from ModelError to
+    # bare Exception -- a bug in the wrapped client (a TypeError, say, not
+    # a call outcome) would then be silently absorbed into the transcript
+    # as if it were a legitimate recorded rejection, and a later replay
+    # would "faithfully" reproduce a bug instead of surfacing it
+    # immediately. `ModelError` is documented (client.py) as infrastructure
+    # failure and nothing else; only that family is a recordable outcome.
+    path = tmp_path / "t.jsonl"
+
+    class _Buggy(_Client):
+        def generate(self, prompt: str, *, seed: int) -> Generation:
+            raise ValueError("not a ModelError")
+
+    recorder = CallRecorder(_Buggy(), path)
+    with pytest.raises(ValueError):
+        recorder.generate("p", seed=1)
+    assert path.read_text() == ""
 
 
 def test_a_missing_key_is_a_loud_failure_not_a_silent_skip(tmp_path: Path):

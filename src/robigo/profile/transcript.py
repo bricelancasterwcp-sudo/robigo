@@ -5,7 +5,27 @@ import hashlib
 import json
 from pathlib import Path
 
-from robigo.model.client import Generation, ModelClient
+from robigo.model.client import (
+    ContextOverflowError,
+    Generation,
+    ModelClient,
+    ModelError,
+    ServerContextOverflowError,
+)
+
+_KNOWN_ERRORS: dict[str, type[ModelError]] = {
+    cls.__name__: cls
+    for cls in (ModelError, ContextOverflowError, ServerContextOverflowError)
+}
+"""Every exception `ModelClient.generate` is allowed to raise (`ModelError`
+is infrastructure failure and nothing else -- a rambling or capped reply is
+a RESULT carried in `Generation`, not an exception; spec 9 law 10). Keyed
+by class name so a recorded row can name exactly which one happened and
+replay can reconstruct that same type, not a flattened `ModelError`. This
+is what lets stage 0 tell "the server rejected this size"
+(`ServerContextOverflowError`) apart from "the model is broken" (bare
+`ModelError`) identically under replay (Task 2 amendment, ruled
+2026-08-10)."""
 
 
 class TranscriptMiss(Exception):
@@ -14,7 +34,13 @@ class TranscriptMiss(Exception):
     it was recorded fewer times than replay is now asking for. Loud on
     purpose: silently falling through to a live model, or to an empty or
     repeated reply, would make a "reproduced" profile meaningless
-    (spec 5.3)."""
+    (spec 5.3).
+
+    A call that was recorded as a *failure* is not a `TranscriptMiss` --
+    replaying it re-raises the recorded exception type, faithfully, same
+    as replaying a recorded reply returns that reply. A `TranscriptMiss`
+    only ever means the transcript has nothing at all for this exact call,
+    never that what it has is a rejection."""
 
 
 def key_for(model: str, prompt: str, seed: int) -> str:
@@ -35,6 +61,20 @@ class CallRecorder:
     a `CallRecorder` is itself a `ModelClient`: the profiler loop can be
     pointed at a live client wrapped in a `CallRecorder` to capture a
     fixture, or at a `CallReplayer` to replay one, without knowing which.
+
+    Records the OUTCOME of every call, not just a returned reply: a call
+    that raises a `ModelError` (spec: the only exception a `ModelClient` is
+    allowed to raise) is caught, its type and message recorded, and then
+    RE-RAISED unchanged -- the live caller sees exactly what it would have
+    seen unwrapped, and the failure is on the transcript for replay to
+    reproduce. Task 2 amendment (ruled 2026-08-10): a `CallRecorder` that
+    only wrote a row on successful return left every rejected probe
+    unrecorded, so a stage-0 run whose bisection ever hit a rejection --
+    precisely the run worth recording, since it's the one that found a
+    planned window that did not hold -- could never be replayed past its
+    first rejection. Any exception that is NOT a `ModelError` (a bug in
+    the wrapped client, not a call outcome) is left unrecorded and
+    propagates immediately, same as before this amendment.
     """
 
     def __init__(self, client: ModelClient, path: Path) -> None:
@@ -47,20 +87,39 @@ class CallRecorder:
         self._path.touch()
 
     def generate(self, prompt: str, *, seed: int) -> Generation:
-        gen = self._client.generate(prompt, seed=seed)
-        row = {
+        base_row = {
             "key": key_for(self.model, prompt, seed),
             "model": self.model,
             "window": self.window,
             "num_predict": self.num_predict,
-            "text": gen.text,
-            "tokens_in": gen.tokens_in,
-            "tokens_out": gen.tokens_out,
-            "truncated": gen.truncated,
         }
+        try:
+            gen = self._client.generate(prompt, seed=seed)
+        except ModelError as exc:
+            self._append(
+                {
+                    **base_row,
+                    "outcome": "error",
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                }
+            )
+            raise
+        self._append(
+            {
+                **base_row,
+                "outcome": "reply",
+                "text": gen.text,
+                "tokens_in": gen.tokens_in,
+                "tokens_out": gen.tokens_out,
+                "truncated": gen.truncated,
+            }
+        )
+        return gen
+
+    def _append(self, row: dict) -> None:
         with self._path.open("a", encoding="utf-8") as out:
             out.write(json.dumps(row) + "\n")
-        return gen
 
 
 class CallReplayer:
@@ -101,6 +160,18 @@ class CallReplayer:
     exception) must be able to tell which happened from the message alone
     -- `key not in self._queues` (never recorded) is checked separately
     from an empty-but-present queue (drained).
+
+    A row recorded as a failure (`CallRecorder` caught a `ModelError`) is
+    NOT a `TranscriptMiss` -- it is a normal replay outcome, and `generate`
+    re-raises the exact recorded exception type (looked up in
+    `_KNOWN_ERRORS` by the class name `CallRecorder` stored) with the
+    recorded message. Re-raising by type, not as a generic `ModelError`,
+    matters because stage 0 catches `ServerContextOverflowError`
+    specifically to tell "the server rejected this size" apart from "the
+    model is broken"; flattening the type on replay would change stage
+    0's bisection behaviour under replay while every wrapper-level test
+    that only checks "something raised" kept passing (Task 2 amendment,
+    ruled 2026-08-10).
     """
 
     def __init__(self, path: Path) -> None:
@@ -138,6 +209,8 @@ class CallReplayer:
                 "with more seeds."
             )
         row = queue.pop(0)
+        if row["outcome"] == "error":
+            raise _KNOWN_ERRORS[row["error_type"]](row["error_message"])
         return Generation(
             row["text"], row["tokens_in"], row["tokens_out"], row["truncated"]
         )
