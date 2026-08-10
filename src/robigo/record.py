@@ -57,10 +57,14 @@ class RunRecorder:
             "exit_code": result.exit_code, "branch": result.branch,
             "detail": result.detail, "model": model, "window": window,
             "codec": codec,
-            # Invariant 7: the rung the run last needed, so a run that
-            # silently degraded and one that never left rung 1 leave
-            # different records -- not just the same "pass" outcome.
-            "rung": result.rung,
+            # Invariant 7: the PER-TURN rung sequence, not the last rung
+            # (whole-branch review finding 3, ruled 2026-08-09) -- only
+            # the sequence can tell a run that silently degraded
+            # (e.g. [1, 2, 3, 1]) apart from one that never left rung 1
+            # ([1, 1, 1, 1]); the scalar this used to be collapsed both to
+            # the same final value. `json.dumps` serialises the tuple as a
+            # JSON array with no extra conversion.
+            "rungs": list(result.rungs),
             # What an undo needs, so a transcript read weeks later can still
             # say where the run came from.
             "original_branch": undo.original_branch if undo else None,

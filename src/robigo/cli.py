@@ -122,8 +122,17 @@ def main(argv: list[str] | None = None) -> int:
             # this division is safe by construction, not by a runtime check.
             mib = 1024 * 1024
             print(
-                f"refused  turns=0  window 0: free {plan.free_vram // mib} "
-                f"MiB - weights {plan.weights_bytes // mib} MiB - margin "
+                # "free+resident", not "free" (whole-branch review finding
+                # 4, ruled 2026-08-09): `plan.free_vram` is `nvidia-smi`'s
+                # free reading PLUS this model's own residency credited
+                # back (`plan_window`'s `resident_bytes` correction), so it
+                # is not the number `nvidia-smi` itself reports, and a
+                # second consecutive run against an already-loaded model
+                # would otherwise print a "free VRAM" figure larger than
+                # what any tool on this box would show.
+                f"refused  turns=0  window 0: free+resident "
+                f"{plan.free_vram // mib} MiB - weights "
+                f"{plan.weights_bytes // mib} MiB - margin "
                 f"{plan.overhead_bytes // mib} MiB leaves no room for a "
                 f"single token at {plan.kv_per_token // 1024} KiB/token. "
                 f"Pick a smaller quantisation, a smaller model, or free VRAM."

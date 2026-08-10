@@ -147,6 +147,7 @@ def test_cli_accepts_the_word_auto(monkeypatch, tmp_path: Path):
     class _AbsentModel:
         model = "nope"
         window = 4096
+        num_predict = 256
 
         def generate(self, prompt: str, *, seed: int):
             generated.append(prompt)
@@ -196,7 +197,11 @@ def test_cli_refuses_on_a_zero_window_with_arithmetic(monkeypatch, tmp_path: Pat
     assert "refused" in out
     # The arithmetic itself, not just that something was printed: a bare
     # "window 0" is not actionable, per the amendment.
-    assert "free 14571 MiB" in out
+    # "free+resident", not "free" (whole-branch review finding 4, ruled
+    # 2026-08-09): the figure is `nvidia-smi`'s free reading PLUS this
+    # model's own residency credited back, never a number `nvidia-smi`
+    # itself reports.
+    assert "free+resident 14571 MiB" in out
     assert "weights 14540 MiB" in out
     assert "margin 256 MiB" in out
     assert "56 KiB/token" in out
@@ -278,7 +283,11 @@ def test_cli_refuses_end_to_end_when_weights_exceed_free_vram(monkeypatch,
     assert code == 3
     out = capsys.readouterr().out
     assert "window 0 (limited by vram" in out
-    assert "free 14571 MiB" in out
+    # "free+resident", not "free" (whole-branch review finding 4, ruled
+    # 2026-08-09): the figure is `nvidia-smi`'s free reading PLUS this
+    # model's own residency credited back, never a number `nvidia-smi`
+    # itself reports.
+    assert "free+resident 14571 MiB" in out
     assert "weights 14540 MiB" in out
     assert "margin 256 MiB" in out
 

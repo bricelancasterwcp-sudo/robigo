@@ -124,10 +124,19 @@ class _HTTPClient:
 
 class ModelClient(Protocol):
     """What the loop needs from a model. Both concrete clients below satisfy
-    it structurally, and so does any scripted stand-in used in tests."""
+    it structurally, and so does any scripted stand-in used in tests.
+
+    `num_predict` is declared (whole-branch review finding 5, ruled
+    2026-08-09): the loop reads it to compute the output reserve invariant
+    4 needs, and an UNDECLARED attribute the loop only reached via
+    `getattr(client, "num_predict", 0)` let a client conforming to
+    everything ELSE on this Protocol silently reserve 0 output tokens --
+    filling the whole window with prompt and leaving no room for a reply,
+    while invariant 4's inequality still read as satisfied."""
 
     model: str
     window: int
+    num_predict: int
 
     def generate(self, prompt: str, *, seed: int) -> Generation: ...
 

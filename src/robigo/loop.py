@@ -65,13 +65,17 @@ class RunResult:
     branch: str | None
     detail: str
     undo: UndoInfo | None = None
-    rung: int | None = None
-    """The ladder rung (1-4) the most recently rendered prompt actually
-    used, or None if no prompt was ever rendered (a turn-1 refusal before
-    any fit). Invariant 7: history grows and the scope is re-resolved
-    mid-loop, so the rung a run needs can differ turn to turn -- this is
-    the rung the run last needed, so plan 03's profiler can tell a run
-    that stayed at rung 1 apart from one that silently degraded to rung 4."""
+    rungs: tuple[int, ...] = ()
+    """The ladder rung (1-4) EVERY turn's prompt actually used, one entry
+    per turn that actually got a prompt rendered and sent, in order --
+    NOT a scalar (whole-branch review finding 3, ruled 2026-08-09). A
+    single "last rung" cannot tell a run that silently degraded
+    (`[1, 2, 3, 1]`) apart from one that never left rung 1 (`[1]`
+    repeated): only the sequence can. `len(rungs) == turns` holds for
+    every outcome, including a turn-1 `BudgetExhausted` refusal, where
+    both are 0 -- nothing was ever rendered. Plan 03's profiler is this
+    field's only consumer, and can derive the last, the worst, or the
+    shape of the degradation from the sequence itself."""
 
 
 def _result(
@@ -80,9 +84,9 @@ def _result(
     branch: str | None,
     detail: str,
     undo: UndoInfo | None = None,
-    rung: int | None = None,
+    rungs: tuple[int, ...] = (),
 ) -> RunResult:
-    return RunResult(outcome, turns, OUTCOMES[outcome], branch, detail, undo, rung)
+    return RunResult(outcome, turns, OUTCOMES[outcome], branch, detail, undo, rungs)
 
 
 def run(
@@ -179,11 +183,17 @@ def _execute(
         return _result("infrastructure", 0, branch, f"git failed: {exc}", undo)
 
     window = getattr(client, "window", 0)
-    reserve_out = getattr(client, "num_predict", 0)
+    # `num_predict` IS on the `ModelClient` Protocol (whole-branch review
+    # finding 5, ruled 2026-08-09) -- read directly, not defensively. The
+    # earlier `getattr(client, "num_predict", 0)` let a client conforming
+    # to the Protocol's declared surface but missing this attribute
+    # silently reserve 0 output tokens, formally satisfying invariant 4
+    # while leaving no room for a reply at all.
+    reserve_out = client.num_predict
     history: tuple[Turn, ...] = ()
     seen: set[str] = set()
     stalls = 0
-    last_rung: int | None = None
+    rungs: tuple[int, ...] = ()
     for turn in range(1, turn_cap + 1):
         try:
             prompt, rung = _select_rung(
@@ -193,12 +203,15 @@ def _execute(
             # Same evidence gate as the ContextOverflowError branch below,
             # for the same reason (invariant 5): with at least one attempt
             # already made this is a session RESULT, with none there is
-            # nothing to preserve. `last_rung` carries whatever rung the
-            # PREVIOUS turn actually used -- there is no rung for THIS
-            # turn, since nothing fit it.
+            # nothing to preserve. Unlike that branch, NOTHING was
+            # generated for the current turn -- `_select_rung` raised
+            # before `client.generate` was ever called -- so this turn
+            # does not count: `turn - 1`, not `turn` (whole-branch review
+            # finding 2, ruled 2026-08-09). `rungs` is passed as
+            # accumulated so far, unextended, for the same reason.
             outcome = "budget_exhausted" if turn > 1 else "refused"
-            return _result(outcome, turn, branch, str(exc), undo, rung=last_rung)
-        last_rung = rung
+            return _result(outcome, turn - 1, branch, str(exc), undo, rungs=rungs)
+        rungs = rungs + (rung,)
         try:
             gen = client.generate(prompt, seed=turn)
         except ContextOverflowError as exc:
@@ -206,13 +219,15 @@ def _execute(
             # made this is a session RESULT and the work so far stands;
             # with none, there is nothing to preserve and it is a refusal.
             # Which check caught it does not matter -- only whether
-            # evidence exists.
+            # evidence exists. Unlike `BudgetExhausted` above, a request
+            # really was sent this turn, so it counts: `turn`, not
+            # `turn - 1`.
             recorder.turn(prompt, f"<no reply: {exc}>", diag.raw)
             outcome = "budget_exhausted" if turn > 1 else "refused"
-            return _result(outcome, turn, branch, str(exc), undo, rung=last_rung)
+            return _result(outcome, turn, branch, str(exc), undo, rungs=rungs)
         except ModelError as exc:
             recorder.turn(prompt, f"<no reply: {exc}>", diag.raw)
-            return _result("infrastructure", turn, branch, str(exc), undo, rung=last_rung)
+            return _result("infrastructure", turn, branch, str(exc), undo, rungs=rungs)
 
         action_text, result_text, applied, target = _take_turn(
             gen, root, scope, adapter, codec, allow_test_edits
@@ -232,14 +247,14 @@ def _execute(
             except AdapterError as exc:
                 # Not git's fault. Blaming git for a vanished pytest sent
                 # every reader of the record looking in the wrong place.
-                return _result("infrastructure", turn, branch, str(exc), undo, rung=last_rung)
+                return _result("infrastructure", turn, branch, str(exc), undo, rungs=rungs)
             except (subprocess.CalledProcessError, FileNotFoundError) as exc:
                 return _result(
                     "infrastructure", turn, branch, f"git failed: {exc}", undo,
-                    rung=last_rung,
+                    rungs=rungs,
                 )
             if diag.passed:
-                return _result("pass", turn, branch, "tests pass", undo, rung=last_rung)
+                return _result("pass", turn, branch, "tests pass", undo, rungs=rungs)
             # Mid-loop re-resolution can fail where the first one could not:
             # a timed-out or unanchorable run returns file=None, and resolve
             # refuses that. Keep the scope we already have and let the model
@@ -259,18 +274,18 @@ def _execute(
             except ScopeError:
                 pass
             except RefusedError as exc:
-                return _result("refused", turn, branch, str(exc), undo, rung=last_rung)
+                return _result("refused", turn, branch, str(exc), undo, rungs=rungs)
 
         key = f"{action_text}\n{gen.text}"
         stalls = stalls + 1 if key in seen else 0
         seen.add(key)
         if stalls >= stall_cap - 1:
             return _result(
-                "stalled", turn, branch, "no progress; repeating", undo, rung=last_rung
+                "stalled", turn, branch, "no progress; repeating", undo, rungs=rungs
             )
 
     return _result(
-        "stalled", turn_cap, branch, f"turn cap {turn_cap} reached", undo, rung=last_rung
+        "stalled", turn_cap, branch, f"turn cap {turn_cap} reached", undo, rungs=rungs
     )
 
 
@@ -284,52 +299,70 @@ def _select_rung(
     reserve_out: int,
 ) -> tuple[str, int]:
     """The prompt to send this turn, and the rung it was rendered at.
-    Arithmetic proposes a rung; measurement decides the stopping point
-    (task 2, invariant 4, amended 2026-08-09 from measurement). `fit`
-    degrades the scope using its own seated `Budget` -- exact for the
-    scope it was measured against, but `estimate_tokens` is
-    `int(len/CHARS_PER_TOKEN) + 1`, not additive, so a DIFFERENT rung's
-    actual rendered length can round differently by +/-1 token. Measured
-    at ~5% of cases, always in the direction that matters: the seated
-    arithmetic says a rung fits when its real rendered prompt is one
-    token over.
+    Measurement is the authority in BOTH directions, not just the accept
+    path (whole-branch review finding 1, ruled 2026-08-09, correcting the
+    task-2 amendment this docstring used to describe). The ladder is
+    walked in its fixed order, rung 1 upward, RENDERING each candidate for
+    real and taking the first whose rendered prompt measures as fitting:
+    `estimate_tokens(prompt) + reserve_out <= window`. This yields the
+    largest rung that actually fits, by construction, rather than by
+    correcting an estimate that can be wrong in either direction.
 
-    So the candidate `fit` proposes is rendered here and checked against
-    the real window; a rung that fails the check steps down to the next
-    one and is checked again, refusing only once rung `MAX_STEP - 1` --
-    the smallest -- still does not fit. Rendering a candidate is cheap
-    (its files are already read) and there are at most four, so this
-    never re-measures the seated system/diagnostic/history costs -- only
-    `fit`'s single seated `Budget` is built, via `measure` -- against the
-    ORIGINAL, undegraded scope; only the scope section changes rung to
-    rung, which is exactly the piece this re-renders and re-checks for
-    real."""
+    `fit`'s own seated `Budget` (via `measure`, against the ORIGINAL,
+    undegraded scope) is an estimate of an estimate: `estimate_tokens` is
+    `int(len/CHARS_PER_TOKEN) + 1`, not additive, so seating
+    system/diagnostic/history once against the undegraded scope and then
+    comparing a DIFFERENT candidate's own length against that one seating
+    can disagree with the candidate's real rendered length by +/-1 token
+    -- in EITHER direction. That is what the task-2 amendment's
+    step-down-only correction missed: it is not only that arithmetic can
+    ACCEPT a rung that does not really fit (needing a step down), it can
+    also REFUSE a rung that really does fit (reproduced at window 608,
+    reserve 64: rung 4's real prompt is 544, `544 + 64 == 608` fits
+    exactly, while the seated arithmetic said `291 > 290`) -- or propose a
+    rung lower than necessary, dropping a file's body for a 1-token
+    artifact a step-down-only search can never step back up from. Walking
+    every rung by real measurement, ascending, has neither failure mode:
+    it never trusts `fit`'s accept/reject verdict for either direction.
+
+    `fit` keeps its own tests and stays the module's arithmetic API -- it
+    is asked, below, ONLY for the refusal's arithmetic once real
+    measurement has already found no rung fits. Its own verdict is not
+    trusted even there: if it still returns instead of raising (its
+    narrower, single-seating view disagreeing with what real measurement,
+    rendering the actual candidate, already established), this refuses
+    anyway rather than send what measurement rejected. Rendering a
+    candidate is cheap (its files are already read) and there are at most
+    four, so this costs nothing to do honestly."""
     budget = measure(scope, diag, history, codec, root, window, reserve_out)
-    candidate, step = fit(scope, budget, root)
-    while True:
+    smallest_prompt = ""
+    for step in range(1, MAX_STEP):
+        candidate = scope.degrade(step)
         prompt = render(candidate, diag, history, codec, root)
         if estimate_tokens(prompt) + reserve_out <= window:
             return prompt, step
-        if step >= MAX_STEP - 1:
-            # `fit`'s own arithmetic already refuses BEFORE this point
-            # whenever every rung fails ITS estimate; reaching here means
-            # arithmetic accepted rung `step` but the real render did not,
-            # and there is no rung further down the ladder to try.
-            over = estimate_tokens(prompt) + reserve_out - window
-            raise BudgetExhausted(
-                f"scope cannot fit the window: even rung {step} (of "
-                f"{MAX_STEP - 1}), the smallest, renders a prompt costing "
-                f"{estimate_tokens(prompt)} tokens, which plus the "
-                f"{reserve_out}-token output reserve exceeds the "
-                f"{window}-token window by {over}.\n"
-                f"  window {window}   reserve {reserve_out}   "
-                f"system {budget.system}   diagnostic {budget.diagnostic}"
-                f"   history {budget.history}\n"
-                f"Narrow it with --scope, or use a model with a larger "
-                f"window."
-            )
-        step += 1
-        candidate = scope.degrade(step)
+        smallest_prompt = prompt
+    try:
+        fit(scope, budget, root)
+    except BudgetExhausted:
+        raise
+    # `fit` disagreed with real measurement and returned instead of
+    # raising -- measurement is the authority; refuse anyway, with the
+    # arithmetic built from what was actually just measured rather than
+    # `fit`'s message (which this path proves cannot be trusted here).
+    over = estimate_tokens(smallest_prompt) + reserve_out - window
+    raise BudgetExhausted(
+        f"scope cannot fit the window: even rung {MAX_STEP - 1} (of "
+        f"{MAX_STEP - 1}), the smallest, renders a prompt costing "
+        f"{estimate_tokens(smallest_prompt)} tokens, which plus the "
+        f"{reserve_out}-token output reserve exceeds the "
+        f"{window}-token window by {over}.\n"
+        f"  window {window}   reserve {reserve_out}   "
+        f"system {budget.system}   diagnostic {budget.diagnostic}"
+        f"   history {budget.history}\n"
+        f"Narrow it with --scope, or use a model with a larger "
+        f"window."
+    )
 
 
 def _take_turn(
