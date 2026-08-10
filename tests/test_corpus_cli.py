@@ -150,6 +150,26 @@ def test_clone_repo_produces_a_real_independent_working_tree_with_git_history(
     assert (dest / ".git").is_dir()
 
 
+def test_clone_repo_never_hardlinks_git_objects(
+    monkeypatch: pytest.MonkeyPatch, git_repo: Path, tmp_path: Path
+):
+    # Measured directly, running this for real (invariant 14): plain
+    # `--local` against a temp destination on a different filesystem than
+    # --repo raised "fatal: ... Invalid cross-device link" -- `dest` is a
+    # `tempfile` directory with no guarantee of sharing a device with
+    # `repo`. Pins the flag that fixes it stays present.
+    seen_cmds: list[list[str]] = []
+    real_run = subprocess.run
+
+    def spy_run(cmd, **kwargs):
+        seen_cmds.append(list(cmd))
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy_run)
+    cli_module._clone_repo(git_repo, tmp_path / "clone")
+    assert "--no-hardlinks" in seen_cmds[0]
+
+
 def test_mutating_a_file_in_the_clone_never_touches_the_original_repo(
     git_repo: Path, tmp_path: Path
 ):

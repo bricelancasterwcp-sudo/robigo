@@ -295,14 +295,25 @@ def _clone_repo(repo: Path, dest: Path) -> None:
     baseline at 6 broken without one -- a real `git clone` keeps `.git`
     and gets an honest baseline instead. `--local` skips a network round
     trip for a same-filesystem source (this module never touches the
-    network otherwise); the WORKING TREE files git checks out are
-    ordinary files, never hardlinked back to `repo`'s own working tree
-    (only `.git/objects/` blobs ever are, for a local clone, and nothing
-    downstream of this function ever writes there), so a mutation applied
-    inside `dest` can never reach back into `repo` -- the property "never
-    mutate the working tree" actually depends on."""
+    network otherwise).
+
+    `--no-hardlinks` is required, not cosmetic: `dest` is a `tempfile`
+    directory, which on this box (and generally) is not guaranteed to sit
+    on the same filesystem as `repo` -- measured directly: plain `--local`
+    against a `/tmp` destination raised `fatal: failed to create link ...
+    Invalid cross-device link` the first time this was run for real
+    (invariant 14's own end-to-end run). Forcing a real copy of `.git`'s
+    objects, rather than hardlinking them, is also what keeps the
+    property "never mutate the working tree" honest regardless of
+    filesystem layout: the WORKING TREE files git checks out are already
+    ordinary files either way (never hardlinked to `repo`'s own working
+    tree, only `.git/objects/` blobs ever are), so a mutation applied
+    inside `dest` could never reach back into `repo` -- but a clone that
+    silently failed here would abort loudly (`CalledProcessError`) rather
+    than leaving `dest` half-populated, which is the outcome that
+    actually matters."""
     subprocess.run(
-        ["git", "clone", "--local", "--quiet", str(repo), str(dest)],
+        ["git", "clone", "--local", "--no-hardlinks", "--quiet", str(repo), str(dest)],
         check=True, timeout=_CLONE_TIMEOUT, capture_output=True, text=True,
     )
 
