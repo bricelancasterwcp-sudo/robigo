@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import robigo.profile.verify as verify_module
 from robigo.profile.corpus import Mutant
 from robigo.profile.verify import (
     Baseline,
@@ -18,9 +19,14 @@ from robigo.profile.verify import (
     _assert_in_clone,
     _broken_count,
     _broken_ids,
+    _excluded_dir,
     _find_line,
+    _is_test_path,
     _module_path,
     _resolve_in_clone,
+    _sentinel_fast_path,
+    _sentinel_via_search,
+    _source_files,
     baseline,
     pytest_runner,
     sentinel_ok,
@@ -260,15 +266,21 @@ def test_sentinel_ok_returns_false_when_the_breakage_is_reported_on_the_wrong_tr
     assert (repo / "src" / "robigo" / "context" / "budget.py").read_text() == BUDGET_SOURCE
 
 
-def test_sentinel_ok_raises_if_its_target_line_has_moved_or_changed(repo: Path):
-    # Fails for an implementation that silently no-ops (and therefore
-    # tautologically "detects no breakage") instead of surfacing that its
-    # own hardcoded sentinel no longer matches the file it targets.
+def test_sentinel_ok_falls_back_to_the_search_when_the_known_target_has_moved(repo: Path):
+    # The fast path must NOT raise when it doesn't apply -- "doesn't
+    # apply" is the ordinary case for any repo that isn't robigo itself
+    # (Task 4's `--repo` points this at arbitrary repos), not a bug. It
+    # must fall through to the general search instead, which for THIS
+    # fixture (a blind runner, module content unchanged) finds nothing
+    # to break and returns `False` -- not raise, not a false `True`.
     (repo / "src" / "robigo" / "context" / "budget.py").write_text(
         "def estimate_tokens(text: str) -> int:\n    return 999\n"
     )
-    with pytest.raises(RuntimeError):
-        sentinel_ok(repo, lambda r: _output("0 failed\n", module_path=_inside(r)))
+
+    def blind_runner(r: Path) -> str:
+        return _output("0 failed, 430 passed\n", module_path=_inside(r))
+
+    assert sentinel_ok(repo, blind_runner) is False
 
 
 def test_sentinel_ok_restores_the_file_even_when_the_runner_raises(repo: Path):
@@ -280,6 +292,261 @@ def test_sentinel_ok_restores_the_file_even_when_the_runner_raises(repo: Path):
     with pytest.raises(RuntimeError, match="boom"):
         sentinel_ok(repo, exploding_runner)
     assert (repo / "src" / "robigo" / "context" / "budget.py").read_text() == BUDGET_SOURCE
+
+
+# ---------------------------------------------------------------------------
+# sentinel_ok generalised to any repo, not just robigo's own -- Task 4's
+# `--repo` (spec 5.1: black-oxide's 1327-test suite named as a corpus mine)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def scratch_repo(tmp_path: Path) -> Path:
+    """A repo shaped nothing like robigo -- no `context/budget.py`, no
+    `estimate_tokens` anywhere -- so `_sentinel_fast_path` can never apply
+    and every test using this fixture genuinely exercises the general
+    search, not the known-good shortcut."""
+    (tmp_path / "src" / "widget").mkdir(parents=True)
+    (tmp_path / "src" / "widget" / "__init__.py").write_text("")
+    (tmp_path / "src" / "widget" / "core.py").write_text(
+        "def double(n):\n    return n * 2\n"
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_core.py").write_text(
+        "def test_double():\n    assert True\n"
+    )
+    return tmp_path
+
+
+def test_sentinel_ok_prefers_the_fast_path_and_skips_the_search_when_it_finds_breakage(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+):
+    # Pins dispatch order directly: fails for an implementation that
+    # always falls through to the (much more expensive) general search
+    # regardless of whether the free fast path already answered.
+    def exploding_search(r: Path, runner: object) -> bool:
+        raise AssertionError("the general search must not run when the fast path applies")
+
+    monkeypatch.setattr(verify_module, "_sentinel_via_search", exploding_search)
+
+    def runner(r: Path) -> str:
+        return _output("18 failed, 412 passed in 4.00s\n", module_path=_inside(r))
+
+    assert sentinel_ok(repo, runner) is True
+
+
+def test_sentinel_ok_trusts_the_fast_paths_own_false_without_falling_through_to_search(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+):
+    # The other half of the same pin: `False` from the fast path (a
+    # genuinely blind harness) must not be second-guessed by also
+    # running the general search -- fails for an implementation like
+    # `if fast is not None and fast: return fast`, which would silently
+    # let a passing general-search result overrule a correctly-detected
+    # blind harness.
+    def exploding_search(r: Path, runner: object) -> bool:
+        raise AssertionError("the general search must not run once the fast path answered False")
+
+    monkeypatch.setattr(verify_module, "_sentinel_via_search", exploding_search)
+
+    def blind_runner(r: Path) -> str:
+        return _output("0 failed, 430 passed in 4.00s\n", module_path=_inside(r))
+
+    assert sentinel_ok(repo, blind_runner) is False
+
+
+def test_sentinel_ok_works_on_a_repo_shaped_nothing_like_robigo(scratch_repo: Path):
+    # THE coordinator's reported failure, reproduced and fixed: pointing
+    # sentinel_ok at a scratch repo used to raise FileNotFoundError
+    # unconditionally. A runner that reports breakage for ANY mutation to
+    # widget/core.py (checking the file's actual on-disk content, so this
+    # proves the search really did apply a real candidate, not just that
+    # something was called) must make this return True.
+    def runner(r: Path) -> str:
+        content = (r / "src" / "widget" / "core.py").read_text()
+        broken = content != "def double(n):\n    return n * 2\n"
+        report = "1 failed, 0 passed\n" if broken else "0 failed, 1 passed\n"
+        return _output(report, module_path=r / "src" / "widget" / "__init__.py")
+
+    assert sentinel_ok(scratch_repo, runner) is True
+    # Restored afterward, whichever candidate happened to hit.
+    assert (scratch_repo / "src" / "widget" / "core.py").read_text() == (
+        "def double(n):\n    return n * 2\n"
+    )
+
+
+def test_sentinel_ok_never_tries_a_mutation_to_a_test_file(scratch_repo: Path):
+    # Fails for an implementation that draws candidates from the WHOLE
+    # tree including test-shaped files -- a runner that reports breakage
+    # for ANY change to a test file (which candidates() can mutate just
+    # as validly as source: `assert True` -> `assert False` parses fine)
+    # would make this wrongly return True, because a test-file mutation
+    # is collected by pytest regardless of whether the harness resolves
+    # `import widget` into this clone at all -- it proves nothing about
+    # invariant 7. A test-shaped file placed INSIDE `src/widget/` itself
+    # (not just the top-level `tests/` directory `scratch_repo` also has)
+    # is what actually exercises `_is_test_path`'s filename check here,
+    # since `src/`-preference alone would already keep `tests/` out. Its
+    # content (`assert 1 == 1`) is deliberately chosen to offer a REAL
+    # candidate (`flipped_comparison`: `==` -> `!=`) -- if the exclusion
+    # were missing, that candidate would actually be tried and this
+    # runner would detect it, flipping the assertion below.
+    (scratch_repo / "src" / "widget" / "test_extra.py").write_text(
+        "def test_extra():\n    assert 1 == 1\n"
+    )
+
+    def runner(r: Path) -> str:
+        outer = (r / "tests" / "test_core.py").read_text()
+        inner = (r / "src" / "widget" / "test_extra.py").read_text()
+        broken = (
+            outer != "def test_double():\n    assert True\n"
+            or inner != "def test_extra():\n    assert 1 == 1\n"
+        )
+        report = "1 failed, 0 passed\n" if broken else "0 failed, 1 passed\n"
+        return _output(report, module_path=r / "src" / "widget" / "__init__.py")
+
+    assert sentinel_ok(scratch_repo, runner) is False
+
+
+def test_sentinel_via_search_tries_multiple_real_candidates_in_file_order(scratch_repo: Path):
+    # `src/widget/core.py` alone offers a candidate the runner below never
+    # reacts to; a second, alphabetically-LATER source file with the only
+    # candidate the runner detects proves the search doesn't stop after
+    # the first file's candidates find nothing -- it keeps going.
+    later_file = scratch_repo / "src" / "widget" / "zzz_later.py"
+    later_file.write_text("def triple(n):\n    return n * 3\n")
+
+    def runner(r: Path) -> str:
+        content = later_file.read_text()
+        broken = content != "def triple(n):\n    return n * 3\n"
+        report = "1 failed, 0 passed\n" if broken else "0 failed, 1 passed\n"
+        return _output(report, module_path=r / "src" / "widget" / "__init__.py")
+
+    assert _sentinel_via_search(scratch_repo, runner) is True
+    assert later_file.read_text() == "def triple(n):\n    return n * 3\n"
+
+
+def test_sentinel_via_search_is_bounded_and_does_not_exhaust_every_candidate(
+    monkeypatch: pytest.MonkeyPatch, scratch_repo: Path
+):
+    # A hot file could offer far more candidates than are worth trying
+    # (task 1's report: loop.py alone yields 125). Bounding the attempt
+    # count is what keeps a blind harness's search a matter of minutes,
+    # not an unbounded grind through the whole repo.
+    monkeypatch.setattr(verify_module, "_SENTINEL_SEARCH_LIMIT", 1)
+    calls: list[int] = []
+
+    def blind_runner(r: Path) -> str:
+        calls.append(1)
+        return _output("0 failed, 1 passed\n", module_path=r / "src" / "widget" / "__init__.py")
+
+    assert _sentinel_via_search(scratch_repo, blind_runner) is False
+    assert len(calls) == 1
+
+
+def test_sentinel_fast_path_returns_none_when_the_target_file_is_missing(scratch_repo: Path):
+    # Fails for an implementation that raises (or crashes) instead of
+    # signalling "doesn't apply here" -- `scratch_repo` has no
+    # `context/budget.py` at all.
+    assert _sentinel_fast_path(scratch_repo, lambda r: "430 passed\n") is None
+
+
+def test_sentinel_fast_path_returns_none_when_the_line_has_changed(repo: Path):
+    # A `budget.py` that exists but no longer reads the exact sentinel
+    # line -- still "doesn't apply", not an error.
+    (repo / "src" / "robigo" / "context" / "budget.py").write_text(
+        "def estimate_tokens(text: str) -> int:\n    return 999\n"
+    )
+    assert _sentinel_fast_path(repo, lambda r: "430 passed\n") is None
+
+
+def test_sentinel_fast_path_returns_true_for_the_known_good_sentinel(repo: Path):
+    def runner(r: Path) -> str:
+        return _output("18 failed, 412 passed\n", module_path=_inside(r))
+
+    assert _sentinel_fast_path(repo, runner) is True
+
+
+# ---------------------------------------------------------------------------
+# _source_files / _is_test_path / _excluded_dir
+# ---------------------------------------------------------------------------
+
+
+def test_source_files_prefers_src_when_present(tmp_path: Path):
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+    (tmp_path / "src" / "pkg" / "a.py").write_text("x = 1\n")
+    (tmp_path / "notsrc.py").write_text("y = 2\n")  # outside src, must be ignored
+    assert _source_files(tmp_path) == (Path("src/pkg/a.py"),)
+
+
+def test_source_files_falls_back_to_the_whole_tree_without_a_src_directory(tmp_path: Path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text("x = 1\n")
+    assert _source_files(tmp_path) == (Path("pkg/a.py"),)
+
+
+def test_source_files_excludes_test_shaped_paths(tmp_path: Path):
+    # Fails for an implementation that lets a mutation to a test file
+    # serve as a sentinel candidate -- see `test_sentinel_ok_never_tries_
+    # a_mutation_to_a_test_file` for why that would be a real bug, not a
+    # cosmetic one.
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text("x = 1\n")
+    (tmp_path / "pkg" / "test_a.py").write_text("x = 1\n")
+    (tmp_path / "pkg" / "b_test.py").write_text("x = 1\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_c.py").write_text("x = 1\n")
+    assert _source_files(tmp_path) == (Path("pkg/a.py"),)
+
+
+def test_source_files_excludes_hidden_and_build_directories(tmp_path: Path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text("x = 1\n")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "hooks.py").write_text("x = 1\n")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "generated.py").write_text("x = 1\n")
+    assert _source_files(tmp_path) == (Path("pkg/a.py"),)
+
+
+def test_source_files_is_sorted_for_determinism(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # `Path.rglob` is monkeypatched to hand back results in a DELIBERATELY
+    # unsorted order, rather than relying on this filesystem's own
+    # directory-entry order happening to already look sorted (it does, on
+    # this box, for a two-entry directory -- a first version of this test
+    # relying on that passed even with `_source_files`'s own `sorted()`
+    # call removed, which is exactly the false-negative this rewrite
+    # closes).
+    (tmp_path / "pkg").mkdir()
+    z = tmp_path / "pkg" / "z.py"
+    a = tmp_path / "pkg" / "a.py"
+    z.write_text("x = 1\n")
+    a.write_text("x = 1\n")
+
+    def fake_rglob(self: Path, pattern: str) -> list[Path]:
+        return [z, a]
+
+    monkeypatch.setattr(Path, "rglob", fake_rglob)
+    assert _source_files(tmp_path) == (Path("pkg/a.py"), Path("pkg/z.py"))
+
+
+def test_is_test_path_recognises_the_conventional_shapes():
+    assert _is_test_path(Path("pkg/test_a.py"))
+    assert _is_test_path(Path("pkg/a_test.py"))
+    assert _is_test_path(Path("tests/a.py"))
+    assert _is_test_path(Path("test/a.py"))
+    assert not _is_test_path(Path("pkg/a.py"))
+    assert not _is_test_path(Path("pkg/latest.py"))  # contains "test" but isn't test-shaped
+
+
+def test_excluded_dir_recognises_hidden_and_build_names():
+    assert _excluded_dir(".git")
+    assert _excluded_dir("__pycache__")
+    assert _excluded_dir("build")
+    assert _excluded_dir("widget.egg-info")
+    assert not _excluded_dir("widget")
 
 
 def test_a_disciplined_caller_would_have_aborted_on_the_measured_blind_harness(repo: Path):

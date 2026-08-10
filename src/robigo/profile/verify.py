@@ -17,7 +17,13 @@ produced while measuring plan 04 (2026-08-10):
 
   4. `sentinel_ok` must prove the harness can SEE a break before any
      survival is believed -- a blind harness scored 8 of 8 mutants as
-     survivors, a perfect false negative.
+     survivors, a perfect false negative. This has to work against ANY
+     repo `--repo` points it at (spec 5.1 names black-oxide's suite as a
+     corpus mine by name), not just robigo's own -- so beyond a fast
+     path known to work here, the sentinel draws a real candidate from
+     the target repo's OWN source (task 1's `candidates()`) and proves
+     the harness sees THAT break, rather than assuming a hardcoded
+     robigo-specific target exists.
   5. Breakage is `failures + errors`, measured against a baseline that is
      NOT assumed to be zero -- a `git archive` copy (no `.git`) baselined
      at 6, and counting only `"N failed"` reads a syntax-breaking mutant
@@ -48,7 +54,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from robigo.profile.corpus import Mutant, _apply
+from robigo.profile.corpus import Mutant, _apply, candidates
 
 Runner = Callable[[Path], str]
 """A runner takes the repo root it should test and returns the raw text of
@@ -242,6 +248,38 @@ def _resolve_in_clone(repo: Path, relative: Path) -> Path:
     return target
 
 
+def _apply_and_run(repo: Path, mutant: Mutant, runner: Runner) -> str:
+    """Applies `mutant` to its file inside `repo` (via `_resolve_in_clone`,
+    so an absolute or escaping `mutant.path` is refused before anything is
+    written), calls `runner`, and restores the file to its exact original
+    content -- always, even if `runner` raises. The one shared "apply /
+    run / restore" implementation `verify` and both of `sentinel_ok`'s
+    strategies use, rather than three copies of the same three steps free
+    to drift apart (this project's own `CARRIED-DEBT.md` names that
+    pattern as a recurring defect source)."""
+    target = _resolve_in_clone(repo, mutant.path)
+    source = target.read_text()
+    target.write_text(_apply(source, mutant))
+    try:
+        return runner(repo)
+    finally:
+        target.write_text(source)
+
+
+def _detects_breakage(repo: Path, text: str) -> bool:
+    """Whether `text` -- a runner's report after some mutation was
+    applied -- shows real, trustworthy breakage: resolves inside `repo`
+    (invariant 7; a wrong-tree report proves nothing, however many
+    failures it claims) AND `_broken_count` is nonzero. Shared by both of
+    `sentinel_ok`'s strategies, which differ only in WHICH mutation they
+    try, never in how a result is judged."""
+    try:
+        _assert_in_clone(text, repo)
+    except WrongTreeError:
+        return False
+    return _broken_count(text) > 0
+
+
 # ---------------------------------------------------------------------------
 # The sentinel
 # ---------------------------------------------------------------------------
@@ -257,46 +295,166 @@ not a syntax break. A syntax break is reported by pytest as a collection
 *error*, not a *failure*, and a first attempt at this sentinel that
 happened to be malformed reported 0 breakage and would have certified a
 blind harness as working -- the sentinel must actually run and actually
-matter, not merely fail to parse."""
+matter, not merely fail to parse.
+
+This is `sentinel_ok`'s FAST PATH ONLY -- a free, known-good shortcut when
+`repo` happens to be a clone of robigo itself. It is an optimisation, not
+a requirement: Task 4's `--repo` points this module at arbitrary repos
+(the spec names black-oxide's 1327-test suite as a corpus mine by name),
+and this exact function/line is not expected to exist in any of them. See
+`_sentinel_via_search` for the general case."""
 
 
 def sentinel_ok(repo: Path, runner: Runner) -> bool:
-    """Invariant 4: applies the known-fatal `estimate_tokens` change to
-    `repo`'s own copy, runs `runner`, and returns whether the harness
-    reported ANY breakage -- not `True` unless it did. Restores the file
-    to its original content before returning, in either direction, and
-    even if `runner` raises.
+    """Invariant 4: proves the harness can see a real source mutation in
+    `repo` before any survival result is believed. Tries the free fast
+    path above first; if it doesn't apply here (`_SENTINEL_PATH` missing,
+    or present but not reading `_SENTINEL_ORIGINAL`), falls through to
+    `_sentinel_via_search` -- never raises for "doesn't apply", because
+    not applying is the ordinary case for any repo that isn't robigo
+    itself, not a bug.
 
-    Returns `False` (not raises) for either way a result can fail to be
-    trusted: the runner reported zero breakage (the harness is blind --
+    Returns `False` for every way a result can fail to be trusted: the
+    harness reported zero breakage for every mutation tried (blind --
     measured 2026-08-10, a blind harness reported 8 of 8 mutants
-    surviving), or the runner reported breakage but on the wrong tree
-    (invariant 7 -- a "broken" result on the real repo's source proves
-    nothing about this clone). Both are legitimate "not proven" outcomes a
-    caller should abort on the same way.
+    surviving), or it reported breakage but on the wrong tree (invariant
+    7 -- a "broken" result on the real repo's source proves nothing about
+    this clone). Both are legitimate "not proven" outcomes a caller
+    should abort on the same way; neither is distinguished in the return
+    value, because both blind and wrong-tree candidates the search tries
+    return `False` from `_detects_breakage` identically.
 
-    Raises if the sentinel itself cannot be constructed -- `repo`'s copy
-    of `_SENTINEL_PATH` is missing, or does not contain
-    `_SENTINEL_ORIGINAL` at exactly one line. That is not "the harness
-    looks blind"; it is a bug in this module or a repo-shape drift, and
-    hiding it behind a bare `False` would be exactly the kind of quiet
-    non-certification this project's whole verification standard exists
-    to prevent."""
-    target = _resolve_in_clone(repo, _SENTINEL_PATH)
+    Propagates whatever `runner` itself raises -- a runner blowing up is
+    a real error, not a "not proven" result, and is not swallowed here or
+    in either strategy below."""
+    fast = _sentinel_fast_path(repo, runner)
+    if fast is not None:
+        return fast
+    return _sentinel_via_search(repo, runner)
+
+
+def _sentinel_fast_path(repo: Path, runner: Runner) -> bool | None:
+    """Robigo's own known-fatal `estimate_tokens` change, tried only if
+    `repo`'s copy of `_SENTINEL_PATH` exists and still reads
+    `_SENTINEL_ORIGINAL` at exactly one line. Returns `None` -- NOT
+    `False` -- when it doesn't apply, so `sentinel_ok` can tell "this
+    fast path is unavailable here" apart from "this fast path ran and
+    proved nothing", and fall through to the general search instead of
+    reporting a hardcoded-robigo-only optimisation's absence as though it
+    were evidence about THIS repo's harness."""
+    target = repo / _SENTINEL_PATH
+    if not target.is_file():
+        return None
     source = target.read_text()
-    line = _find_line(source, _SENTINEL_ORIGINAL)
-    mutant = Mutant(target, line, _SENTINEL_ORIGINAL, _SENTINEL_MUTATED, "sentinel")
-    target.write_text(_apply(source, mutant))
     try:
-        text = runner(repo)
-    finally:
-        target.write_text(source)
+        line = _find_line(source, _SENTINEL_ORIGINAL)
+    except RuntimeError:
+        return None
+    mutant = Mutant(_SENTINEL_PATH, line, _SENTINEL_ORIGINAL, _SENTINEL_MUTATED, "sentinel")
+    text = _apply_and_run(repo, mutant, runner)
+    return _detects_breakage(repo, text)
 
-    try:
-        _assert_in_clone(text, repo)
-    except WrongTreeError:
-        return False
-    return _broken_count(text) > 0
+
+_SENTINEL_SEARCH_LIMIT = 8
+"""Bounded attempts for the general sentinel search -- each attempt is one
+full `runner` call, measured at ~15s against robigo's own suite (this
+plan's "Measured before planning" section), so this bounds a worst-case
+search to roughly two minutes. Also doubles as the very first data point
+on the target's own keep rate (Task 4's per-target reporting, invariant
+13) -- these are real candidates from the real repo, not throwaway
+probes."""
+
+
+def _sentinel_via_search(repo: Path, runner: Runner) -> bool:
+    """The general case: works for ANY repo, not just robigo's own. Draws
+    real candidates from `repo`'s OWN source via task 1's `candidates()`
+    (`_source_files`, in sorted order) and tries each in turn -- apply,
+    run, restore -- until one produces breakage that resolves inside the
+    clone. That first breaking candidate directly proves the harness sees
+    a SOURCE mutation imported through `repo`'s own package, which is
+    exactly what invariant 7 needs proven.
+
+    A hand-written failing TEST FILE would not prove this, and is
+    deliberately not what this function tries: pytest collects test files
+    straight out of the clone regardless of whether `PYTHONPATH` resolves
+    `import <package>` there at all, so a test-file sentinel would read
+    as working against a completely blind harness. `_source_files`
+    excludes test-shaped paths for exactly this reason -- the sentinel
+    has to mutate code the tests IMPORT, not code the tests ARE.
+
+    Bounded to `_SENTINEL_SEARCH_LIMIT` attempts. Returns `False`, not
+    raises, when the bound is exhausted with no breakage seen -- which is
+    genuinely ambiguous between "the harness is blind" (invariant 4) and
+    "none of the first `_SENTINEL_SEARCH_LIMIT` candidates from this
+    repo's real source happen to be caught by anything" (a poor corpus
+    mine, task 4's target-selection concern). This function cannot tell
+    the two apart from a bool alone and does not guess; a caller that
+    needs to tell them apart runs a keep-rate check across more of the
+    repo's candidates, which task 4 needs regardless of this function."""
+    attempts = 0
+    for source_path in _source_files(repo):
+        try:
+            source = (repo / source_path).read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for mutant in candidates(source, source_path):
+            if attempts >= _SENTINEL_SEARCH_LIMIT:
+                return False
+            attempts += 1
+            text = _apply_and_run(repo, mutant, runner)
+            if _detects_breakage(repo, text):
+                return True
+    return False
+
+
+_EXCLUDED_DIR_NAMES = frozenset({"__pycache__", "venv", "build", "dist", "node_modules"})
+
+
+def _excluded_dir(name: str) -> bool:
+    """A directory component the sentinel search never descends into for
+    candidates: hidden/VCS/tooling directories (anything starting with
+    `.`, catching `.git`, `.venv`, `.tox`, `.eggs`, `.pytest_cache` in one
+    check), common build/dependency output, and anything shaped like an
+    installed-package metadata directory."""
+    return name.startswith(".") or name in _EXCLUDED_DIR_NAMES or name.endswith(".egg-info")
+
+
+def _is_test_path(relative: Path) -> bool:
+    """Whether `relative` is shaped like a test file or lives under a
+    tests directory. Excluded from the sentinel search on purpose -- see
+    `_sentinel_via_search`'s docstring: a mutation to a TEST file would
+    not prove invariant 7 at all, because pytest collects test files
+    straight out of the clone independent of whether `import <package>`
+    resolves there."""
+    if any(part in ("tests", "test") for part in relative.parts):
+        return True
+    return relative.name.startswith("test_") or relative.name.endswith("_test.py")
+
+
+def _source_files(repo: Path) -> tuple[Path, ...]:
+    """Every `.py` file under `repo` that plausibly holds real, imported
+    package source, as paths relative to `repo` (the same convention
+    `verify` requires of `Mutant.path`), sorted for determinism -- same
+    repo in, same search order out, every time.
+
+    Prefers `repo / "src"` when it exists (this project's own layout, and
+    a common `src`-layout convention other repos share), which already
+    excludes a flat repo's top-level tests directory for free. Without a
+    `src` directory, walks the whole tree instead, applying `_excluded_
+    dir` to every directory component and `_is_test_path` to the result --
+    a heuristic, not a parse of the target's own packaging config, and
+    documented as such (see the report's concerns) rather than assumed
+    exhaustive for every possible repo layout."""
+    root = repo / "src" if (repo / "src").is_dir() else repo
+    found: list[Path] = []
+    for path in root.rglob("*.py"):
+        relative = path.relative_to(repo)
+        if any(_excluded_dir(part) for part in relative.parts[:-1]):
+            continue
+        if _is_test_path(relative):
+            continue
+        found.append(relative)
+    return tuple(sorted(found))
 
 
 def _find_line(source: str, text: str) -> int:
@@ -304,7 +462,9 @@ def _find_line(source: str, text: str) -> int:
     exactly `text`. Raises if there is not exactly one -- zero means the
     sentinel's target has moved or changed shape since this module was
     written, and more than one would make "the" line ambiguous; either
-    way, guessing would be worse than refusing."""
+    way, guessing would be worse than refusing. Used only by
+    `_sentinel_fast_path`, which treats this raising as "doesn't apply
+    here" (`None`), not as a fatal error."""
     lines = source.splitlines(keepends=True)
     matches = [i + 1 for i, line in enumerate(lines) if line == text]
     if len(matches) != 1:
@@ -388,14 +548,7 @@ def verify(mutant: Mutant, repo: Path, baseline: Baseline, runner: Runner) -> Ve
     baseline without guessing -- and invariant 6 is explicit that a kept
     mutant without a verified id is not acceptable, so this function
     declines rather than guessing."""
-    target = _resolve_in_clone(repo, mutant.path)
-    source = target.read_text()
-    mutated = _apply(source, mutant)
-    target.write_text(mutated)
-    try:
-        text = runner(repo)
-    finally:
-        target.write_text(source)
+    text = _apply_and_run(repo, mutant, runner)
 
     try:
         _assert_in_clone(text, repo)
