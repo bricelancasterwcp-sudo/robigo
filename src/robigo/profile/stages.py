@@ -44,12 +44,29 @@ def _default_probe(target: int) -> str:
     aimed at exactly 512 tokens landed at 530 real tokens), which is
     exactly why `stage0_window` does not trust a single conversion -- it
     bisects on the server's real accept/reject answer instead. A wrong
-    ratio here only costs a few extra probe rounds; it can never produce a
-    wrong verified number, because every returned `window` was itself
-    accepted by a real call.
+    ratio here only costs a few extra probe rounds.
+
+    Length is computed directly as `target * _CHARS_PER_TOKEN`, then the
+    filler word is repeated and SLICED to that exact character count --
+    never rounded down to a whole number of words. That precision is load-
+    bearing, not cosmetic (amendment to Task 3, ruled 2026-08-10): an
+    earlier version floored to whole words (`target * _CHARS_PER_TOKEN //
+    len(_FILLER_WORD)` words), which made length a step function of
+    `target` -- every `target` and `target + 1` sharing one floor value
+    aliased onto the SAME prompt. Bisection could then land on the larger
+    of an aliased pair and report it as "verified", even though its probe
+    was byte-identical to the smaller, equally-accepted one -- the exact
+    symptom measured against a 6000-character limit: `target=2001` and
+    `target=2000` both floored to 1000 words (6000 chars), and the search
+    reported 2001 as accepted when nothing distinguished its probe from
+    2000's. Slicing to an exact length makes `target -> len(prompt)`
+    strictly increasing, so no two distinct targets can ever share a
+    probe, and the target bisection lands on is always the unique one that
+    was actually, distinguishably tested.
     """
-    words = max(target * _CHARS_PER_TOKEN // len(_FILLER_WORD), 1)
-    return _FILLER_WORD * words
+    length = max(target * _CHARS_PER_TOKEN, 1)
+    repeats = length // len(_FILLER_WORD) + 1
+    return (_FILLER_WORD * repeats)[:length]
 
 
 def stage0_window(

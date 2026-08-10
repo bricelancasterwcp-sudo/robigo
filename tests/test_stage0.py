@@ -7,7 +7,7 @@ import pytest
 
 from robigo.model.client import Generation, ModelError, ServerContextOverflowError
 from robigo.model.geometry import WindowPlan
-from robigo.profile.stages import Stage0, stage0_window
+from robigo.profile.stages import Stage0, _default_probe, stage0_window
 from robigo.profile.transcript import CallRecorder, CallReplayer
 
 # weights_bytes/overhead_bytes are required positional fields of the real
@@ -40,11 +40,17 @@ class _Rejects(_Accepts):
     def __init__(self, until: int) -> None:
         super().__init__()
         self.until = until
+        # Every prompt that was NOT rejected -- lets a test check that a
+        # returned window corresponds to a probe the fake actually
+        # accepted, not merely one smaller than the plan (which
+        # boundary-plus-one also satisfies).
+        self.accepted: list[str] = []
 
     def generate(self, prompt: str, *, seed: int) -> Generation:
         self.sizes.append(len(prompt))
         if len(prompt) > self.until:
             raise ServerContextOverflowError("too big")
+        self.accepted.append(prompt)
         return Generation("ok", 1, 1, False)
 
 
@@ -66,10 +72,27 @@ def test_a_rejected_window_falls_back_and_says_so():
     # verdict (returning verified=False immediately) instead of triggering
     # a search for the largest size the server does accept, or if the note
     # doesn't explain that the planned number changed.
-    result = stage0_window(_Rejects(until=6000), PLAN)
+    #
+    # Also fails if the returned window is one past the largest size the
+    # fake actually accepted (amendment to Task 3, ruled 2026-08-10):
+    # "result.window < 8192" alone does NOT catch this -- boundary-plus-
+    # one satisfies it too. At the default probe's 3 chars/token, the true
+    # accepted boundary against a 6000-character limit is target=2000
+    # (exactly 6000 chars); target=2001 needs 6003 chars and is rejected.
+    # This is the amendment's own measured example: an earlier
+    # `_default_probe` floor-quantized length to whole 6-char words
+    # (`target * 3 // 6` words), so 2000 and 2001 both floored to the same
+    # 1000 words / 6000 chars and were indistinguishable to the fake --
+    # bisection reported the larger, unverified label (2001) as accepted.
+    client = _Rejects(until=6000)
+    result = stage0_window(client, PLAN)
     assert result.window < 8192
     assert result.verified is True
     assert "rejected" in result.note
+    # The actual invariant: a probe of EXACTLY this size was accepted --
+    # not merely a number smaller than the plan.
+    assert _default_probe(result.window) in client.accepted
+    assert result.window == 2000
 
 
 def test_a_window_rejected_at_every_size_is_unverified():
