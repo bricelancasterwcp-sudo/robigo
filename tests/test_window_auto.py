@@ -1,6 +1,7 @@
 # tests/test_window_auto.py
 from __future__ import annotations
 
+import http.client
 from pathlib import Path
 
 import pytest
@@ -368,11 +369,18 @@ def test_a_malformed_tags_size_raises_geometry_error_not_a_raw_type_error(monkey
     class of defect Task 1 fixed three rounds over in geometry.py."""
     monkeypatch.setattr(
         "robigo.model.detect._tags",
-        lambda host: {"models": [{"name": "m", "size": "not-a-number"}]},
+        lambda host: {"models": [
+            {"name": "zzyzx-distinctive-model", "size": "not-a-number"}
+        ]},
     )
     with pytest.raises(GeometryError) as e:
-        weights_bytes("ollama", "m", "", None)
-    assert "m" in str(e.value)
+        weights_bytes("ollama", "zzyzx-distinctive-model", "", None)
+    # Item 3 (round 4, ruled 2026-08-09): "m" is a substring of "malformed"
+    # in this function's own message, so the old assertion was exactly as
+    # vacuous as the three item 10 already fixed -- this predates the
+    # whole-branch review and was a sibling path in the same file, outside
+    # item 10's literal scope but the identical pattern.
+    assert "zzyzx-distinctive-model" in str(e.value)
 
 
 def test_weights_bytes_on_llamacpp_needs_a_gguf_path():
@@ -580,6 +588,121 @@ def test_a_non_json_tags_body_raises_geometry_error_not_json_decode_error(
         weights_bytes("ollama", "zzyzx-distinctive-model", "", None)
     assert "/api/tags" in str(e.value)
     assert "valid JSON" in str(e.value)
+
+
+# --- Round 4 (ruled 2026-08-09): the except clause was narrower than the --
+# --- operation, and the read itself was unguarded -- both still inside ---
+# --- item 8's already-stated invariant, no new one. ----------------------
+
+
+class _IncompleteReadResponse:
+    """A urlopen response whose `.read()` itself raises -- the server
+    closing the connection early, or a Content-Length mismatch. Distinct
+    from `_NonJSONResponse`, whose `.read()` succeeds and returns a bad
+    body; this one fails to even finish reading."""
+
+    def __init__(self, partial: bytes, expected: int) -> None:
+        self._partial = partial
+        self._expected = expected
+
+    def read(self) -> bytes:
+        raise http.client.IncompleteRead(self._partial, self._expected)
+
+    def __enter__(self) -> "_IncompleteReadResponse":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+def test_cli_pseudo_utf16_show_body_reaches_the_contract_not_a_traceback(
+    monkeypatch, tmp_path: Path, capsys
+):
+    """Item 1 (round 4): `_decode`'s `except json.JSONDecodeError` was
+    narrower than what `json.loads` can raise -- `json.loads` on `bytes`
+    auto-detects encoding via a leading BOM, and a body that LOOKS like
+    UTF-16 (a `\\xff\\xfe` BOM) but is not valid UTF-16 (here: an odd
+    number of bytes after the BOM, so decoding runs out mid-code-unit)
+    raises `UnicodeDecodeError` -- a `ValueError` SIBLING, not a
+    `JSONDecodeError` subclass -- straight past the old guard. Same
+    "real body, real CLI, not a mock" standard as item 1's original
+    corrupt-`--gguf` test."""
+    from robigo.cli import main
+    import codecs
+    import urllib.request
+
+    pseudo_utf16 = codecs.BOM_UTF16_LE + b"abc"  # BOM + odd trailing bytes
+    monkeypatch.setattr("robigo.model.detect.free_vram_bytes", lambda: None)
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda req, timeout=60: _NonJSONResponse(pseudo_utf16),
+    )
+    code = main(["--root", str(tmp_path), "--model", "m", "fix"])
+    assert code == 4  # infrastructure: GeometryError caught by cli.main
+    out = capsys.readouterr().out
+    assert "cannot determine the usable window" in out
+    assert "/api/show" in out
+    assert "valid JSON" in out
+
+
+def test_cli_incomplete_show_read_reaches_the_contract_not_a_traceback(
+    monkeypatch, tmp_path: Path, capsys
+):
+    """Item 2 (round 4): `resp.read()` itself was unguarded in both `_show`
+    and `_tags`. `http.client.IncompleteRead` (the server closing early, or
+    a Content-Length mismatch) is neither an `OSError` nor a `ValueError`,
+    so it escaped both `_decode` (which only ever sees `_read`'s RETURN
+    value) and `cli.main`'s `except (GeometryError, OSError)`."""
+    from robigo.cli import main
+    import urllib.request
+
+    monkeypatch.setattr("robigo.model.detect.free_vram_bytes", lambda: None)
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda req, timeout=60: _IncompleteReadResponse(b"partial", 100),
+    )
+    code = main(["--root", str(tmp_path), "--model", "m", "fix"])
+    assert code == 4  # infrastructure: GeometryError caught by cli.main
+    out = capsys.readouterr().out
+    assert "cannot determine the usable window" in out
+    assert "/api/show" in out
+    assert "never fully arrived" in out
+
+
+def test_a_pseudo_utf16_tags_body_raises_geometry_error_not_unicode_decode_error(
+    monkeypatch,
+):
+    """The /api/tags sibling of the pseudo-UTF-16 CLI-level test, for the
+    same reason the /api/show CLI-level test can't reach /api/tags:
+    exercised directly against weights_bytes instead."""
+    import codecs
+    import urllib.request
+
+    pseudo_utf16 = codecs.BOM_UTF16_LE + b"abc"
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda req, timeout=60: _NonJSONResponse(pseudo_utf16),
+    )
+    with pytest.raises(GeometryError) as e:
+        weights_bytes("ollama", "zzyzx-distinctive-model", "", None)
+    assert "/api/tags" in str(e.value)
+    assert "valid JSON" in str(e.value)
+
+
+def test_an_incomplete_tags_read_raises_geometry_error_not_http_exception(
+    monkeypatch,
+):
+    """The /api/tags sibling of the incomplete-read CLI-level test."""
+    import urllib.request
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda req, timeout=60: _IncompleteReadResponse(b"partial", 100),
+    )
+    with pytest.raises(GeometryError) as e:
+        weights_bytes("ollama", "zzyzx-distinctive-model", "", None)
+    assert "/api/tags" in str(e.value)
+    assert "never fully arrived" in str(e.value)
 
 
 @pytest.mark.live

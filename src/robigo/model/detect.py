@@ -1,6 +1,7 @@
 # src/robigo/model/detect.py
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.request
 from pathlib import Path
@@ -44,22 +45,47 @@ def _shaped(value: object, empty: _Shape) -> _Shape:
 
 def _decode(raw: bytes, endpoint: str) -> object:
     """A response body, parsed as JSON -- or a `GeometryError` naming which
-    endpoint and why, never a raw `json.JSONDecodeError`. A body that is not
-    JSON at all (a proxy or captive-portal error page, a misconfigured host
+    endpoint and why, never a raw parse exception. A body that is not JSON
+    at all (a proxy or captive-portal error page, a misconfigured host
     serving an HTML error page instead of the daemon) is the exact scenario
     `_shaped`'s own docstring cites as its justification, arriving one step
     earlier: before the envelope's SHAPE can be wrong, the parse itself can
-    fail outright. `json.JSONDecodeError` is a `ValueError` subclass, so it
-    would otherwise pass straight through `cli.main`'s `except
-    (GeometryError, OSError)` uncaught -- the same escape item 1 closed for
-    `GGUFError`, one call earlier in the chain."""
+    fail outright.
+
+    Catches `ValueError`, not `json.JSONDecodeError` -- round 3 caught only
+    the exception actually reproduced, not the set the operation can raise:
+    `json.loads` on `bytes` auto-detects encoding, and a body whose leading
+    bytes look like UTF-16 while not being valid UTF-16 raises
+    `UnicodeDecodeError`, a `ValueError` SIBLING (not a `JSONDecodeError`
+    subclass), straight past a narrower guard. Both are exactly "this body
+    is not JSON", so both belong in the same guard, and `ValueError` is the
+    common ancestor that catches them together rather than by name."""
     try:
         return json.loads(raw)
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:
         raise GeometryError(
             f"{endpoint} did not return valid JSON ({exc}); the daemon "
             f"response is malformed, so the usable window is unknown. Pass "
             f"--window explicitly."
+        ) from exc
+
+
+def _read(resp: object, endpoint: str) -> bytes:
+    """The response body, read in full -- or a `GeometryError` naming which
+    endpoint and why, never a raw `http.client.HTTPException`. The server
+    closing the connection early, or a `Content-Length` mismatch, raises
+    `http.client.IncompleteRead` from `resp.read()` itself -- neither an
+    `OSError` nor a `ValueError`, so it would escape both `_decode` and
+    `cli.main`'s `except (GeometryError, OSError)` as a raw traceback. A
+    body that never fully arrives is the same failure, for the caller's
+    purposes, as a body that never parses."""
+    try:
+        return resp.read()
+    except http.client.HTTPException as exc:
+        raise GeometryError(
+            f"{endpoint} response body never fully arrived ({exc}); the "
+            f"daemon response is malformed, so the usable window is "
+            f"unknown. Pass --window explicitly."
         ) from exc
 
 
@@ -76,7 +102,7 @@ def _show(model: str, host: str) -> object:
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
-        return _decode(resp.read(), "/api/show")
+        return _decode(_read(resp, "/api/show"), "/api/show")
 
 
 def _tags(host: str) -> object:
@@ -91,7 +117,7 @@ def _tags(host: str) -> object:
     before calling `.get` on it."""
     req = urllib.request.Request(f"{(host or OLLAMA_HOST).rstrip('/')}/api/tags")
     with urllib.request.urlopen(req, timeout=60) as resp:
-        return _decode(resp.read(), "/api/tags")
+        return _decode(_read(resp, "/api/tags"), "/api/tags")
 
 
 def _no_gguf_message(what: str, user_cap: int | None) -> str:
