@@ -235,6 +235,13 @@ def profile_main(argv: list[str]) -> int:
     parser.add_argument("--replay", type=Path, default=None)
     parser.add_argument("--kv-bits", dest="kv_bits", type=int,
                         choices=(16, 8), default=16)
+    parser.add_argument(
+        "--window", type=int, default=None,
+        help="cap the window at N tokens; a CEILING only -- it can never "
+             "raise the window above what geometry allows (spec 9 law 1). "
+             "Needed on any box whose daemon rejects prompts below the "
+             "model's training context.",
+    )
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
@@ -250,7 +257,17 @@ def profile_main(argv: list[str]) -> int:
     seeds = 10 if args.full else args.seeds
     mode = "full" if args.full else "quick"
     try:
-        plan = plan_window(args.backend, args.model, args.host or "", None,
+        # P2 (2026-08-10 design, spec §9 invariant P2.1): without a user
+        # cap, qwen2.5-coder:7b -- the best-measured family -- resolves to
+        # its full 32768 training context, because VRAM never binds on this
+        # box (~7.6 GiB weights + ~1.75 GiB KV against 14,558 MiB free).
+        # Stage 0 then probes past this box's Ollama daemon's measured
+        # ~11.5k prompt-token ceiling and the run dies before stage 0
+        # finishes -- the best family could not be profiled here at all.
+        # `args.window` is a CEILING only: `plan_window` -> `usable_window`
+        # still takes `min(training_ctx, vram, user_cap)`, so passing it
+        # through can never raise the window above what geometry allows.
+        plan = plan_window(args.backend, args.model, args.host or "", args.window,
                            kv_bits=args.kv_bits, gguf_path=args.gguf)
     except (GeometryError, OSError) as exc:
         print(f"cannot determine the usable window: {exc}")
