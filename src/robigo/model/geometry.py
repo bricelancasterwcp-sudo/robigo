@@ -158,6 +158,18 @@ class WindowPlan:
     kv_per_token: int
     weights_bytes: int
     overhead_bytes: int
+    training_ctx: int = 0
+    """The model's real training context (`Geometry.training_ctx`),
+    carried through even when it is NOT the limit that decided `.window`
+    (whole-branch review C1/C3, ruled 2026-08-10). Before this field
+    existed, a caller building a `Profile` had only `.window` -- `min(
+    training_ctx, vram, user_cap)` -- to report as "the training context",
+    so whenever vram or a user cap actually bound, that field reported the
+    BINDING limit's number, not the model's training context; a run where
+    vram bound at 0 reported `training_ctx: 0`, a state no real model is
+    in. Defaults to 0 only for callers (mostly tests) that never read it;
+    `usable_window`, the only production constructor, always sets it from
+    the real `Geometry` it was handed."""
 
 
 def free_vram_bytes(runner: Callable[[], str] | None = None) -> int | None:
@@ -235,4 +247,7 @@ def usable_window(
         # exact arithmetic without a second, redundant measurement.
         weights_bytes=weights_bytes,
         overhead_bytes=overhead_bytes,
+        # The real training context, independent of whether it was the
+        # limit that decided `window` above -- see WindowPlan.training_ctx.
+        training_ctx=geometry.training_ctx,
     )

@@ -213,6 +213,24 @@ def test_vram_binds_when_the_cache_is_expensive():
     assert plan.window < geometry.training_ctx
 
 
+def test_the_plan_carries_the_real_training_context_even_when_vram_binds():
+    # C3 (whole-branch review, ruled 2026-08-10): before `WindowPlan`
+    # carried this field, the only number available to a caller wanting
+    # "the training context" was `.window` -- min(training_ctx, vram,
+    # user_cap) -- so whenever vram bound (as it does here: 2048 < CODEGEMMA's
+    # 8192-token training context), a caller reporting "training context"
+    # from `.window` alone would report the VRAM-DERIVED number instead.
+    # Fails if `usable_window` ever stops threading `geometry.training_ctx`
+    # through untouched, e.g. reverting to a WindowPlan that only carries
+    # `.window` and leaving `.training_ctx` at its 0 default.
+    geometry = from_model_info(CODEGEMMA)
+    plan = usable_window(geometry, free_vram=10 * GIB + GIB // 8, weights_bytes=9 * GIB)
+    assert plan.limited_by == "vram"
+    assert plan.window == 2048
+    assert plan.training_ctx == geometry.training_ctx == 8192
+    assert plan.training_ctx != plan.window
+
+
 def test_kv_quantization_buys_window():
     """8-bit KV halves the cache, so it exactly doubles the window while vram
     is still binding. This is the cheapest rung on Task 4's ladder."""
