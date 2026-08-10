@@ -1394,6 +1394,54 @@ git commit -m "test: recorded profile transcripts for GPU-free replay"
 
 ---
 
+## Amendment (ruled 2026-08-10): stage 2 must present the loop's envelope
+
+Measured after Task 6, against the live daemon
+(`qwen2.5-coder:7b-instruct-q8_0`, seed 1, `search_replace`, all five fixtures):
+
+| prompt | replies that `parse` accepts |
+|---|---|
+| `landing_prompt` as shipped | **0 / 5** |
+| `SYSTEM` + `_CODEC_HELP[codec]` + `landing_prompt` | **5 / 5** |
+
+**Stage 2's 0% landing rate across every roster model is an artifact of its own
+prompt, not a property of any family.** `landing_prompt` shows the SEARCH/REPLACE
+payload template but never states the *action* syntax — that the reply must be
+`patch <path>` on a line of its own with a fenced payload. So the model returns a
+unified diff in a code fence, `parse` finds no action, and the codec is never
+exercised. Every failure reads `no action found`.
+
+We already knew the model can do this: earlier the same model, at the same codec,
+landed a patch and repaired a real bug through the loop — because the loop's
+prompt carries `SYSTEM`'s action list. Stage 1 scores 100% for the same reason:
+`ENVELOPE_PROMPT` lists the actions. Only stage 2 omits them.
+
+*Invariant:* **stage 2 presents the same envelope the loop presents.** The stage
+exists to predict what the loop will get, so it must reuse `render.SYSTEM` and
+`render._CODEC_HELP[codec]` rather than paraphrase them — the same principle that
+already makes stage 1 use the real `parse` and stage 2 use the real `CODECS`. A
+parallel prompt is free to drift, and this is what drift looks like: a profiler
+that reports every model unusable.
+
+Falsification test: assert `landing_prompt` contains the action-list text and the
+codec help, sourced from those modules rather than duplicated as literals. A test
+comparing against a copied string would pass while the loop's own prompt changed
+underneath it.
+
+**Second, smaller finding from the same run.** With the envelope added, 2 of the 5
+parsed as `patch --- src/clamp.py ---` — the model copied the `--- path ---`
+decoration from the file header into the action argument, giving a parse success
+with an unusable path. The loop presents files with the same header and does not
+usually suffer this, so it is not fatal, but stage 2 should not be measuring the
+family against a path the header invited it to mistype. Present the file so the
+path to patch is unambiguous, and say in the report what the landing rate becomes
+once both are fixed.
+
+**Do not tune the fixtures to raise the number.** The point is to measure what the
+loop would get. If the rate is still low after the envelope is correct, that is a
+result — and `fixtures-v1` is a stopgap that plan 04 replaces with a
+mutation-generated corpus anyway.
+
 ## Done when
 
 - `pytest -q` green; `robigo profile --replay <fixture>` reproduces a
