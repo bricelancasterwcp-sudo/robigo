@@ -7,8 +7,8 @@ from typing import Callable
 
 from robigo.action.codec import CODECS, PatchError
 from robigo.action.verbs import ActionParseError, parse
-from robigo.context.budget import estimate_tokens
-from robigo.model.client import ContextOverflowError, ModelClient
+from robigo.context.budget import CHARS_PER_TOKEN, estimate_tokens
+from robigo.model.client import ContextOverflowError, Generation, ModelClient
 from robigo.model.geometry import WindowPlan
 from robigo.profile.fixtures import FIXTURES, Fixture
 from robigo.profile.schema import CodecResult
@@ -21,7 +21,6 @@ run and a replay run would change the key on every call, and every
 replayed call would raise `TranscriptMiss` instead of reproducing the
 profile."""
 
-_CHARS_PER_TOKEN = 3
 _FILLER_WORD = "token "
 
 
@@ -31,9 +30,14 @@ class Stage0:
 
     `window` is never larger than the `plan.window` that was probed --
     stage 0 only ever confirms or shrinks the planned window, it does not
-    search upward for a bigger one (see `stage0_window`'s scope note).
-    `verified` is True exactly when some probe was accepted; `note`
-    explains what happened in either case.
+    search upward for a bigger one (see `stage0_window`'s scope note). It
+    is also never larger than what a real, accepted call actually
+    demonstrated: `window` is read from `Generation.tokens_in` -- the
+    server's OWN tokenizer's count for the exact prompt it accepted --
+    never computed from the char-estimated target that prompt was built
+    for (whole-branch review C1, ruled 2026-08-10; see `stage0_window`'s
+    docstring). `verified` is True exactly when some probe was accepted;
+    `note` explains what happened in either case.
     """
 
     window: int
@@ -43,34 +47,32 @@ class Stage0:
 
 def _default_probe(target: int) -> str:
     """Build a prompt intended to represent roughly `target` tokens, sized
-    in characters via a fixed chars-per-token ratio.
+    in characters via `budget.CHARS_PER_TOKEN` -- the one chars-per-token
+    ratio this project maintains, reused here rather than a second,
+    independent guess (whole-branch review C1, ruled 2026-08-10: this
+    module used to keep its own `_CHARS_PER_TOKEN = 3`, ten percent off
+    `budget.CHARS_PER_TOKEN = 3.3`, sizing every probe on a number nothing
+    else in the project used).
 
-    The ratio's accuracy does not matter to correctness. The real
-    tokenizer will disagree with it by a few percent (measured: a prompt
-    aimed at exactly 512 tokens landed at 530 real tokens), which is
-    exactly why `stage0_window` does not trust a single conversion -- it
-    bisects on the server's real accept/reject answer instead. A wrong
-    ratio here only costs a few extra probe rounds.
+    The ratio's accuracy does not affect what `stage0_window` reports --
+    see that function's docstring, point 3 -- only how many probe rounds
+    the search takes and how close a probe lands to the real boundary.
 
-    Length is computed directly as `target * _CHARS_PER_TOKEN`, then the
-    filler word is repeated and SLICED to that exact character count --
-    never rounded down to a whole number of words. That precision is load-
-    bearing, not cosmetic (amendment to Task 3, ruled 2026-08-10): an
-    earlier version floored to whole words (`target * _CHARS_PER_TOKEN //
+    Length is computed directly as `int(target * CHARS_PER_TOKEN)`, then
+    the filler word is repeated and SLICED to that exact character count
+    -- never rounded down to a whole number of words. That precision is
+    load-bearing, not cosmetic (amendment to Task 3, ruled 2026-08-10): an
+    earlier version floored to whole words (`target * CHARS_PER_TOKEN //
     len(_FILLER_WORD)` words), which made length a step function of
     `target` -- every `target` and `target + 1` sharing one floor value
     aliased onto the SAME prompt. Bisection could then land on the larger
     of an aliased pair and report it as "verified", even though its probe
-    was byte-identical to the smaller, equally-accepted one -- the exact
-    symptom measured against a 6000-character limit: `target=2001` and
-    `target=2000` both floored to 1000 words (6000 chars), and the search
-    reported 2001 as accepted when nothing distinguished its probe from
-    2000's. Slicing to an exact length makes `target -> len(prompt)`
-    strictly increasing, so no two distinct targets can ever share a
-    probe, and the target bisection lands on is always the unique one that
-    was actually, distinguishably tested.
+    was byte-identical to the smaller, equally-accepted one. Slicing to an
+    exact length makes `target -> len(prompt)` strictly increasing for any
+    `CHARS_PER_TOKEN > 1` (3.3 is), so no two distinct targets can ever
+    share a probe.
     """
-    length = max(target * _CHARS_PER_TOKEN, 1)
+    length = max(int(target * CHARS_PER_TOKEN), 1)
     repeats = length // len(_FILLER_WORD) + 1
     return (_FILLER_WORD * repeats)[:length]
 
@@ -95,25 +97,51 @@ def stage0_window(
        `plan.window`) is legitimate and is not rejected merely for
        leaving no room to generate.
     2. A rejection names the real token count from the server's own
-       tokenizer -- it is a measurement, not just a "no". This function
-       acts on that principle by treating every rejection as information
-       to narrow the search with (via bisection on real accept/reject
-       answers) rather than as a final verdict on the whole window.
+       tokenizer -- it is a measurement, not just a "no". On acceptance,
+       the reply itself carries the same kind of measurement:
+       `Generation.tokens_in` is the server's own tokenizer's count for
+       the exact prompt it just accepted. This function acts on both
+       halves of that principle -- treating every rejection as
+       information to narrow the search with (via bisection on real
+       accept/reject answers), and treating every acceptance's
+       `tokens_in` as the number to report, never the char-estimated
+       target that built the probe (whole-branch review C1, ruled
+       2026-08-10 -- see point 3 below for why the earlier version got
+       this half wrong).
     3. Aiming at exactly the window risks a false negative from the
        char-to-token estimate: a prompt aimed at "exactly N tokens" can
        land a few percent over N on the real tokenizer and be rejected
-       even though N genuinely fits. Because this function verifies by
-       bisecting on real answers rather than trusting the char/token
-       estimate for the final number, that estimate's error only costs
-       probe rounds -- it can never cause a correct window to be reported
-       wrong, and it can never cause an incorrect window to be reported
-       right.
+       even though N genuinely fits. The estimate's error therefore only
+       ever costs probe rounds and search precision -- it never changes
+       what gets REPORTED, because the reported `window` is always the
+       winning probe's own `Generation.tokens_in`, read off the server's
+       real tokenizer, not derived from the target that built the probe.
+       An earlier version of this paragraph claimed the estimate's error
+       "can never cause an incorrect window to be reported right" --
+       false as written, and the false half is exactly what C1 found:
+       that version reported the char-estimated TARGET (or `plan.window`
+       verbatim, on immediate acceptance) instead of `tokens_in`, so a
+       filler word whose real density the estimate underweighted by
+       roughly 2x reported a window twice what the accepted probe
+       actually contained. Measured on this project's own committed
+       `codegemma7b.jsonl` transcript: a probe aimed at 8192 tokens sent
+       24576 characters, the server's own tokenizer counted 4119 tokens
+       for it, and `usable_window: 8192, verified=True` shipped anyway --
+       half the claimed window was never demonstrated. Reading
+       `tokens_in` instead makes that class of error structurally
+       impossible: the reported number IS what the server said, not a
+       computation that merely hopes to track it.
 
     Scope boundary: `hi` starts at `plan.window` and never rises above
     it -- this function only ever verifies *at or below* the planned
     window, never discovers that the model could do more. That is
     deliberate: `plan.window` is a VRAM-derived ceiling, and a request
     above it risks OOMing the real daemon rather than failing cleanly.
+    (It also follows from the server's own acceptance semantics that
+    `tokens_in` can never exceed `plan.window` on an accepted call: every
+    probe is sent with `num_ctx = plan.window`, per fact 1 above rejection
+    is decided against that exact figure, so a call that does NOT raise
+    already proves its real token count fit under it.)
 
     Every probe uses the fixed `_PROBE_SEED` and a prompt that is a pure
     function of its target token count, so a `CallRecorder` transcript of
@@ -128,39 +156,45 @@ def stage0_window(
             note="planned window is 0; nothing to probe",
         )
 
-    def accepted(target: int) -> bool:
+    def try_probe(target: int) -> Generation | None:
         try:
-            client.generate(build(target), seed=_PROBE_SEED)
+            return client.generate(build(target), seed=_PROBE_SEED)
         except ContextOverflowError:
-            return False
-        return True
+            return None
 
-    if accepted(plan.window):
-        return Stage0(window=plan.window, verified=True, note="probe accepted")
+    gen = try_probe(plan.window)
+    if gen is not None:
+        return Stage0(window=gen.tokens_in, verified=True, note="probe accepted")
 
     # The full window was rejected. Bisect between "definitely accepted"
     # (0, untested but assumed) and "definitely rejected" (plan.window,
     # just tested) to find the largest size the server actually accepts,
     # rather than giving up on the first rejection or falling back to an
-    # arbitrary fixed fraction that might overshoot the same way.
+    # arbitrary fixed fraction that might overshoot the same way. `best`
+    # keeps the Generation from the last (== largest target, since lo only
+    # ever advances on acceptance) accepted probe, so the final report can
+    # read its real `tokens_in` rather than re-deriving a number from `lo`.
     lo, hi = 0, plan.window
+    best: Generation | None = None
     while hi - lo > 1:
         mid = (lo + hi) // 2
-        if accepted(mid):
+        gen = try_probe(mid)
+        if gen is not None:
             lo = mid
+            best = gen
         else:
             hi = mid
 
-    if lo == 0:
+    if best is None:
         return Stage0(
             window=0,
             verified=False,
             note=f"every probe from {plan.window} down was rejected",
         )
     return Stage0(
-        window=lo,
+        window=best.tokens_in,
         verified=True,
-        note=f"planned {plan.window} rejected; verified at {lo}",
+        note=f"planned {plan.window} rejected; verified at {best.tokens_in}",
     )
 
 

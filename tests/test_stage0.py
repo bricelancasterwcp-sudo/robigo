@@ -15,7 +15,8 @@ from robigo.profile.transcript import CallRecorder, CallReplayer
 # -- it only ever looks at plan.window. Set to 0 rather than omitted: the
 # brief's own PLAN literal omits them, which raises TypeError against the
 # shipped dataclass (verified by hand before writing this file; see the
-# task-3 report).
+# task-3 report). training_ctx (added by the whole-branch review's C3 fix,
+# ruled 2026-08-10) is also unused by stage0_window and left at its default.
 PLAN = WindowPlan(window=8192, limited_by="vram", free_vram=None,
                   kv_per_token=56 * 1024, weights_bytes=0, overhead_bytes=0)
 
@@ -33,7 +34,16 @@ class _Accepts:
 
     def generate(self, prompt: str, *, seed: int) -> Generation:
         self.sizes.append(len(prompt))
-        return Generation("ok", 1, 1, False)
+        # Plays the server honestly: `tokens_in` is the prompt's own real
+        # length, NOT some fixed placeholder -- whole-branch review C1
+        # (ruled 2026-08-10) made stage0_window report this value instead
+        # of the char-estimated target the probe was built for, and a
+        # fake that always answered `tokens_in=1` regardless of what was
+        # actually sent could never catch a regression back to ignoring
+        # it (a hardcoded 1 would pass just as well as reading the real
+        # field). See test_a_verified_window_is_returned_unchanged, which
+        # is the test this specific choice exists to make meaningful.
+        return Generation("ok", len(prompt), 1, False)
 
 
 class _Rejects(_Accepts):
@@ -51,7 +61,7 @@ class _Rejects(_Accepts):
         if len(prompt) > self.until:
             raise ServerContextOverflowError("too big")
         self.accepted.append(prompt)
-        return Generation("ok", 1, 1, False)
+        return Generation("ok", len(prompt), 1, False)
 
 
 def test_a_verified_window_is_returned_unchanged():
@@ -60,9 +70,22 @@ def test_a_verified_window_is_returned_unchanged():
     # acceptance), or if the probe it sends is trivially small -- a probe
     # that sends a single token would satisfy "the server accepted it"
     # while verifying nothing about whether the full window fits.
+    #
+    # The expected window is the LENGTH of the probe actually sent, not
+    # PLAN.window (C1, ruled 2026-08-10): `_default_probe(PLAN.window)`'s
+    # length is 27033 characters, not 8192 -- and the fake reports that
+    # real length back as `tokens_in`, exactly the way a real server
+    # reports a real tokenizer's count for what it was actually sent. The
+    # pre-fix version of stage0_window reported `plan.window` verbatim
+    # here, which is exactly the defect this pins: a probe aimed at 8192
+    # tokens can be, and on this project's own committed
+    # `codegemma7b.jsonl` transcript was, far smaller in real tokens than
+    # what got reported as verified.
     client = _Accepts()
     result = stage0_window(client, PLAN)
-    assert result == Stage0(window=8192, verified=True, note="probe accepted")
+    expected = len(_default_probe(PLAN.window))
+    assert expected != PLAN.window  # sanity: this test would be vacuous otherwise
+    assert result == Stage0(window=expected, verified=True, note="probe accepted")
     # It must actually have sent something near the window, not a token.
     assert max(client.sizes) > 8192
 
@@ -73,26 +96,23 @@ def test_a_rejected_window_falls_back_and_says_so():
     # a search for the largest size the server does accept, or if the note
     # doesn't explain that the planned number changed.
     #
-    # Also fails if the returned window is one past the largest size the
-    # fake actually accepted (amendment to Task 3, ruled 2026-08-10):
-    # "result.window < 8192" alone does NOT catch this -- boundary-plus-
-    # one satisfies it too. At the default probe's 3 chars/token, the true
-    # accepted boundary against a 6000-character limit is target=2000
-    # (exactly 6000 chars); target=2001 needs 6003 chars and is rejected.
-    # This is the amendment's own measured example: an earlier
-    # `_default_probe` floor-quantized length to whole 6-char words
-    # (`target * 3 // 6` words), so 2000 and 2001 both floored to the same
-    # 1000 words / 6000 chars and were indistinguishable to the fake --
-    # bisection reported the larger, unverified label (2001) as accepted.
+    # The reported window must be the SERVER's own count for the tightest
+    # probe the search actually found accepted (C1, ruled 2026-08-10) --
+    # not the char-estimated TARGET that probe was built for, and not
+    # merely "smaller than the plan" (boundary-plus-one satisfies that
+    # too). `_Rejects` plays the server honestly here: it reports back
+    # exactly `len(prompt)` as `tokens_in`, so the strongest available
+    # check is structural -- the reported window must equal the length of
+    # the LONGEST prompt the fake actually accepted, whatever the search
+    # algorithm's internal target numbers were.
     client = _Rejects(until=6000)
     result = stage0_window(client, PLAN)
-    assert result.window < 8192
+    assert result.window < PLAN.window
     assert result.verified is True
     assert "rejected" in result.note
-    # The actual invariant: a probe of EXACTLY this size was accepted --
-    # not merely a number smaller than the plan.
-    assert _default_probe(result.window) in client.accepted
-    assert result.window == 2000
+    assert client.accepted, "the search must have found something accepted"
+    assert max(len(p) for p in client.accepted) == result.window
+    assert result.window <= 6000
 
 
 def test_a_window_rejected_at_every_size_is_unverified():
@@ -166,7 +186,7 @@ def test_a_rejected_window_recovers_the_exact_accepted_boundary():
             self.sizes.append(len(prompt))
             if len(prompt) > self.boundary:
                 raise ServerContextOverflowError("too big")
-            return Generation("ok", 1, 1, False)
+            return Generation("ok", len(prompt), 1, False)
 
     result = stage0_window(_RejectsAbove(boundary=5000), PLAN, probe=probe)
     assert result.window == 5000
@@ -203,7 +223,8 @@ def test_a_recorded_stage0_run_replays_without_the_client(tmp_path: Path):
     replayer = CallReplayer(path)
     replayed = stage0_window(replayer, PLAN)
 
-    assert replayed == recorded == Stage0(window=8192, verified=True,
+    expected = len(_default_probe(PLAN.window))
+    assert replayed == recorded == Stage0(window=expected, verified=True,
                                           note="probe accepted")
 
 
