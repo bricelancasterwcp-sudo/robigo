@@ -440,7 +440,13 @@ Expected: FAIL — `cannot import name 'SuiteState'`.
 @dataclass(frozen=True)
 class SuiteState:
     """One suite run, parsed. `incomplete` is non-None when the run did not
-    finish normally (a collection error, an `-x` early exit, INTERNALERROR)
+    finish normally in a way THIS function can see: an abnormal exit code
+    (a collection error exits 2) or an interruption marker. It does NOT
+    catch a silent `-x` truncation (exit code 1, no marker text) --
+    verified by counterexample during task 3's review, and stated at
+    `verify.py:300-304`. Catching that requires the CALLER to compare
+    `executed` against a baseline, which is what `verify()` does and what
+    task 4's `state.executed != base.executed` guard does
     -- in which case `broken` and `executed` describe a run that never ran
     everything, and no caller may compare them against a baseline as though
     they did. Plan 04's process lesson 2: a tool that reports a count must
