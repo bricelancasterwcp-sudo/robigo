@@ -247,6 +247,56 @@ def test_identity_and_provenance_arguments_pass_through_unchanged():
     assert profile.corpus == "fixtures-v2"
 
 
+def test_fixtures_and_corpus_dropped_thread_through_a_real_run_profile_call():
+    """Plan 05 task 2, fix round 1 (reviewer finding, 2026-08-10): the
+    CLI-level test (`tests/test_cli_profile.py::
+    test_corpus_flag_routes_records_and_carries_dropped`) monkeypatches
+    `cli.run_profile` itself before calling `cli.profile_main`, so it only
+    proves `cli.py` COMPUTES the right `fixtures=`/`corpus_dropped=`
+    kwargs -- it never calls the real `run_profile` body, which means
+    neither of the two lines task 2 actually added inside `run_profile`
+    (`stage2_codecs(client, seeds, fixtures=fixtures)` and `dropped.
+    extend(corpus_dropped)`) was protected by ANY test: the reviewer
+    confirmed both can be deleted with the full 630-test suite staying
+    green. This test calls `run_profile` directly with a real (non-mocked)
+    `_Good` client and the real module `PLAN`, the same pattern every
+    other test in this file already uses (see `_run`), so both lines
+    actually execute this time.
+
+    `fixtures=(FIXTURES[0],)` -- a ONE-fixture slice of the bundled five,
+    never the full default -- proves the threading two independent ways
+    at once:
+
+    1. `attempts` for `search_replace` must be exactly `seeds` (1), not
+       `len(FIXTURES) * seeds` (5): `stage2_codecs`'s own docstring states
+       `attempts == len(fixtures) * seeds` for whichever `fixtures` it was
+       actually handed, so a revert back to `stage2_codecs(client, seeds)`
+       -- which silently falls back to `stages.FIXTURES`, the bundled
+       default -- reports 5 instead of 1.
+    2. `lands` must be `1.0`, not merely "did not raise": `_Good.generate`
+       recognises a prompt by checking whether ANY bundled `FIXTURES`
+       entry's filename appears in it (`next((f for f in FIXTURES if
+       f.filename in prompt), None)`, matched against the GLOBAL bundled
+       set, not the `fixtures` argument this test passes) and answers
+       correctly when it finds one -- so a genuine stage-2 run against
+       `FIXTURES[0]` really does land, proving the call actually reached
+       the model and got scored, not merely that `attempts` happened to
+       come out right by coincidence.
+
+    `corpus_dropped=("mystery-dropped-marker",)` is a string that cannot
+    plausibly appear in `profile.dropped` any other way -- unlike
+    "stage 2" or "payload_corruption", which `run_profile` itself also
+    writes there for unrelated reasons -- so finding it in `profile.
+    dropped` is unambiguous proof `dropped.extend(corpus_dropped)` ran,
+    not a coincidental match against some other entry.
+    """
+    profile = _run(_Good(), fixtures=(FIXTURES[0],), seeds=1,
+                   corpus_dropped=("mystery-dropped-marker",))
+    assert profile.codecs["search_replace"].attempts == 1
+    assert profile.codecs["search_replace"].lands == 1.0
+    assert "mystery-dropped-marker" in profile.dropped
+
+
 def test_stage_one_fidelity_exactly_at_the_gate_still_opens_it():
     # Fails if the gate uses `>` instead of `>=` -- a family measured at
     # exactly the documented cutoff must still reach stage 2, the same
