@@ -383,24 +383,50 @@ consciously not fixed, and ruled on.
   future-format transcript would raise a `KeyError` rather than a message
   naming what happened.
 
-## Found during the fix wave, not part of the original review
+## Found during the fix wave, fixed on reopen (ruled 2026-08-10, second round)
 
-- **`OllamaClient.generate` trusts `prompt_eval_count` without checking
-  `done`.** Measured live, reproducibly, while re-recording this fix wave's
-  transcripts: against `qwen2.5-coder:7b-instruct-q8_0` and
-  `granite-code:8b-instruct-q8_0` specifically (not `codegemma:7b-instruct-
-  q8_0`, tried repeatedly, always clean) — stage 0's own filler probe
-  (`"token "` repeated to fill the window) at `num_predict=1024` deterministically
-  gets back a 200 response with `"done": false` and no `prompt_eval_count`,
-  `eval_count`, or `done_reason` key at all, for the exact same `(model,
-  prompt, seed=0)` every time, including after a full model unload/reload.
-  `body.get("prompt_eval_count", 0)` (client.py) treats the absent key as "0
-  tokens", not as "this response is incomplete" — so this fix wave's own C1
-  fix, which reports exactly that number as `usable_window`, faithfully
-  reports a real daemon defect as `usable_window: 0` for two of the three
-  roster models profiled while re-recording. This is why `tests/transcripts/
-  qwen7b.jsonl` and `granite8b.jsonl` verify a 0-token window at HEAD despite
-  both models genuinely supporting a large one — see the fix-wave report.
-  Not fixed here: out of this wave's scope, and the fix belongs in
-  `client.py` (validate `done` before trusting the stats fields), not in the
-  profiler.
+- **`OllamaClient.generate` trusted `prompt_eval_count`/`eval_count` without
+  checking they were present.** First surfaced while re-recording this fix
+  wave's transcripts (`usable_window: 0` on `qwen7b.jsonl`/`granite8b.jsonl`,
+  originally written up here as an unfixed concern). Reopened when the
+  coordinator could not reproduce the claim at `num_ctx: 8192` and asked for
+  it to be re-verified rather than left asserted. Re-verification found the
+  earlier characterization was WRONG in one respect and right in another:
+  the daemon response (a 200 with valid `content` but no `prompt_eval_count`/
+  `eval_count`/`done_reason` at all, `"done": false`) is real and
+  reproducible, but it is **not** simply "these two models, this daemon" --
+  it is a sharp, size-dependent threshold. Measured against
+  `qwen2.5-coder:7b-instruct-q8_0` at seed 0: targets up to ~11500 succeeded
+  reliably (multiple repeats, 4/4 or better each), targets at ~11800 and
+  above failed 100% (40/40 across two separate batches) -- and this model's
+  REAL `plan.window` (32768, its training context; VRAM is not the binding
+  limit on this box) sits far past that threshold, so its immediate
+  full-window probe cannot currently be recorded as a successful measurement
+  at all. `granite-code:8b`'s real window (4096) sits well under its own
+  threshold and was merely flaky (one failure in several dozen calls,
+  resolved by retrying) -- a different, milder manifestation of the same
+  underlying defect.
+
+  **Fixed**, per the coordinator's explicit direction (not carried): (1)
+  `OllamaClient.generate` now raises `ModelError` naming the model and which
+  field(s) are missing instead of defaulting either count to 0 --
+  `.get(key, 0)` standing in for a measurement is the identical shape as
+  plan 02's `.get("size", 0)` bug. (2) `stage0_window` independently treats
+  an accepted call whose `Generation.tokens_in <= 0` the same as a rejected
+  one, so `verified=True` at `window=0` -- incoherent on its face -- can
+  never be returned regardless of what any client does. Both mutation-tested
+  (`tests/test_client.py`, `tests/test_stage0.py`).
+
+  **Consequence for the committed transcripts**: `codegemma7b.jsonl` and
+  `granite8b.jsonl` are both re-recorded and clean (every "reply" row has
+  `tokens_in > 0`, pinned by `test_no_committed_row_encodes_an_unmeasured_
+  reply`). `qwen7b.jsonl` could NOT be re-recorded as a full run — every
+  attempt at its real training-context window fails before stage 0 even
+  finishes, now as a loud, immediate `ModelError` rather than a silent
+  false zero. Its committed shape is deliberately one row (`outcome:
+  "error"`), the honest artifact of what happens right now, pinned by
+  `test_qwen_transcript_documents_a_real_unmeasurable_probe` (replay
+  reproduces the exact same error). The underlying daemon defect itself
+  remains unfixed — fixing Ollama, or working around it by changing the
+  fixed `_PROBE_SEED` or the CLI's fixed `num_predict=1024`, is out of this
+  wave's scope either way.
