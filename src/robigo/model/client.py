@@ -167,10 +167,37 @@ class OllamaClient(_HTTPClient):
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str) or body.get("error"):
             raise ModelError(f"{self.model}: malformed 200 response: {body!r}")
+        # `.get(key, 0)` must not stand in for a measurement (whole-branch
+        # review, ruled 2026-08-10 -- the identical shape as plan 02's
+        # `.get("size", 0)`, which reported every model as weighing zero
+        # bytes). Measured live: a 200 response with a real `content` string
+        # but no `prompt_eval_count`/`eval_count`/`done_reason` at all
+        # (`"done": false`) is a real, reproducible daemon response, not a
+        # hypothetical -- and once a caller (stage 0) started trusting
+        # `tokens_in` as authoritative, silently reading that absence as "0
+        # tokens" turned a daemon hiccup into a false "verified: 0-token
+        # window" instead of a loud failure. A response that names no token
+        # count measured nothing, so it is infrastructure failure (spec 9
+        # law 10), not a result -- raise, don't default.
+        prompt_eval_count = body.get("prompt_eval_count")
+        eval_count = body.get("eval_count")
+        if prompt_eval_count is None or eval_count is None:
+            missing = [
+                name for name, value in (
+                    ("prompt_eval_count", prompt_eval_count),
+                    ("eval_count", eval_count),
+                )
+                if value is None
+            ]
+            raise ModelError(
+                f"{self.model}: response carries no {' or '.join(missing)} "
+                f"(done={body.get('done')!r}) -- the call produced no "
+                f"measurement of its own token counts: {body!r}"
+            )
         return Generation(
             text=content,
-            tokens_in=int(body.get("prompt_eval_count", 0)),
-            tokens_out=int(body.get("eval_count", 0)),
+            tokens_in=int(prompt_eval_count),
+            tokens_out=int(eval_count),
             truncated=body.get("done_reason") == "length",
         )
 

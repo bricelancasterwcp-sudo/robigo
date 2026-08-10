@@ -116,6 +116,58 @@ def test_a_malformed_200_is_infrastructure_not_an_empty_generation(monkeypatch):
         _client(monkeypatch, _FakeHTTP({"message": None})).generate("hi", seed=1)
 
 
+def test_a_response_missing_the_token_counts_is_infrastructure_not_a_zero(
+    monkeypatch,
+):
+    # Whole-branch review (ruled 2026-08-10): measured live -- a real,
+    # reproducible daemon response with valid `content` but no
+    # `prompt_eval_count`/`eval_count`/`done_reason` at all (`"done":
+    # false`). `int(body.get("prompt_eval_count", 0))` used to silently
+    # read that absence as "0 tokens were evaluated" -- the identical shape
+    # as plan 02's `.get("size", 0)` bug, now load-bearing because stage 0
+    # trusts `tokens_in` as authoritative. Fails if the `.get(..., 0)`
+    # default ever comes back: a response this malformed must raise, not
+    # produce a Generation at all.
+    body = {"message": {"content": " token token token"}, "done": False}
+    with pytest.raises(ModelError) as e:
+        _client(monkeypatch, _FakeHTTP(body)).generate("hi", seed=1)
+    assert "prompt_eval_count" in str(e.value)
+    assert "eval_count" in str(e.value)
+
+
+def test_a_response_with_an_explicit_null_token_count_is_also_infrastructure(
+    monkeypatch,
+):
+    # The other shape "absent" can take: the key IS present but its value
+    # is JSON null, which `.get(key, 0)` would NOT have substituted for
+    # (only a missing key triggers a `.get` default) -- so this needs its
+    # own check, not just "key not in body". `int(None)` would otherwise
+    # escape as a raw TypeError instead of a named ModelError.
+    body = {"message": {"content": "hi"}, "prompt_eval_count": None,
+            "eval_count": 3}
+    with pytest.raises(ModelError) as e:
+        _client(monkeypatch, _FakeHTTP(body)).generate("hi", seed=1)
+    # "carries no X" names exactly the missing one -- eval_count (present,
+    # not None) does appear elsewhere in the message (the repr'd body, for
+    # debugging), so the assertion is on the naming phrase, not blanket
+    # absence of the substring.
+    assert "carries no prompt_eval_count" in str(e.value)
+    assert "carries no eval_count" not in str(e.value)
+
+
+def test_a_response_with_only_eval_count_missing_is_also_infrastructure(
+    monkeypatch,
+):
+    # The other half of the OR: eval_count (tokens_out) matters exactly as
+    # much as prompt_eval_count -- both are measurements a caller can
+    # trust, or neither is.
+    body = {"message": {"content": "hi"}, "prompt_eval_count": 12}
+    with pytest.raises(ModelError) as e:
+        _client(monkeypatch, _FakeHTTP(body)).generate("hi", seed=1)
+    assert "carries no eval_count" in str(e.value)
+    assert "carries no prompt_eval_count" not in str(e.value)
+
+
 def _llama_reply(content="OK", finish_reason="stop", prompt=32, completion=2):
     """A real llama-server /v1/chat/completions body, trimmed of `timings`."""
     return {
