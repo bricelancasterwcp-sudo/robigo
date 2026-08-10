@@ -139,6 +139,95 @@ Dispatch the way `profile` does — on a leading argv element, leaving the flat 
 
 ---
 
+## Whole-branch review fix wave (ruled 2026-08-10)
+
+Two Criticals, both demonstrated end-to-end by the review, the second reproduced
+by me. Every item is a record certifying what it did not establish -- plan 04's
+version of this project's recurring defect.
+
+**C1 -- a collection error counts as "exactly one test".** A mutant that breaks a
+module's *import* makes pytest report `1 error`, so it scores net 1 with one id
+and is kept -- but the id is a **file**, not a node id, and the module's tests
+never ran. `Verdict.test_id`'s own docstring promises "the pytest node id of the
+one new failure". The runner's text says so out loud and is discarded
+(`Interrupted: 1 error during collection`), and `pytest_runner` ignores
+`returncode` entirely. Not a corner case for the repos this plan targets:
+`swapped_args` on a module-level `re.compile(pattern, flags)` is exactly this
+shape, and robigo's own `action/codec.py` offers that candidate.
+
+**C2 -- `pytest_runner` inherits the ambient environment, so a shell variable
+manufactures false records.** `env = os.environ.copy()` overrides only
+`PYTHONPATH` and `PYTHONDONTWRITEBYTECODE`. Measured on the same repo and the
+same mutant, with only the shell differing:
+
+| | clean env | `PYTEST_ADDOPTS=-x` |
+|---|---|---|
+| `flipped_comparison` | `kept=False`, failures=2 | **`kept=True`, failures=1** |
+| reason | "broke too many: 2 vs baseline 0" | **"exactly one net new failure"** |
+
+`PYTEST_ADDOPTS` is a normal thing to have exported; `PYTEST_PLUGINS` and plugin
+autoload are the same class. This is the ambient-state defect this plan already
+found **three times in its own tests** -- now in production, in the one function
+whose job is trustworthy measurement, and failing toward a false keep.
+
+*One predicate kills both.* In `pytest_runner`, drop `PYTEST_ADDOPTS` and
+`PYTEST_PLUGINS` from the copied environment and surface the return code. In
+`verify`, refuse a keep unless **(a)** the run completed -- exit 0 or 1, no
+`Interrupted` or `INTERNALERROR` in the text; **(b)** the executed-test total
+equals the baseline's, so `4 passed` becoming `3 passed, 1 failed` is fine while
+a collection error reporting `0 passed` is rejected immediately; and **(c)**
+`test_id` contains `::`.
+
+**I1 -- the reference-patch half of spec 5.1 is neither required nor recorded.**
+`verify()` makes one runner call, on the broken form; the restored form is never
+run; `corpus.reverse()` has no production caller. The property holds only
+transitively -- `baseline()` proved the clone green and the restore is byte-exact
+-- but `verify()` never *requires* `baseline.broken == 0`, and the corpus file
+records no baseline at all, so a reader cannot check the chain applied. Require
+`baseline.broken == 0` for a keep, and write the baseline into the corpus file.
+The record is the artifact the kill criterion is read off; half its central rule
+should not live only in the generator's process memory.
+
+**I2 -- `--target` bypasses `_is_test_path`**, so an explicitly-targeted test file
+yields a record whose "defect" is a sabotaged assertion. `_sentinel_via_search`'s
+own docstring explains why test files are excluded: pytest collects them out of
+the clone regardless of whether the package resolves there, so invariant 7 is
+unproven for such a record. Apply the filter to explicit targets, or refuse them.
+
+**I4 -- 21% of generated records produce an unparseable stage-2 body.**
+`fixture_body` appends a fixed 8-space `pass` for a line ending in `:`, which
+works only at exactly 4 spaces of indent -- true of all five bundled fixtures,
+false of real source. Measured across all 986 candidates from `src/robigo`:
+**206 (20.9%)** yield a body `ast.parse` rejects, and `_try_one` scores that as
+"result does not parse as Python" -- indistinguishable from the model breaking
+the file. A landing rate measured against a generated corpus is therefore
+depressed by up to a fifth as a pure harness artifact, and
+`best_codec()`/`verdict_for` consume it. This is the plan-03 stage-2 defect again
+-- measuring the harness instead of the model -- and plan 05's first act is to
+wire a generated corpus in. Check the wrapped body parses at conversion time and
+drop, **stating**, the records that do not; or make the filler indent track the
+line's own.
+
+**I6 -- one hanging mutant discards every record produced so far.** A
+`TimeoutExpired` propagates out of generation and the CLI returns before
+`write_corpus`, losing hours of verified work. Reachable in robigo's own source:
+`inverted_condition` on a `while ... and not ...:` loop is exactly that mutant.
+Catch it per candidate, record it in `dropped`, continue.
+
+**I7 -- `CARRIED-DEBT.md` still lists both plan-04 items as open**, though this
+branch fixed them. Plan 05's first stop would state two falsehoods about the code
+it builds on.
+
+**I3 -- the report's wall-clock and candidate totals exclude the sentinel and the
+baseline**, while `_SENTINEL_SEARCH_LIMIT`'s docstring claims its attempts
+"double as the very first data point on the target's own keep rate". Thread them
+or delete the claim, and state which phases the reported time excludes.
+
+Carried as recorded debt for plan 05: I5 (target discovery drops files silently)
+and the Minors -- including that `_TARGET_ABANDON_AFTER`'s stated rationale is
+factually wrong, `reverse()`'s docstring claims a caller it does not have, and
+`_module_path` resolves a relative marker against the verifier's cwd.
+
 ## Done when
 
 - `pytest -q` green, and green with `socket.socket.connect` patched to raise.
