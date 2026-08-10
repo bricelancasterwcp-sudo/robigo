@@ -1442,6 +1442,76 @@ loop would get. If the rate is still low after the envelope is correct, that is 
 result — and `fixtures-v1` is a stopgap that plan 04 replaces with a
 mutation-generated corpus anyway.
 
+## Whole-branch review fix wave (ruled 2026-08-10)
+
+Three Criticals, all confirmed against this branch's own committed data. Two are
+mine.
+
+**C1 — stage 0 reports a window twice what any probe demonstrated.** The filler
+is `"token "`, which tokenizes at ~6 chars/token, while `_default_probe` sizes at
+3. Measured from `tests/transcripts/codegemma7b.jsonl` row 0 — the stage-0 probe
+aimed at 8192 tokens:
+
+| aimed at | chars sent | robigo's estimator | **the server counted** | reported |
+|---|---|---|---|---|
+| 8192 tok | 24576 | 7448 tok | **4119 tok** | `usable_window: 8192, verified=True` |
+
+So `verified=True` was claimed for a window **0.50×** of which was ever accepted.
+This is the Task 3 amendment's own defect at four thousand times the scale: I
+ruled that `verified=True` must mean "a probe of this size was accepted", fixed
+the one-token version, and the ~4000-token version was in the same function.
+
+The fix was already written down and dropped. Measured fact 2 of Task 3's
+pre-execution section says the rejection **names the real token count** and to
+*use it*. `stages.py` discards the `Generation`, so `tokens_in` — present on every
+accepted probe, from the server's own tokenizer — is never read. Read it. Bisect
+and report on the server's count, not on a character estimate. And reconcile
+`_CHARS_PER_TOKEN = 3` with `budget.CHARS_PER_TOKEN = 3.3`: two ratios 10% apart,
+one of them sizing the probe.
+
+Delete the docstring claim that the estimate "can never cause an incorrect window
+to be reported right". It is false as written, and a comment asserting the
+opposite of the behaviour is worse than the behaviour.
+
+**C2 — all three committed replay fixtures are dead, and the plan's replay
+criterion is false at HEAD.** `68da8c2` recorded them; `8a3ddc9` — my envelope fix
+— changed `landing_prompt` and nothing was re-recorded. **0 of 30** stage-2 keys
+match. No test loads a committed transcript, so nothing caught it. My fix was
+right and its blast radius was not checked.
+
+Re-record all three against HEAD. Then add a test that actually replays a
+committed transcript, so this cannot go stale silently again — a fixture nothing
+loads is a fixture nothing protects.
+
+`granite8b.jsonl` is also **two runs appended into one file**: 67 rows, windows
+`{0, 4096}`, 33 duplicate keys, merged silently by `CallReplayer`, which then
+reports the last row's window while handing back the first run's replies. Cause:
+`CallRecorder` opens `"a"`. Truncate, or refuse an existing path.
+
+**C3 — `Profile.training_ctx` is not the training context.** It is assigned
+`plan.window`, which is `min(training_ctx, vram, user_cap)`. Whenever VRAM binds,
+the field reports the VRAM-derived window as the model's training context, and
+`training_ctx == usable_window` — a state no real model can be in. The live
+granite run wrote `training_ctx: 0`. Verbatim plan text, pinned by nothing:
+mutating it to `999999` leaves all 90 profile tests green. Thread the real
+`Geometry.training_ctx` through, or drop the field and state that it was dropped.
+
+**I1 + I4 — two absences that read as measurements.** A profile that verified no
+window at all returns `LIMITED`, the same verdict a working 4096-token model gets,
+and stages 1 and 2 still run — at `num_ctx: 0`, where the daemon substitutes its
+own default — so the profile ships `usable_window: 0` beside `envelope 100%` and
+`lands 100%`. Stage 0 must be able to stop the run, per the architecture's own
+"each able to stop the run". And `payload_corruption`/`repeat_rate` are hardcoded
+`None` with no `dropped` entry: mutating both to `0.0` — "measured, no corruption"
+— leaves all 90 tests green. Anything not measured is stated as dropped.
+
+Everything else in that review is carried debt with rulings. Two items go to
+`CARRIED-DEBT.md` addressed to plan 04 specifically, because both sit on its first
+code path: `best_codec()` has no landing floor and returns a 0%-landing codec
+(granite measured exactly that), and `corpus` is a kwarg default rather than
+derived from the fixtures used, so the corpus swap plan 04 exists to perform will
+mislabel every profile it produces.
+
 ## Done when
 
 - `pytest -q` green; `robigo profile --replay <fixture>` reproduces a
