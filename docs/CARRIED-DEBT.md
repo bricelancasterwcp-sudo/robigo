@@ -227,3 +227,87 @@ Found by plan 02's whole-branch review, but living in plan 01's code:
    printed and then proceeded, a message advising a flag the user had just
    passed, and a completion criterion that was never true on this hardware —
    were invisible to 239 passing tests and obvious within one CLI invocation.
+
+---
+
+# Carried debt from plan 02b (wiring the ladder into the loop)
+
+Written at merge, for the same reason as the sections above: the execution ledger
+is git-ignored scratch. Plan 02b shipped as 8 commits and 302 tests, through one
+task review, a whole-branch review and a fix wave.
+
+**What this slice actually settled.** The five-rung ladder is now reachable at
+runtime, and the rung is chosen by **measurement, not arithmetic**: the loop
+walks the fixed order from rung 1, renders each candidate, and takes the first
+whose rendered prompt satisfies `estimate_tokens(prompt) + num_predict <=
+window`. `fit()` remains the module's arithmetic API and supplies the refusal
+message, but it no longer decides where the ladder stops. Two defects forced
+that design — a seated decomposition that under-counts by 1 token at ~5% of
+length residues, and an arithmetic-only refusal that rejected a run whose
+smallest rung fit exactly.
+
+Verified live once VRAM was free: a 7B local model repaired a real bug inside an
+**1100-token window** at a degraded rung, one correct line changed in the source
+with the failing test untouched, worst turn using **1097 of 1100 tokens**. Three
+tokens of headroom is the margin that makes measuring rather than estimating a
+correctness property rather than a preference.
+
+## Deferred with rulings
+
+- **`usable_window`'s docstring still states the precondition this slice
+  removed** — "`free_vram` must be measured BEFORE the model is loaded … Callers
+  own that ordering." `plan_window` now handles residency itself, so two
+  docstrings answer one question two ways.
+- **Three duplications.** The exact-name-then-`:latest` matching rule and its
+  `by_name` comprehension are byte-identical in `weights_bytes` and
+  `resident_bytes`; the advice sentence "Narrow it with `--scope`, or use a model
+  with a larger window." exists in both `budget.py` and `loop.py`;
+  `(host or OLLAMA_HOST).rstrip('/')` is in three places. Each is one drift from
+  two modules disagreeing.
+- **Neither refusal message names `--num-predict`, which is often the binding
+  term.** With the default 1024 against a small auto-computed window, the reserve
+  alone can exceed what the fixed costs leave, and no amount of `--scope`
+  narrowing helps — yet `--scope` is the only lever named. Same family as plan
+  01's messages naming the wrong flag, inverted.
+- **`SYSTEM_TOKENS`, `DIAGNOSTIC_TOKENS` and `_default_history_tokens` now have
+  no production caller.** `measure` always passes all three, so the dataclass
+  defaults are unreachable from `src/`, and their docstrings describe a caller
+  that exists only in tests. `_default_history_tokens`'s 25-line circular-import
+  warning now guards a test-only path — **do not delete it without reading that
+  warning**, since the import-order hazard it documents is real.
+- **`/api/ps` has no captured contract for its *resident* shape.** The idle shape
+  (`{"models": []}`, never `null`) was verified live; the `name`/`size_vram`
+  field names on a loaded entry are asserted only in comments. `/api/show`'s
+  workaround got a `live`-marked sentinel; this did not. Also: `plan_window` runs
+  even for an explicit `--window`, so on an Ollama predating `/api/ps` the 404
+  escapes as `OSError` printing "HTTP Error 404: Not Found" with no endpoint
+  named and no `--window` escape.
+- **Free VRAM and residency are read at different times and combined as if
+  simultaneous.** A model loading in the gap over-credits by up to its full size
+  — the direction that overcommits. Needs a sub-second race, so rare; the
+  opposite race merely reproduces the old under-count.
+- **None of the three HTTP endpoints guards HTTP status or `URLError` by
+  endpoint**; all surface as `OSError` to a CLI message that names no endpoint.
+  Pre-existing, now with a third instance.
+- **`loop.py`'s `try: fit(...) except BudgetExhausted: raise` is a functional
+  no-op.** A bare call behaves identically. Left deliberately for readability
+  beside its commentary; harmless, but a future reader may take it for something.
+
+## Process lessons, added to the two lists above
+
+1. **A correction applied in one direction is half a fix.** "Arithmetic proposes,
+   measurement decides" was wired into the accept path and not the refuse path,
+   so the branch shipped a *new* one-token defect of the same family it was
+   fixing. When a fix compensates for an imprecision, check both directions of
+   that imprecision before calling it done.
+2. **A criterion that correct code cannot satisfy is a bad criterion.** "A real
+   run completes a repair" depended on whether a 7B model lands a fix, which no
+   amount of correct wiring changes. State what the system owns — that
+   degradation happens, is recorded, and yields a prompt the server accepts.
+3. **Record the sequence, not the summary.** `meta.json` kept the last turn's
+   rung while its own comment claimed the field distinguished a degraded run from
+   one that never degraded. A run measured `[2, 2, 3]` recorded as `3`. When a
+   consumer is a future analysis tool, store what happened, not a reduction of it.
+4. **Run it twice.** The single worst user-facing defect in two plans —
+   `window 0` and a refusal on every second consecutive run — was invisible to
+   300 passing tests, to five reviews, and to running the tool once.
