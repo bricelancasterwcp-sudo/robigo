@@ -1,5 +1,7 @@
+import shutil
 import subprocess
 from pathlib import Path
+import pytest
 from robigo.loop import RunResult
 from robigo.profile.corpus_io import CorpusRecord
 from robigo.profile.verify import Baseline, SuiteState
@@ -373,3 +375,160 @@ def test_reset_clone_restores_the_pristine_tree_and_branch_across_attempts(
     # tree really was pristine before break_it ran, not merely "a" tree.
     assert observed["mod_py"] == "def n(items):\n    return len(items) - 1\n"
     assert observed["robigo_branches"] == ""
+
+
+# --------------------------------------------------------------------------
+# Fix round 2 -- Important A: detached HEAD is what spec 4.1 actually
+# produces ("checked out at its recorded source_sha"), and it must not
+# exclude every attempt.
+# --------------------------------------------------------------------------
+
+
+def test_reset_clone_handles_a_detached_head_pristine_state(tmp_path, monkeypatch):
+    """`git branch --show-current` prints nothing on a detached HEAD, so
+    `_pristine` used to capture `branch=""` and `reset_clone` ran `git
+    checkout -f ''`, exit 128, excluding EVERY attempt. Spec 4.1 says
+    stage 4 runs "against a clone ... checked out at its recorded
+    source_sha" -- a plain `git checkout <sha>` produces exactly this
+    state, so Task 5's driver can trip it on the very first attempt of a
+    real run."""
+    R.clear_pristine_cache()
+    repo = _repo(tmp_path)
+    head_sha = R._git_text(repo, "rev-parse", "HEAD")
+    subprocess.run(["git", "checkout", head_sha], cwd=repo, check=True,
+                   capture_output=True)
+    # Confirm the fixture really is detached before trusting the rest.
+    assert R._git_text(repo, "branch", "--show-current") == ""
+
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="pass", turns=1, exit_code=0, branch=None, detail="tests pass"))
+    monkeypatch.setattr(R, "suite_state", lambda *a, **k: SuiteState(
+        broken=0, executed=1, broken_ids=(), incomplete=None))
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is True and a.excluded is None
+
+
+# --------------------------------------------------------------------------
+# Fix round 2 -- Important B: a clone already sitting on a robigo/* branch
+# before any attempt has run is a corrupted starting state, not an
+# ordinary excluded attempt.
+# --------------------------------------------------------------------------
+
+
+def test_a_repo_already_on_a_robigo_branch_fails_loudly(tmp_path, monkeypatch):
+    """`robigo.loop.run` never checks back out after an attempt -- it
+    only hands back an undo recipe, never applies it -- so a clone left
+    mid-run by an earlier process, or a resumed run against a reused
+    clone directory, can start already on a `robigo/*` branch. Capturing
+    that as "pristine" would silently apply the corruption to every
+    attempt; this must raise `CorruptedCloneError` immediately and must
+    NOT be swallowed by `attempt_repair`'s own last-resort safety net."""
+    R.clear_pristine_cache()
+    repo = _repo(tmp_path)
+    subprocess.run(["git", "checkout", "-b", "robigo/leftover-3"], cwd=repo,
+                   check=True, capture_output=True)
+
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    with pytest.raises(R.CorruptedCloneError, match="robigo/leftover-3"):
+        R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+
+
+def test_delete_stray_branches_never_targets_the_current_branch(tmp_path):
+    """Defensive half of Important B: `_delete_stray_branches` re-derives
+    "what's current" itself rather than trusting an upstream guarantee it
+    cannot see. Simulated directly at the unit level: checked out on a
+    `robigo/*` branch (bypassing `_pristine`'s new guard, which is tested
+    separately above), confirm the deletion skips exactly that one and
+    removes every OTHER `robigo/*` branch."""
+    repo = _repo(tmp_path)
+    subprocess.run(["git", "checkout", "-b", "robigo/stray-a"], cwd=repo,
+                   check=True, capture_output=True)
+    subprocess.run(["git", "branch", "robigo/stray-b"], cwd=repo,
+                   check=True, capture_output=True)
+
+    R._delete_stray_branches(repo)
+
+    remaining = R._git_text(
+        repo, "branch", "--list", "robigo/*", "--format=%(refname:short)"
+    ).split()
+    assert remaining == ["robigo/stray-a"]
+    assert R._git_text(repo, "branch", "--show-current") == "robigo/stray-a"
+
+
+# --------------------------------------------------------------------------
+# Fix round 2 -- Important C: the pristine cache must not silently apply
+# to the wrong repository, and must not trust a sha that no longer
+# resolves.
+# --------------------------------------------------------------------------
+
+
+def test_pristine_cache_keys_on_repo_identity_not_path_alone(tmp_path):
+    """Measured directly before this fix: a DIFFERENT repo re-cloned at
+    the SAME filesystem path after an earlier run silently reused the
+    earlier repo's cached `_Pristine` (`passed=True, excluded=None` at a
+    sha the actual clone's history did not even contain). Simulated here
+    with an ORPHAN branch, not a wholesale `.git` replacement -- an orphan
+    commit has a genuinely different ROOT (a different `_repo_identity`
+    key), but git keeps the ORIGINAL branch's commit fully reachable in
+    the SAME object database, so `_sha_exists(repo, first.sha)` stays
+    TRUE throughout. A wholesale `.git` replacement would make the old sha
+    stop resolving too, which would make `_sha_exists` alone -- tested
+    separately below -- already force a re-capture, confounding which of
+    the two Important-C mechanisms actually caught the problem. This
+    construction isolates the compound KEY specifically: only it, not
+    sha-existence, can explain why `second` must differ from `first`
+    here."""
+    R.clear_pristine_cache()
+    repo = _repo(tmp_path)
+    first = R._pristine(repo)
+    assert first.sha == R._git_text(repo, "rev-parse", "HEAD")
+
+    subprocess.run(["git", "checkout", "-q", "--orphan", "unrelated"],
+                   cwd=repo, check=True, capture_output=True)
+    (repo / "unrelated.txt").write_text(
+        "nothing to do with the original repo\n", encoding="utf-8")
+    git = lambda *argv: subprocess.run(
+        ["git", *argv], cwd=repo, check=True, capture_output=True)
+    git("add", "-A")
+    git("commit", "-q", "-m", "unrelated root")
+    second_sha = R._git_text(repo, "rev-parse", "HEAD")
+    assert second_sha != first.sha  # sanity: genuinely different commit
+
+    # The confound this test specifically rules out: the OLD sha is still
+    # a perfectly resolvable object in this same repo (reachable via the
+    # original branch's ref), so `_sha_exists` alone would NOT have forced
+    # a re-capture here.
+    assert R._sha_exists(repo, first.sha) is True
+
+    second = R._pristine(repo)
+    assert second.sha == second_sha
+    assert second.sha != first.sha
+
+
+def test_sha_exists_true_for_head_false_for_garbage(tmp_path):
+    repo = _repo(tmp_path)
+    head = R._git_text(repo, "rev-parse", "HEAD")
+    assert R._sha_exists(repo, head) is True
+    assert R._sha_exists(repo, "0" * 40) is False
+
+
+def test_pristine_recaptures_if_the_cached_sha_no_longer_resolves(tmp_path):
+    """The second half of Important C: even with the identity-keyed cache
+    fix, a cached sha that no longer resolves (e.g. pruned in a long-lived
+    clone) must not be trusted blindly -- `_pristine` re-derives instead
+    of hand back a sha `git reset --hard` can no longer reach."""
+    R.clear_pristine_cache()
+    repo = _repo(tmp_path)
+    real = R._pristine(repo)
+    key = R._repo_identity(repo)
+    # Corrupt the cache directly: same identity, a sha that cannot
+    # possibly resolve in this repo.
+    R._PRISTINE_CACHE[key] = R._Pristine(real.branch, "f" * 40)
+
+    recaptured = R._pristine(repo)
+
+    assert recaptured.sha == real.sha
+    assert recaptured.sha != "f" * 40

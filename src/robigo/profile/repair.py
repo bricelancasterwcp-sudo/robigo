@@ -71,19 +71,62 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+class CorruptedCloneError(RuntimeError):
+    """Raised by `_pristine` when `repo` is ALREADY checked out on a
+    `robigo/*` branch before any attempt in this process has touched it
+    (Important B, fix round 2). `robigo.loop.run` never checks back out
+    after an attempt -- it only hands back an undo recipe (`UndoInfo`),
+    never applies it -- so a clone left mid-run by an earlier process, or
+    a resumed run against a reused clone directory, sits on exactly this
+    kind of branch. Capturing THAT as "pristine" is the same class of
+    error re-deriving pristine from a dirty tree would be (see
+    `_PRISTINE_CACHE`'s docstring): every one of the ~940 attempts in the
+    run would then silently restore to a corrupted starting point instead
+    of the real one, all of them scored against ground truth that was
+    never actually there.
+
+    Deliberately NOT caught by `attempt_repair`'s own last-resort safety
+    net (`except Exception`) -- unlike an unanticipated PER-RECORD
+    surprise, which affects only that one record, this is a property of
+    the shared `repo` itself, identical for every attempt in the run.
+    Swallowing it into one `excluded` `Attempt` and continuing would just
+    repeat the identical exclusion ~940 times, silently burning the whole
+    run for nothing instead of failing loudly, immediately, and once, the
+    way a `repo` set up wrong deserves to fail."""
+
+
 @dataclass(frozen=True)
 class _Pristine:
     """`repo`'s own branch name and HEAD sha, exactly as they stood before
     the FIRST attempt this process ever ran against this clone touched
     anything. `reset_clone` restores to this, not to "whatever branch/
-    commit the tree happens to be on right now" (Critical 2, fix round 1)."""
+    commit the tree happens to be on right now" (Critical 2, fix round 1).
+
+    `branch == ""` means the clone was in DETACHED HEAD at capture time --
+    `git branch --show-current` prints nothing there (Important A, fix
+    round 2). This is not an edge case: spec 4.1 says stage 4 runs
+    "against a clone ... checked out at its recorded `source_sha`", and a
+    plain `git checkout <sha>` produces EXACTLY a detached HEAD. Measured
+    directly: treating `""` as an ordinary branch name made `reset_clone`
+    run `git checkout -f ''`, which exits 128, excluding EVERY attempt in
+    the run -- the old, pre-Critical-2 naive `reset_clone` handled
+    detached HEAD fine, so this was a regression introduced BY the
+    Critical-2 fix, not a pre-existing gap. `checkout_target` is what
+    `reset_clone` actually passes to `git checkout -f`: the branch name
+    when attached, the sha itself when detached -- both correctly restore
+    the exact starting point either way."""
 
     branch: str
     sha: str
 
+    @property
+    def checkout_target(self) -> str:
+        return self.branch if self.branch else self.sha
 
-_PRISTINE_CACHE: dict[Path, _Pristine] = {}
-"""Captured ONCE per (process, repo), never re-derived per attempt.
+
+_PRISTINE_CACHE: dict[tuple[Path, str], _Pristine] = {}
+"""Captured ONCE per (process, repo IDENTITY), never re-derived per
+attempt.
 
 Task 5/7's loop reuses ONE clone across every record and seed -- roughly
 940 `attempt_repair` calls in a single process, per the plan. Re-deriving
@@ -105,30 +148,95 @@ value for every later `reset_clone` call breaks that chain: attempt 2's
 `reset_clone` restores to the ORIGINAL branch and the ORIGINAL sha,
 regardless of where attempt 1 left the tree.
 
-Keyed by the resolved repo path, not a bare module-level scalar, so two
-distinct clones used within the same process (two `--repo` runs in one
-Python session, or two test fixtures in the same pytest session) never
-share state -- each gets its own pristine value, captured independently
-the first time `reset_clone` sees that particular path."""
+Keyed by `_repo_identity(repo)` -- `(resolved path, root-commit sha)`, NOT
+the resolved path alone (Important C, fix round 2). Path alone has a
+silent wrong-pristine mode: measured directly, a DIFFERENT repo re-cloned
+at the SAME filesystem path after an earlier run silently reused the
+earlier repo's cached `_Pristine` and `reset_clone` applied it without
+complaint (`passed=True, excluded=None`, at a cached sha the ACTUAL
+clone's history did not even contain). The root commit -- invariant to
+whichever commit HEAD happens to be checked out at right now -- identifies
+WHICH repository's history this is, so a different repo reusing the same
+path cannot collide with a stale entry. `_pristine` additionally validates
+the cached sha still resolves (`_sha_exists`) before trusting it, belt-
+and-suspenders alongside the compound key."""
+
+
+def _repo_identity(repo: Path) -> tuple[Path, str]:
+    """`(resolved path, root-commit sha)` -- see `_PRISTINE_CACHE`'s
+    docstring for why path alone is not enough. The root commit is the
+    very FIRST commit in `repo`'s history, found once and cheaply via
+    `git rev-list --max-parents=0 HEAD`; if history somehow has more than
+    one root (unrelated histories merged), the first one listed is used --
+    good enough to distinguish "this repository" from "some other
+    repository", which is all this key needs to do."""
+    root = _git_text(repo, "rev-list", "--max-parents=0", "HEAD")
+    return repo.resolve(), root.split()[0]
+
+
+def _sha_exists(repo: Path, sha: str) -> bool:
+    """Whether `sha` still resolves to a real commit object inside
+    `repo` -- validated before trusting a cached `_Pristine` (Important
+    C, fix round 2), belt-and-suspenders alongside the compound cache key
+    above: a `git gc`/prune, or any other way a commit could vanish from
+    a long-lived clone across a ~12 h run, must not silently hand back a
+    sha `git reset --hard` can no longer reach. One extra `git cat-file`
+    call per attempt is nothing against a run measured in tens of seconds
+    per attempt."""
+    result = subprocess.run(
+        ["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=repo,
+        capture_output=True,
+    )
+    return result.returncode == 0
 
 
 def _pristine(repo: Path) -> _Pristine:
     """`repo`'s captured pristine state, computing and caching it on the
-    first call for this `repo` and returning the cached value on every
-    later call -- see `_PRISTINE_CACHE`'s docstring for why re-deriving
-    this on every call would be wrong. Deliberately reads `repo`'s CURRENT
-    branch/HEAD only when nothing is cached yet; a caller that needs this
-    read at some OTHER moment (mid-run, after corruption) has already lost
-    the information this function exists to preserve."""
-    key = repo.resolve()
+    first call for this `repo` (keyed by `_repo_identity`, not path alone
+    -- Important C) and returning the cached value on every later call,
+    once the cached sha is confirmed to still resolve (`_sha_exists` --
+    Important C's second half). See `_PRISTINE_CACHE`'s docstring for why
+    re-deriving this on every call, instead of caching, would be wrong.
+
+    Raises `CorruptedCloneError` if `repo` is ALREADY on a `robigo/*`
+    branch the first time this runs for a given identity (Important B) --
+    see that exception's own docstring for why this is a hard failure,
+    not an ordinary excluded attempt."""
+    key = _repo_identity(repo)
     cached = _PRISTINE_CACHE.get(key)
-    if cached is not None:
+    if cached is not None and _sha_exists(repo, cached.sha):
         return cached
     branch = _git_text(repo, "branch", "--show-current")
+    if branch.startswith("robigo/"):
+        raise CorruptedCloneError(
+            f"{repo} is already checked out on {branch!r} before any "
+            f"attempt in this run has touched it. This looks like a "
+            f"clone left mid-run by an earlier process (robigo.loop.run "
+            f"never checks back out after an attempt -- it only hands "
+            f"back an undo recipe) or a resumed run against a reused "
+            f"clone directory. Restore {repo} to its real original "
+            f"branch/commit (its recorded source_sha) before retrying -- "
+            f"capturing this branch as \"pristine\" would apply the same "
+            f"corruption to every attempt in the run."
+        )
     sha = _git_text(repo, "rev-parse", "HEAD")
     captured = _Pristine(branch, sha)
     _PRISTINE_CACHE[key] = captured
     return captured
+
+
+def clear_pristine_cache() -> None:
+    """Test-only escape hatch: drops every cached `_Pristine` value.
+    Production code never calls this -- Task 5/7's driver runs once per
+    process, against one `repo`, for the process's whole life, which is
+    exactly what `_PRISTINE_CACHE` is FOR. Most tests get natural
+    isolation for free (`tmp_path` gives each one a unique path, and each
+    fresh `git init` gives it a unique root-commit sha, so `_repo_identity`
+    never collides across tests) -- this function exists for a test that
+    specifically wants to exercise cache/re-derivation or cross-repo-
+    identity behaviour directly, without relying on that natural
+    uniqueness."""
+    _PRISTINE_CACHE.clear()
 
 
 def _git_text(repo: Path, *args: str) -> str:
@@ -148,19 +256,31 @@ matching."""
 def _delete_stray_branches(repo: Path) -> None:
     """Deletes every local branch matching `_ROBIGO_BRANCH_GLOB` that a
     prior attempt's `use_git=True` loop run may have created and left
-    behind (spec 4.3.3). Across ~940 attempts against one repeatedly-
-    reused clone, an undeleted branch from attempt 1 would still be
-    sitting there at attempt 940 -- harmless by itself once `reset_clone`
-    always checks out the pristine branch first (this function runs AFTER
-    that checkout, so it never tries to delete the branch currently
-    checked out, which git refuses), but an unbounded, ever-growing branch
-    list is exactly the kind of state leak spec 4.3.3 asks to be closed,
-    not merely worked around."""
+    behind (spec 4.3.3), EXCLUDING whatever branch is currently checked
+    out -- checked directly here via a fresh `git branch --show-current`,
+    not merely assumed safe because `reset_clone` already switched away
+    first (Important B, fix round 2: `_pristine` can now only ever
+    capture a NON-`robigo/*` branch as pristine, since it raises
+    `CorruptedCloneError` instead of accepting one -- but this function no
+    longer trusts that invariant blindly from upstream; it re-derives
+    "what's current" itself, so the guarantee below is true by
+    construction, not by an assumption this function cannot see broken).
+    `git branch -D <currently-checked-out-branch>` exits 1, which -- if
+    that invariant were ever violated by a future change here or upstream
+    -- would turn EVERY subsequent attempt in the run into an exclusion,
+    identically, one per attempt, for the life of the run. Across ~940
+    attempts against one repeatedly-reused clone, an undeleted stray
+    branch from attempt 1 would otherwise still be sitting there at
+    attempt 940; an unbounded, ever-growing branch list is exactly the
+    kind of state leak spec 4.3.3 asks to be closed, not merely worked
+    around."""
+    current = _git_text(repo, "branch", "--show-current")
     listing = _git_text(
         repo, "branch", "--list", _ROBIGO_BRANCH_GLOB, "--format=%(refname:short)"
     ).split()
-    if listing:
-        subprocess.run(["git", "branch", "-D", *listing], cwd=repo,
+    doomed = [branch for branch in listing if branch != current]
+    if doomed:
+        subprocess.run(["git", "branch", "-D", *doomed], cwd=repo,
                        check=True, capture_output=True)
 
 
@@ -172,15 +292,28 @@ def reset_clone(repo: Path) -> None:
     or a commit `use_git=True`'s own loop made (Critical 2, fix round 1;
     see `_PRISTINE_CACHE`'s docstring for the measured failure this
     replaces). Runs before EVERY attempt, not once per record (spec
-    4.3.3): `git checkout -f <pristine.branch>` (forced, so a prior
-    attempt's uncommitted leftovers on some OTHER branch never block the
-    switch), `git reset --hard <pristine.sha>` (discards every commit made
-    since, on whatever branch is now checked out), `git clean -fdq`
-    (removes untracked stray files), then `_delete_stray_branches` (so
-    `robigo/*` branches do not accumulate across the whole run)."""
+    4.3.3): `git checkout -f <pristine.checkout_target>` (forced, so a
+    prior attempt's uncommitted leftovers on some OTHER branch never
+    block the switch; the target is the pristine BRANCH when attached, or
+    the pristine SHA itself when the clone started in detached HEAD --
+    Important A, fix round 2), `git reset --hard <pristine.sha>`
+    (discards every commit made since, on whatever ref is now checked
+    out), `git clean -fdq` (removes untracked stray files), then
+    `_delete_stray_branches` (so `robigo/*` branches do not accumulate
+    across the whole run).
+
+    `repo` MUST be a throwaway clone, never a working tree the operator
+    cares about -- this function runs `git reset --hard` and `git branch
+    -D` unconditionally, both of which discard real history with no undo.
+    `robigo.profile.generate.generate_corpus` states the identical
+    requirement for its own destructive path ("it is the caller's job ...
+    to make sure `repo` is a throwaway clone, never the working tree");
+    the same is true here, and it is `attempt_repair`'s caller's job
+    (Task 5's driver) to guarantee it, exactly as `cli.corpus_main`
+    already does for stage-3 generation."""
     pristine = _pristine(repo)
-    subprocess.run(["git", "checkout", "-f", pristine.branch], cwd=repo,
-                   check=True, capture_output=True)
+    subprocess.run(["git", "checkout", "-f", pristine.checkout_target],
+                   cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "reset", "--hard", pristine.sha], cwd=repo,
                    check=True, capture_output=True)
     subprocess.run(["git", "clean", "-fdq"], cwd=repo, check=True,
@@ -213,6 +346,12 @@ def attempt_repair(
     (`use_git=True`, the real `turn_cap`, the real `codec`,
     `allow_test_edits=False` -- spec 4.3.1: a defect on any of those paths
     counts against the tool, because a user meets it), judged strictly.
+
+    `repo` MUST be a throwaway clone, never a working tree the operator
+    cares about -- `reset_clone`, which this function calls before every
+    attempt, runs `git reset --hard` and `git branch -D` unconditionally.
+    It is the CALLER's job (Task 5's driver, exactly as `cli.corpus_main`
+    already guarantees it for stage-3 generation) to make sure of that.
 
     Task 5 calls this in a tight loop, once per (record, seed) pair,
     reusing the SAME `repo` clone across roughly 940 calls in a single
@@ -265,10 +404,17 @@ def attempt_repair(
     `cli.main` is the catcher; `attempt_repair` is a SECOND caller with no
     such handler upstream of it -- must produce one `excluded` `Attempt`
     and let the other ~939 attempts continue, never abort a run that can
-    take on the order of 12 hours."""
+    take on the order of 12 hours.
+
+    `CorruptedCloneError` is the ONE exception this safety net does NOT
+    catch (Important B, fix round 2) -- it propagates and ends the run
+    immediately, on purpose, because it names a defect in the shared
+    `repo` itself, not in one record; see that exception's own docstring."""
     try:
         return _judge(record, repo, client, seed=seed, codec=codec, base=base,
                       turn_cap=turn_cap, runner=runner)
+    except CorruptedCloneError:
+        raise
     except Exception as exc:
         return Attempt(record.name, seed, False, "", 0, 0,
                        f"unexpected error: {exc!r}")
@@ -290,7 +436,18 @@ def _judge(
     specific, diagnostic `excluded` reason (via the `excluded` closure
     below), while `attempt_repair` itself only has to catch whatever this
     function did not anticipate. See `attempt_repair`'s docstring for the
-    load-bearing ORDER these checks run in."""
+    load-bearing ORDER these checks run in.
+
+    The post-run section (everything from `_INFRA_OUTCOMES` onward) is
+    itself wrapped in one more `try`/`except` beyond its own specific
+    inner handlers (Minor, fix round 2): `result` -- and therefore
+    `result.outcome`/`result.turns` -- is only ever in scope HERE, never
+    in `attempt_repair`'s outer wrapper, which sees nothing but the bare
+    exception once it has unwound past this function. Anything that slips
+    past every specific handler below still gets `excluded` with the real
+    outcome/turns preserved, rather than falling through to the outer net
+    and reporting `outcome=""` for an attempt that, in truth, DID run and
+    DID have a known outcome."""
     def excluded(why: str, outcome: str = "", turns: int = 0) -> Attempt:
         return Attempt(record.name, seed, False, outcome, turns, 0, why)
 
@@ -317,48 +474,63 @@ def _judge(
         # named, and one record's internal error must not abort the run.
         return excluded(f"the loop raised: {exc!r}")
 
-    if result.outcome in _INFRA_OUTCOMES:
-        return excluded(f"loop infrastructure: {result.detail}",
-                        result.outcome, result.turns)
-
-    if result.outcome != "pass":
-        # A definitive, unrescuable model failure (Critical 1, fix round
-        # 1) -- stalled/refused/budget_exhausted, never excluded, and
-        # never subjected to the suite-reading checks below, which exist
-        # only to catch a "pass" that was actually a false positive.
-        return Attempt(record.name, seed, False, result.outcome, result.turns, 0, None)
-
     try:
-        state: SuiteState = suite_state(repo, runner, _package_name(record.path))
+        if result.outcome in _INFRA_OUTCOMES:
+            return excluded(f"loop infrastructure: {result.detail}",
+                            result.outcome, result.turns)
+
+        if result.outcome != "pass":
+            # A definitive, unrescuable model failure (Critical 1, fix
+            # round 1) -- stalled/refused/budget_exhausted, never
+            # excluded, and never subjected to the suite-reading checks
+            # below, which exist only to catch a "pass" that was actually
+            # a false positive.
+            return Attempt(record.name, seed, False, result.outcome,
+                           result.turns, 0, None)
+
+        try:
+            state: SuiteState = suite_state(repo, runner, _package_name(record.path))
+        except Exception as exc:
+            return excluded(f"suite did not run: {exc}", result.outcome, result.turns)
+
+        if state.incomplete is not None:
+            return excluded(f"suite run incomplete: {state.incomplete}",
+                            result.outcome, result.turns)
+        if state.executed != base.executed:
+            return excluded(
+                f"executed total {state.executed} != baseline {base.executed}",
+                result.outcome, result.turns)
+
+        try:
+            anchor_intact = _sha(anchor) == before
+        except OSError as exc:
+            return excluded(f"could not verify the anchor after the run: {exc}",
+                            result.outcome, result.turns)
+
+        passed = (
+            state.broken == 0
+            # `record.test_id not in state.broken_ids` cannot currently
+            # flip this verdict on its own: `state.broken == 0` implies
+            # `state.broken_ids == ()` in practice, given how a runner's
+            # report is CURRENTLY parsed (`_broken_count` and
+            # `_broken_ids` are independent regex passes over the SAME
+            # text, verify.py:269-282) -- this is NOT an invariant
+            # `SuiteState` itself validates or enforces (it validates
+            # nothing at all; it is a plain frozen dataclass), so the
+            # left conjunct alone already forces this term true whenever
+            # it is even evaluated, TODAY. Kept as defensive redundancy,
+            # not because it is load-bearing today -- a future change to
+            # how those two fields are derived is exactly the kind of
+            # drift this line would catch for free.
+            and record.test_id not in state.broken_ids
+            and anchor_intact
+        )
+        return Attempt(record.name, seed, passed, result.outcome, result.turns,
+                       0, None)
     except Exception as exc:
-        return excluded(f"suite did not run: {exc}", result.outcome, result.turns)
-
-    if state.incomplete is not None:
-        return excluded(f"suite run incomplete: {state.incomplete}",
+        # A backstop for the post-run section specifically (Minor, fix
+        # round 2) -- see this function's own docstring for why this
+        # differs from attempt_repair's outer net: `result` is in scope
+        # here, so outcome/turns are preserved rather than lost.
+        return excluded(f"unexpected error after the loop ran: {exc!r}",
                         result.outcome, result.turns)
-    if state.executed != base.executed:
-        return excluded(
-            f"executed total {state.executed} != baseline {base.executed}",
-            result.outcome, result.turns)
-
-    try:
-        anchor_intact = _sha(anchor) == before
-    except OSError as exc:
-        return excluded(f"could not verify the anchor after the run: {exc}",
-                        result.outcome, result.turns)
-
-    passed = (
-        state.broken == 0
-        # `record.test_id not in state.broken_ids` cannot currently flip
-        # this verdict on its own: `state.broken == 0` already implies
-        # `state.broken_ids == ()` (SuiteState's own invariant), so the
-        # left conjunct alone already forces this term true whenever it is
-        # even evaluated. Kept as defensive redundancy, not because it is
-        # load-bearing today -- a future change to what `broken` counts
-        # (e.g., a broken-but-not-failing state) is exactly the kind of
-        # drift this line would catch for free.
-        and record.test_id not in state.broken_ids
-        and anchor_intact
-    )
-    return Attempt(record.name, seed, passed, result.outcome, result.turns,
-                   0, None)
