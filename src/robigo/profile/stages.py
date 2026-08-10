@@ -358,6 +358,14 @@ class Stage2:
     failures: tuple[str, ...]
 
 
+_BODY_INDENT = "    "
+"""The one indent level `_FUNCTION_HEADER`'s body ever assumes -- four
+spaces, matching every one of the five bundled `FIXTURES`. `fixture_body`
+re-indents `fixture.original` to exactly this before wrapping it, rather
+than trusting whatever indent the line happened to carry in its own source
+(I4, below)."""
+
+
 def fixture_body(fixture: Fixture) -> str:
     """The file the model is shown. One definition, used by both the
     prompt and the applier -- two copies would drift and the codec would
@@ -376,9 +384,29 @@ def fixture_body(fixture: Fixture) -> str:
     name. It sits after `fixture.original` and is never inside a matched
     SEARCH span, so a codec's replacement of the header line leaves it in
     place and the result stays syntactically complete either way.
-    """
-    body = _FUNCTION_HEADER + fixture.original
-    if fixture.original.rstrip("\n").endswith(":"):
+
+    `fixture.original` is re-indented to exactly `_BODY_INDENT` (four
+    spaces, `_FUNCTION_HEADER`'s one body level) before being wrapped,
+    rather than glued in at whatever indent it happened to carry (I4,
+    whole-branch review 2026-08-10). All five bundled `FIXTURES` already
+    sit at four spaces, so this is a no-op for them -- but a mutant cut
+    from real source can carry ANY indent (zero, at module level; eight or
+    more, nested inside a class method), and the old code glued the line
+    in verbatim while `_FILLER_BODY` stayed a FIXED eight spaces, which
+    only produced a validly-nested block when the original happened to
+    already be at exactly four. Measured across all 986 real candidates
+    from `src/robigo`: 206 (20.9%) produced a body `ast.parse` rejected,
+    scored by `_try_one` as "result does not parse as Python" --
+    indistinguishable from the model breaking the file, when the harness
+    broke it first. Re-indenting closes the majority of that gap (91 of
+    the 986, 9.2%, remain unparseable after this fix alone -- lines cut
+    from a multi-line expression, such as a list comprehension's own `if`
+    clause, that are not a complete statement in isolation at ANY indent;
+    `robigo.profile.fixtures.fixtures_from_corpus` catches and states
+    those, the other half of this same finding, closing it to 0%)."""
+    normalized_original = _BODY_INDENT + fixture.original.lstrip(" ")
+    body = _FUNCTION_HEADER + normalized_original
+    if normalized_original.rstrip("\n").endswith(":"):
         body += _FILLER_BODY
     return body
 
@@ -468,6 +496,7 @@ def stage2_codecs(
     client: ModelClient,
     seeds: int,
     codecs: tuple[str, ...] = ("search_replace", "whole_file"),
+    fixtures: tuple[Fixture, ...] = FIXTURES,
 ) -> Stage2:
     """Does a patch reply PARSE as a patch action, does the named codec
     APPLY it, and does the result still PARSE AS PYTHON? Whether the edit
@@ -482,12 +511,27 @@ def stage2_codecs(
     temporary, because nothing this stage measures is ever written
     anywhere.
 
+    `fixtures` defaults to the bundled `FIXTURES` (plan 03's five
+    hand-written shapes) -- plan 03's promise that this module's interface
+    would not change (task 4's own invariant 12) means every EXISTING
+    caller keeps working untouched, not that no optional parameter could
+    ever be added. A generated corpus, read via `robigo.profile.corpus_io.
+    read_corpus` and converted with `robigo.profile.fixtures.
+    fixtures_from_corpus`, is exactly what this parameter is for -- see
+    that function's docstring for the field mapping and its one documented
+    limitation (a converted fixture is never checked for whether the
+    specific line cut still forms valid Python once wrapped by `fixture_
+    body`; a body that does not parse is scored the same way any other
+    non-landing attempt is, never a crash -- see this stage's own three-way
+    failure enumeration in `_try_one`).
+
     Scored per (fixture, seed) for each codec in `codecs`, `attempts`
-    always equals `len(FIXTURES) * seeds` for that codec (five fixtures by
-    design -- see `FIXTURES`). `results` is never pooled across codecs:
-    each codec gets its own `CodecResult`, because a family's
-    `search_replace` landing rate and its `whole_file` landing rate are
-    the two different numbers the loop needs to pick between.
+    always equals `len(fixtures) * seeds` for that codec (five, when
+    `fixtures` is left at its default -- see `FIXTURES`). `results` is
+    never pooled across codecs: each codec gets its own `CodecResult`,
+    because a family's `search_replace` landing rate and its `whole_file`
+    landing rate are the two different numbers the loop needs to pick
+    between.
 
     `max_file_tokens` is tracked only for `whole_file`, and only from
     attempts that actually landed -- a size that was ATTEMPTED but did not
@@ -507,7 +551,7 @@ def stage2_codecs(
         landed = 0
         attempts = 0
         ceiling: int | None = None
-        for fixture in FIXTURES:
+        for fixture in fixtures:
             body = fixture_body(fixture)
             for seed in range(1, seeds + 1):
                 attempts += 1

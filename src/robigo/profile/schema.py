@@ -53,9 +53,25 @@ class Profile:
     dropped: tuple[str, ...]
 
     def best_codec(self) -> str | None:
+        """The codec plan 05 should configure the loop around, or `None`
+        if not one of them ever landed anything -- `max()` alone (the
+        pre-fix implementation, CARRIED-DEBT.md's carried item from plan
+        03) names a codec even when EVERY codec landed 0%, which is not
+        "best", it is "none of these ever landed a single edit". Measured
+        live: granite-code:8b returned exactly that, a 0%-landing codec
+        quoted as the family's best.
+
+        The floor is `> 0.0`, not `_LANDING_MIN` (0.5): that constant
+        answers a different question (`verdict_for`'s "is this family
+        READY", which already gates on it independently, before this
+        method is ever called) -- a codec that lands 20% of the time is
+        real, useful signal for plan 05 to configure around, and this
+        method's only job is to refuse a codec that never landed at all,
+        the exact case that was measured wrong."""
         if not self.codecs:
             return None
-        return max(self.codecs, key=lambda name: self.codecs[name].lands)
+        name, result = max(self.codecs.items(), key=lambda item: item[1].lands)
+        return name if result.lands > 0.0 else None
 
     def to_json(self) -> str:
         return json.dumps(

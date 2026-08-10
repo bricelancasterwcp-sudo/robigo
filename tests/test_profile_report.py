@@ -1,6 +1,7 @@
 # tests/test_profile_report.py
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
@@ -175,7 +176,8 @@ class _ShrinksWindowBelowTheFloor(_Good):
 
 
 def _run(client, **kw):
-    args = dict(model="m", quant="q8_0", family="fam", seeds=1, mode="quick")
+    args = dict(model="m", quant="q8_0", family="fam", seeds=1, mode="quick",
+                corpus="fixtures-v1")
     return run_profile(client, PLAN, **{**args, **kw})
 
 
@@ -217,6 +219,17 @@ def test_a_stage_two_run_that_lands_nothing_differs_from_one_that_never_ran():
 
     assert never_ran.codecs == {}
     assert any("stage 2" in d for d in never_ran.dropped)
+
+
+def test_run_profile_requires_corpus_with_no_default():
+    # Task 4's fix for the carried debt named in CARRIED-DEBT.md (plan 03):
+    # `corpus` used to default to the literal "fixtures-v1", which would
+    # have silently mislabelled every profile once a real corpus replaced
+    # the bundled fixtures. Pinned the same way test_corpus_io.py pins
+    # CorpusRecord's own no-default fields -- fails the moment anyone adds
+    # `corpus: str = "fixtures-v1"` (or any other default) back.
+    sig = inspect.signature(run_profile)
+    assert sig.parameters["corpus"].default is inspect.Parameter.empty
 
 
 def test_identity_and_provenance_arguments_pass_through_unchanged():
@@ -446,6 +459,32 @@ def test_without_full_flag_the_default_seed_count_is_used_and_marked_quick(
     code = cli_module.profile_main(["--model", "m"])
     assert code == 0
     assert (captured["calls"][0]["seeds"], captured["calls"][0]["mode"]) == (3, "quick")
+
+
+def test_profile_main_derives_corpus_from_fixtures_own_identity_not_a_hardcoded_literal(
+    monkeypatch, tmp_path: Path
+):
+    # Task 4's fix, pinned at the CLI level where it actually matters: a
+    # profile_main that hardcodes `corpus="fixtures-v1"` at the call site
+    # (instead of importing `robigo.profile.fixtures.CORPUS_NAME`) would
+    # pass every OTHER test in this file, since none of them ever change
+    # what that name is -- monkeypatching the name cli.py actually reads
+    # and asserting the WRITTEN profile follows it is the only thing that
+    # can tell "derived" apart from "typed twice and happened to agree".
+    import robigo.cli as cli_module
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(cli_module, "plan_window", _stub_plan_window)
+    monkeypatch.setattr(cli_module, "build_client", lambda args: _Good())
+    monkeypatch.setattr(cli_module, "CORPUS_NAME", "totally-different-corpus-name")
+
+    code = cli_module.profile_main(["--model", "m", "--seeds", "1"])
+    assert code == 0
+
+    written = Profile.from_json(
+        json.loads(profile_path("m").read_text(encoding="utf-8"))
+    )
+    assert written.corpus == "totally-different-corpus-name"
 
 
 def test_profile_main_exits_refused_when_the_verdict_is_unusable(

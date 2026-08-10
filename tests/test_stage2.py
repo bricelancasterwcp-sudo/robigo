@@ -1,9 +1,16 @@
 # tests/test_stage2.py
 from __future__ import annotations
 
+import inspect
+import tempfile
+from pathlib import Path
+
 from robigo.model.client import Generation
-from robigo.profile.fixtures import FIXTURES
+from robigo.profile.corpus import candidates
+from robigo.profile.corpus_io import CorpusRecord, read_corpus, write_corpus
+from robigo.profile.fixtures import FIXTURES, Fixture, fixtures_from_corpus
 from robigo.profile.stages import fixture_body, landing_prompt, stage2_codecs
+from robigo.profile.verify import Baseline
 
 
 def _sr_reply(fixture) -> str:
@@ -61,6 +68,27 @@ def test_every_fixture_body_is_valid_python_before_and_after_its_own_patch():
     for fixture in FIXTURES:
         ast.parse(fixture_body(fixture))
         ast.parse(fixture_body(fixture).replace(fixture.original, fixture.expect, 1))
+
+
+def test_fixture_body_reindents_a_line_cut_from_a_deeper_real_source_indent():
+    # I4 (whole-branch review 2026-08-10): all five bundled FIXTURES sit at
+    # exactly four spaces, which the OLD fixed `_FILLER_BODY` (always
+    # eight spaces) only wraps correctly BY COINCIDENCE. A mutant cut from
+    # real source can carry any indent -- here, eight, as if `if not
+    # ready:` had been nested inside a class method rather than a
+    # top-level function. Before this fix: `def f():\n        if not
+    # ready:\n        pass\n` -- the filler `pass` sits at the SAME
+    # indent as the `if` itself, not one level deeper, which `ast.parse`
+    # rejects ("expected an indented block after 'if' statement");
+    # confirmed by hand before writing this test.
+    import ast
+
+    fixture = Fixture(
+        name="deep-inverted_test", filename="src/deep/gate.py",
+        original="        if not ready:\n", expect="        if ready:\n",
+    )
+    ast.parse(fixture_body(fixture))
+    ast.parse(fixture_body(fixture).replace(fixture.original, fixture.expect, 1))
 
 
 def test_a_landing_model_scores_one():
@@ -315,3 +343,120 @@ def test_every_attempt_uses_a_distinct_seed_per_fixture():
     stage2_codecs(_RecordsSeeds(), seeds=3, codecs=("search_replace",))
     # 5 fixtures x 3 seeds, seeds 1..3 repeating once per fixture.
     assert seen == [1, 2, 3] * 5
+
+
+# ---------------------------------------------------------------------------
+# `fixtures=` -- the optional parameter that lets stage 2 consume a
+# generated corpus (coordinator review, 2026-08-10). Plan 03's promise was
+# that EXISTING callers keep working untouched, not that the signature could
+# never grow; every test above this line calls stage2_codecs with no
+# `fixtures` argument at all and must keep passing unmodified, which is
+# itself half of this section's proof.
+# ---------------------------------------------------------------------------
+
+def test_fixtures_parameter_defaults_to_the_bundled_fixtures_object():
+    # Fails if a future edit changes the default to a copy of FIXTURES
+    # (e.g. `tuple(FIXTURES)`) rather than FIXTURES itself -- every
+    # existing caller's behaviour depends on this being the SAME data,
+    # not merely equal data.
+    sig = inspect.signature(stage2_codecs)
+    assert sig.parameters["fixtures"].default is FIXTURES
+
+
+def test_a_custom_fixtures_tuple_replaces_the_bundled_one_not_merely_accepted():
+    # Proves real wiring, not a decorative unused parameter: a model fake
+    # that raises if it ever sees a BUNDLED fixture's filename must still
+    # score correctly against a wholly different, custom fixture set.
+    custom = (
+        Fixture("bump", "src/tinylib/calc.py", "    return n + 1\n", "    return n + 2\n"),
+    )
+
+    class _OnlyKnowsCustom:
+        model = "m"
+
+        def generate(self, prompt: str, *, seed: int) -> Generation:
+            if any(f.filename in prompt for f in FIXTURES):
+                raise AssertionError(
+                    "a bundled fixture's filename appeared in the prompt -- "
+                    "the custom `fixtures` argument was ignored"
+                )
+            fixture = custom[0]
+            assert fixture.filename in prompt
+            return Generation(_sr_reply(fixture), 20, 10, False)
+
+    result = stage2_codecs(
+        _OnlyKnowsCustom(), seeds=1, codecs=("search_replace",), fixtures=custom
+    )
+    assert result.results["search_replace"].attempts == len(custom) * 1
+    assert result.results["search_replace"].lands == 1.0
+
+
+def test_attempts_equals_len_fixtures_times_seeds_for_a_given_corpus():
+    # The invariant stated in stage2_codecs's own docstring, checked
+    # directly for a fixtures argument that is NEITHER the bundled five
+    # NOR a single record -- three custom fixtures, two seeds each.
+    custom = tuple(
+        Fixture(f"f{i}", f"src/m{i}.py", f"    return {i}\n", f"    return {i + 1}\n")
+        for i in range(3)
+    )
+
+    class _NeverLands:
+        model = "m"
+
+        def generate(self, prompt: str, *, seed: int) -> Generation:
+            return Generation("I refuse to patch that.", 5, 2, False)
+
+    result = stage2_codecs(_NeverLands(), seeds=2, codecs=("search_replace",), fixtures=custom)
+    assert result.results["search_replace"].attempts == len(custom) * 2 == 6
+    assert result.results["search_replace"].lands == 0.0
+
+
+def test_end_to_end_with_a_real_generated_corpus_converted_to_fixtures():
+    # Closes the loop for real: a Mutant/CorpusRecord produced by the REAL
+    # generator (robigo.profile.corpus.candidates -- no subprocess, pure
+    # AST), written through the real write_corpus/read_corpus, converted
+    # with fixtures_from_corpus, and fed to stage2_codecs exactly as
+    # `robigo corpus`'s own output would be. Not a hand-built Fixture.
+    source = "def bump(n):\n    return n + 1\n"
+    mutant = next(
+        m for m in candidates(source, Path("src/tinylib/calc.py"))
+        if m.operator == "off_by_one"
+    )
+    record = CorpusRecord(
+        name="calc-off_by_one-2", path=mutant.path, line=mutant.line,
+        broken=mutant.mutated, fixed=mutant.original,
+        test_id="tests/test_calc.py::test_bump", diagnostic="exactly one net new failure",
+        operator=mutant.operator, source_repo="/tmp/narrow-demo",
+        source_sha="8c8d8c4cc822d134ec0b94148ca9714d64aaefd9",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "narrow-demo-v1.json"
+        write_corpus(
+            [record], out, name="narrow-demo-v1", dropped=(),
+            baseline=Baseline(broken=0, executed=1, seconds=0.1),
+        )
+        _, records, _ = read_corpus(out)
+
+    conversion = fixtures_from_corpus(records)
+    assert conversion.dropped == ()
+    fixtures = conversion.fixtures
+    assert fixtures == (
+        Fixture(
+            name="calc-off_by_one-2", filename="src/tinylib/calc.py",
+            original="    return n + 2\n", expect="    return n + 1\n",
+        ),
+    )
+
+    class _LandsOnGeneratedFixture:
+        model = "m"
+
+        def generate(self, prompt: str, *, seed: int) -> Generation:
+            fixture = fixtures[0]
+            assert fixture.filename in prompt
+            return Generation(_sr_reply(fixture), 20, 10, False)
+
+    result = stage2_codecs(
+        _LandsOnGeneratedFixture(), seeds=1, codecs=("search_replace",), fixtures=fixtures
+    )
+    assert result.results["search_replace"].attempts == 1
+    assert result.results["search_replace"].lands == 1.0

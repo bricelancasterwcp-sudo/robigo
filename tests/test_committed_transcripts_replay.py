@@ -78,7 +78,7 @@ def test_a_committed_transcript_replays_through_run_profile(
         CallReplayer(path), plan,
         model=model, quant=_quant(model),
         family=model.replace(":", "-").replace("/", "-"),
-        seeds=seeds, mode=mode, kv_bits=16,
+        seeds=seeds, mode=mode, corpus="fixtures-v1", kv_bits=16,
     )
 
     assert profile.model == model
@@ -102,7 +102,7 @@ def test_granite_reads_limited_on_window_alone():
     profile = run_profile(
         CallReplayer(path), _plan_for(path),
         model=model, quant=_quant(model), family="granite-code-8b",
-        seeds=3, mode="quick", kv_bits=16,
+        seeds=3, mode="quick", corpus="fixtures-v1", kv_bits=16,
     )
     assert profile.verdict == "LIMITED"
 
@@ -172,6 +172,6 @@ def test_qwen_transcript_documents_a_real_unmeasurable_probe():
         run_profile(
             CallReplayer(path), _plan_for(path),
             model=model, quant=_quant(model), family="qwen-7b",
-            seeds=3, mode="quick", kv_bits=16,
+            seeds=3, mode="quick", corpus="fixtures-v1", kv_bits=16,
         )
     assert str(e.value) == rows[0]["error_message"]

@@ -326,18 +326,24 @@ consciously not fixed, and ruled on.
 
 ## For plan 04 specifically — both sit on its first code path
 
-- **`best_codec()` has no landing floor.** It returns `max(codecs, key=lands)`
-  unconditionally, so a family where every codec lands 0% still names one as
-  "best" — measured live: granite-code:8b returned exactly that, a 0%-landing
-  codec quoted as the family's best. Plan 04 is the first consumer that would
-  read `best_codec()` to make a real decision; wire the floor before that read
-  happens, not after.
-- **`corpus` is a kwarg default (`"fixtures-v1"`), not derived from what was
-  actually run.** Nothing ties the string to `FIXTURES`'s own identity, so
-  when plan 04 swaps in a mutation-generated corpus, every profile it produces
-  will keep saying `fixtures-v1` unless the call site remembers to pass a new
-  string by hand — the exact kind of drift `dropped`/`measured` exist to
-  prevent everywhere else in this schema.
+**Both items below are RESOLVED, in plan 04 itself (task 4) and confirmed
+still fixed by its whole-branch fix wave (I7, ruled 2026-08-10) — this
+section previously listed them as open, which would have stated two
+falsehoods about the code plan 05 builds on. Kept here, marked, rather than
+deleted, so the record of what was found and when is not lost.**
+
+- ~~**`best_codec()` has no landing floor.**~~ **Fixed.**
+  `Profile.best_codec()` (`src/robigo/profile/schema.py`) now requires
+  `lands > _LANDING_MIN` before naming a codec "best", returning `None`
+  when every codec landed at or below the floor — a 0%-landing codec is
+  never quoted as best.
+- ~~**`corpus` is a kwarg default (`"fixtures-v1"`).**~~ **Fixed.**
+  `run_profile`'s `corpus: str` parameter (`src/robigo/profile/report.py`)
+  carries no default; every caller must name the corpus explicitly.
+  `cli.profile_main` passes `robigo.profile.fixtures.CORPUS_NAME` — one
+  definition, not a second literal — and `robigo corpus`'s own output
+  (`cli.corpus_main`) derives its `name` from `--repo`, never a fixed
+  string.
 
 ## Deferred with rulings, non-blocking
 
@@ -451,3 +457,100 @@ consciously not fixed, and ruled on.
   remains unfixed — fixing Ollama, or working around it by changing the
   fixed `_PROBE_SEED` or the CLI's fixed `num_predict=1024`, is out of this
   wave's scope either way.
+
+---
+
+# Carried debt from plan 04 (mutation corpus generator)
+
+Written at plan 04's merge. It shipped as 11 commits and 626 tests, through four
+controller-verified tasks, a whole-branch review that found two Criticals, and a
+fix wave closing eight items.
+
+**What this slice settled.** `robigo corpus` mutates real code one line at a time
+and keeps a mutant only when the target suite breaks *exactly one* test against a
+measured baseline, with the failing test's node id and the reverse patch stored as
+ground truth. The harness proves itself first: a sentinel must demonstrably see a
+break, and a `MODULE_UNDER_TEST=` marker obtained from the runner's own subprocess
+proves the tests exercised the clone rather than the installed package.
+
+**The measurement that shaped the design, and its answer.** Mutating well-covered
+central code almost never breaks exactly one test — measured twice
+independently, 0 of 7 and 0 of 10 on `context/scope.py`. On a narrow-test repo the
+same operators keep 4 of 5 and 6 of 10, at ~0.1 s per verification against ~15 s.
+So target selection is the whole game, and `--repo` is what makes the corpus
+feasible rather than a convenience.
+
+## Deferred with rulings
+
+- **`fixtures_from_corpus` drops ~9.2% of real records as unwrappable** (91 of 986
+  candidates from `src/robigo`). A single physical line cut from a multi-line
+  expression cannot form a complete statement at any indent, so no wrapping
+  strategy recovers it. These are now **caught and stated** in the conversion's
+  `dropped` list — misattribution to the model went from 20.9% to **0.0%** — but a
+  real 1-in-11 yield loss remains. Closing it needs multi-line mutants, which is a
+  design change, not a fix.
+- **Target discovery drops files silently.** `_source_files` prefers `repo/src`
+  when it exists, so a repo with both `src/` and a top-level package loses the
+  latter, and test-shaped paths are filtered. None of the exclusions is enumerated
+  in the corpus file or the report, so a reader cannot tell "this repo has 12
+  source files" from "it has 52 and 40 were filtered by a heuristic" — which
+  changes how a 0-kept keep rate should be read.
+- **`--target` still relies on `_is_test_path`'s conventions** (a `tests`/`test`
+  directory, or `test_*.py`/`*_test.py`). A test file matching neither still slips
+  through.
+- **`_TARGET_ABANDON_AFTER = 10`'s stated rationale is factually wrong.** It claims
+  to sit "above the measured `context/scope.py` sample size (7)" so that 0-of-7
+  stays reproducible; `scope.py` actually yields **43** candidates, so the
+  generator abandons it at 10 and can never reproduce that sample.
+- **`corpus.reverse()` has no production caller**, though its docstring claims "a
+  verifier restoring a clone" uses it. `_apply_and_run` restores from a saved
+  string instead.
+- **`broken` means two things** — a line of text on `CorpusRecord`, a count on
+  `Baseline`/`_broken_count` — and `Verdict.failures` holds failures **plus**
+  errors. All documented; plan 05 reads both artifacts.
+- **`_module_path` resolves a relative marker value against the verifier's cwd**,
+  not the clone, so a namespace package printing `None` yields `<cwd>/None`. Fails
+  safe (rejection), and that accident is what rejected one `--target tests/` case.
+- **`verify.py` and `generate.py` specify no `encoding=`** on `read_text`/
+  `write_text`, so a CRLF target is silently rewritten to LF in the clone and
+  `broken`/`fixed` can never carry `\r`. `corpus_io` is explicit throughout.
+- **`--max-records 50` and `--time-budget 1800` are mutually unreachable** at
+  ~15 s per verification and a 10% keep rate (~12 records in 30 minutes).
+- **`git clone` mines HEAD**, so uncommitted changes in `--repo` are silently not
+  mined. Traceable through `source_sha`, never stated.
+
+## For plan 05 specifically
+
+- **There is no `--corpus` flag on `robigo profile`.** `stage2_codecs` accepts a
+  converted corpus, and `fixtures_from_corpus` converts one, but nothing selects a
+  generated file from the CLI — so a live profile run still measures
+  `fixtures-v1`. This is the wiring plan 05 needs first, and it is small.
+- **Read the I4 note above before wiring it.** Scoring an unwrappable record as a
+  model failure is the plan-03 stage-2 defect again — measuring the harness rather
+  than the model — and it would land directly in the number the kill criterion is
+  read off.
+
+## Process lessons, added to the earlier lists
+
+1. **Ambient state is a defect class, not a test smell.** Four instances in this
+   plan: three tests that passed with the code deleted because they leaned on an
+   environment variable or filesystem ordering, and then the same shape **in
+   production** — `pytest_runner` inheriting `PYTEST_ADDOPTS`, where exporting
+   `-x` turned a correctly-rejected 2-failure mutant into a kept record asserting
+   "exactly one net new failure". Sanitize the environment you measure in; do not
+   merely document that you depend on it.
+2. **A tool that reports a count must check the run finished.** A mutant breaking a
+   module's import made pytest report `1 error`, which scored as exactly one while
+   three tests never ran — and the runner's own `Interrupted` line and non-zero
+   exit code were both discarded. Read the exit code, and require the executed-test
+   total to match the baseline's.
+3. **Verify both halves of a rule, or record which half you assumed.** The spec's
+   property is "breaks exactly one test **and** the reference patch makes it pass".
+   Reversibility proves the text round-trips, not that the restored form passes;
+   the second half held only transitively, through a baseline the corpus file did
+   not record. It now requires `baseline.broken == 0` and stores it.
+4. **Hand-written fixtures have accidental properties real data lacks.** All five
+   bundled fixtures sat at exactly 4 spaces of indent, in distinct files, with
+   distinct content. Generated records break every one of those assumptions —
+   which surfaced a 21% harness artifact and an ambiguous matching heuristic that
+   I then reproduced myself, minutes after reading the report describing it.
