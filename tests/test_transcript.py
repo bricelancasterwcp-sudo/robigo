@@ -270,6 +270,30 @@ def test_the_key_covers_model_prompt_and_seed():
     assert key_for("m", "p", 1) == key_for("m", "p", 1)
 
 
+def test_a_second_recorder_at_the_same_path_starts_a_fresh_transcript(
+    tmp_path: Path,
+):
+    # C2 (whole-branch review, ruled 2026-08-10): CallRecorder used to
+    # `touch()` the path and then open it in append mode per call, so a
+    # second recording run at a path that already had one on it silently
+    # merged the two runs into a single file. Measured on this project's
+    # own committed `granite8b.jsonl`: two runs appended, 67 rows, windows
+    # {0, 4096}, 33 duplicate keys, with CallReplayer coalescing the
+    # duplicates and reporting the LAST run's window while replaying the
+    # FIRST run's replies for shared keys. Fails if CallRecorder ever goes
+    # back to touch()-then-append: the first run's row would still be on
+    # disk after the second CallRecorder is constructed.
+    path = tmp_path / "t.jsonl"
+    CallRecorder(_Client(), path).generate("from the first run", seed=1)
+
+    CallRecorder(_Client(), path).generate("from the second run", seed=1)
+
+    rows = [line for line in path.read_text().strip().split("\n") if line]
+    assert len(rows) == 1
+    assert "from the second run" in rows[0]
+    assert "from the first run" not in path.read_text()
+
+
 def test_recording_appends_one_line_per_call(tmp_path: Path):
     # Fails if the recorder batches, truncates, or overwrites the file
     # instead of appending one JSON object per call.

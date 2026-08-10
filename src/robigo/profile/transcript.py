@@ -75,6 +75,20 @@ class CallRecorder:
     first rejection. Any exception that is NOT a `ModelError` (a bug in
     the wrapped client, not a call outcome) is left unrecorded and
     propagates immediately, same as before this amendment.
+
+    Truncates `path` at construction time -- even if it already holds a
+    previous run (whole-branch review C2, ruled 2026-08-10): this used to
+    `touch()` the path and then open it in append ("a") mode per call, so
+    a SECOND recording run pointed at a path that already had one on it
+    silently merged the two runs into a single file rather than starting
+    over. Measured on this project's own committed `granite8b.jsonl`: two
+    runs appended into one, 67 rows, windows `{0, 4096}`, 33 duplicate
+    keys -- `CallReplayer` then silently coalesced the duplicates,
+    reporting the LAST run's `window`/`num_predict` while replaying the
+    FIRST run's replies for any key both runs shared. A fresh
+    `CallRecorder` at an existing path now always starts that path over,
+    the same way running the profiler CLI against `--record
+    already-used-path.jsonl` a second time should behave.
     """
 
     def __init__(self, client: ModelClient, path: Path) -> None:
@@ -84,7 +98,10 @@ class CallRecorder:
         self.window = client.window
         self.num_predict = client.num_predict
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.touch()
+        # write_text("") rather than touch(): touch() leaves existing
+        # content untouched, which is exactly the bug this amendment
+        # fixes -- see the class docstring.
+        self._path.write_text("", encoding="utf-8")
 
     def generate(self, prompt: str, *, seed: int) -> Generation:
         base_row = {
