@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from robigo.action.verbs import ActionParseError, parse
 from robigo.model.client import ContextOverflowError, ModelClient
 from robigo.model.geometry import WindowPlan
 
@@ -155,4 +156,88 @@ def stage0_window(
         window=lo,
         verified=True,
         note=f"planned {plan.window} rejected; verified at {lo}",
+    )
+
+
+ENVELOPE_PROMPT = """Reply with exactly one action and nothing else.
+
+Available actions, one per reply:
+  read <path>        show a file
+  find <symbol>      locate a symbol
+  patch <path>       change a file (needs a fenced payload)
+  run                re-run the tests
+  done <summary>     finished
+
+Emit exactly this action, on a line of its own:
+
+read src/target.py
+"""
+
+_EXPECTED = ("read", "src/target.py")
+_LEVEL1_MIN = 0.9
+_FAILURE_CHARS = 200
+
+
+@dataclass(frozen=True)
+class Stage1:
+    """The result of asking the family to drive the action envelope with
+    no code reasoning involved (spec 5, stage 1). `fidelity` is the
+    fraction of `attempts` (== the `seeds` requested; see `stage1_envelope`)
+    whose reply, run through the real `parse`, produced exactly the one
+    action that was asked for. `failures` keeps the raw, un-truncated-past-
+    `_FAILURE_CHARS` model text for every attempt that did not count -- the
+    diagnostic material for why a family failed, not just that it did.
+    """
+
+    fidelity: float
+    attempts: int
+    level: int
+    failures: tuple[str, ...]
+
+
+def stage1_envelope(client: ModelClient, seeds: int) -> Stage1:
+    """Can this family drive the envelope at all? No code reasoning is
+    involved, so a failure here is purely about the action surface -- and
+    it gates every later stage (spec 5): a family that cannot reliably
+    emit a parseable, correctly-shaped action never reaches the codec
+    measurement, because there is nothing there to measure.
+
+    Every attempt is scored against the real `parse` (`robigo.action.
+    verbs`), the same parser the loop uses -- not a reimplementation --
+    because the question is what the loop would have accepted, and only
+    the loop's own parser can answer that. A reply that raises
+    `ActionParseError` counts as a failure; so does a reply that parses
+    cleanly but names the wrong verb or argument (spec 2.3's distinction:
+    driving the envelope and following the instruction are different
+    findings, and only the latter needs no free-form reasoning at all to
+    get right).
+
+    Each attempt uses a distinct seed (1..seeds) so replies vary the way a
+    real deployment would, and so a `CallRecorder` transcript of this run
+    replays deterministically under `CallReplayer` -- (model, prompt,
+    seed) is the same fixed `ENVELOPE_PROMPT` paired with a different seed
+    each time, never a prompt that itself varies by call count or time.
+    """
+    good = 0
+    failures: list[str] = []
+    for seed in range(1, seeds + 1):
+        gen = client.generate(ENVELOPE_PROMPT, seed=seed)
+        try:
+            action = parse(gen.text)
+        except ActionParseError as exc:
+            failures.append(f"seed {seed}: {exc} :: {gen.text[:_FAILURE_CHARS]!r}")
+            continue
+        if (action.verb, action.arg) != _EXPECTED:
+            failures.append(
+                f"seed {seed}: wrong verb/arg "
+                f"{(action.verb, action.arg)} :: {gen.text[:_FAILURE_CHARS]!r}"
+            )
+            continue
+        good += 1
+    fidelity = good / seeds if seeds else 0.0
+    return Stage1(
+        fidelity=fidelity,
+        attempts=seeds,
+        level=0 if fidelity >= _LEVEL1_MIN else 1,
+        failures=tuple(failures),
     )
