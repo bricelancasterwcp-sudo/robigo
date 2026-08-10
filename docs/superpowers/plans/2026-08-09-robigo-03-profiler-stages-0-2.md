@@ -473,6 +473,53 @@ git commit -m "feat: record/replay transcript so profiles reproduce without a GP
 
 The probe sends a prompt sized to fill the planned window and confirms the server accepts it. A planned window the server rejects is a computed hypothesis that was wrong, and the profile must carry the smaller verified number.
 
+#### Verified before execution (2026-08-10) — the rejection boundary, measured
+
+The probe design depends on how the server decides to reject, so it was measured
+against the live daemon before this task was dispatched
+(`qwen2.5-coder:1.5b-instruct-q8_0`, `num_ctx` 512):
+
+| prompt | num_ctx | num_predict | result |
+|---|---|---|---|
+| ~430 tok | 512 | 64 | accepted |
+| 530 tok | 512 | 64 | rejected — *"request (530 tokens) exceeds the available context size (512 tokens)"* |
+| 535 tok | 512 | **256** | rejected, reporting **535** tokens, not 791 |
+
+Three facts follow, and the probe must be built on them rather than on
+assumption:
+
+1. **Rejection is on the prompt alone against `num_ctx`; `num_predict` is not
+   counted.** The third row proves it — raising `num_predict` fourfold did not
+   change the reported figure. So a probe that fills the window entirely is
+   legitimate and will not be rejected for leaving no room to generate. Without
+   this, the natural worry is that stage 0 would report every model unverified.
+
+2. **The rejection names the real token count**, from the server's own
+   tokenizer. Use it. A rejection is therefore not merely a "no" — it is a
+   measurement of how far over the probe landed, and it is more trustworthy than
+   any local estimate.
+
+3. **Aiming at exactly the window risks a false negative from the char→token
+   estimate.** The probe sizes its prompt in characters via a chars-per-token
+   ratio, and the real tokenizer will disagree by a few percent. At `num_ctx`
+   512 the boundary sat between 430 accepted and 530 rejected — a prompt aimed at
+   "exactly 512" can land at 530 on a 3% error and be rejected, making stage 0
+   report a *correct* planned window as wrong. Aim deliberately under the window,
+   and treat a rejection as information to refine with (using the count from
+   fact 2) rather than as a final verdict. A stage that calls a good window bad
+   is as much a measurement failure as one that calls a bad window good.
+
+Also confirmed: **`truncate: false` is working.** The oversized prompts were
+rejected rather than silently front-truncated, which is the precondition that
+makes this probe mean anything — a server that quietly drops the front of the
+prompt would accept every size and stage 0 would verify nothing.
+
+**Scope note:** the client sends `num_ctx` from its own `window`, so stage 0 can
+only ever verify *at or below* `plan.window`, never discover that the model could
+do more. That is correct and deliberate: `plan.window` is a VRAM-derived ceiling
+and exceeding it would OOM rather than run. Do not "improve" this into an upward
+search.
+
 - [ ] **Step 1: Write the failing test**
 
 ```python
