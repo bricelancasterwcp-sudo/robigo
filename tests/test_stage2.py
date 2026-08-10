@@ -156,6 +156,64 @@ def test_the_prompt_describes_only_the_codec_under_test():
     assert "SEARCH" not in landing_prompt(fixture, "whole_file")
 
 
+def test_the_prompt_states_the_loops_real_action_syntax():
+    # Amendment (ruled 2026-08-10): measured live against
+    # qwen2.5-coder:7b-instruct-q8_0, the prior prompt -- which showed the
+    # SEARCH/REPLACE payload template but never stated that a reply must be
+    # `patch <path>` on a line of its own with a fenced payload -- scored
+    # 0/5 (every reply was a bare unified diff; `parse` raised "no action
+    # found" every time, so the codec was never even reached). Fails if
+    # `landing_prompt` ever stops including the loop's real action list
+    # (`render.SYSTEM`) or the codec's real payload help
+    # (`render._CODEC_HELP[codec]`) -- imported directly from `render`
+    # here, not hardcoded, so this test tracks the loop's actual prompt
+    # rather than a snapshot of it.
+    from robigo.context.render import SYSTEM, _CODEC_HELP
+
+    fixture = FIXTURES[0]
+    for codec in ("search_replace", "whole_file"):
+        prompt = landing_prompt(fixture, codec)
+        assert SYSTEM in prompt
+        assert _CODEC_HELP[codec] in prompt
+
+
+def test_the_prompt_is_sourced_from_render_not_copied(monkeypatch):
+    # The falsification test the amendment explicitly asks for: "a test
+    # comparing against a copied string would stay green while the loop's
+    # own prompt changed underneath it." Monkeypatching render.SYSTEM and
+    # render._CODEC_HELP and checking the substitution shows up here is the
+    # only way to structurally prove landing_prompt re-reads render's
+    # attributes at call time rather than a private copy bound once at
+    # import time -- a plain "SYSTEM in landing_prompt(...)" containment
+    # check (the test above) cannot tell "sourced" from "copied that
+    # currently happens to match" apart; only a live substitution can.
+    import robigo.context.render as render
+
+    monkeypatch.setattr(render, "SYSTEM", "SENTINEL_SYSTEM_SENTINEL")
+    monkeypatch.setattr(
+        render, "_CODEC_HELP", {"search_replace": "SENTINEL_HELP_SENTINEL"}
+    )
+    prompt = landing_prompt(FIXTURES[0], "search_replace")
+    assert "SENTINEL_SYSTEM_SENTINEL" in prompt
+    assert "SENTINEL_HELP_SENTINEL" in prompt
+
+
+def test_the_file_path_is_stated_without_dash_decoration_that_invites_mistyping():
+    # Amendment's second finding: on the same live run, with the envelope
+    # fixed, 2 of 5 whole_file replies parsed as `patch --- src/clamp.py
+    # ---` -- the model copied the "--- path ---" header decoration
+    # (render._scope_section's real-turn format) straight into the action
+    # argument, a parse SUCCESS with an unusable path that a landing-rate
+    # measurement must not credit as evidence of anything. Fails if the
+    # path is ever presented wrapped in that decoration again, or if it
+    # stops appearing at all (a prompt that hides the path from the model
+    # entirely is not a fix, it is a different bug).
+    fixture = FIXTURES[0]
+    prompt = landing_prompt(fixture, "search_replace")
+    assert f"File to patch: {fixture.filename}" in prompt
+    assert f"--- {fixture.filename} ---" not in prompt
+
+
 def test_a_size_ceiling_is_recorded_for_whole_file(monkeypatch):
     # whole_file must report the largest file it managed, because at a
     # small window that ceiling is the binding constraint (spec 3.3).

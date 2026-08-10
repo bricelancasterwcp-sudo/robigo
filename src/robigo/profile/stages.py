@@ -277,17 +277,6 @@ def stage1_envelope(client: ModelClient, seeds: int) -> Stage1:
     )
 
 
-_CODEC_HELP = {
-    "search_replace": (
-        "Reply with a patch action whose payload is:\n"
-        "<<<<<<< SEARCH\n<the exact existing lines>\n=======\n"
-        "<the replacement lines>\n>>>>>>> REPLACE"
-    ),
-    "whole_file": (
-        "Reply with a patch action whose payload is the complete new file."
-    ),
-}
-
 _FUNCTION_HEADER = (
     "def f(items, value=0, factor=1, low=0, high=1, ready=True):\n"
 )
@@ -341,17 +330,62 @@ def fixture_body(fixture: Fixture) -> str:
 
 
 def landing_prompt(fixture: Fixture, codec: str) -> str:
-    """Describes ONLY the codec under test (pinned by
+    """Presents the SAME action envelope the loop itself sends -- `render.
+    SYSTEM` (the action list: `read`/`find`/`patch`/`run`/`done`, one per
+    reply) and `render._CODEC_HELP[codec]` (the codec-specific payload
+    format) -- rather than a paraphrase of them (amendment ruled
+    2026-08-10). Measured live against `qwen2.5-coder:7b-instruct-q8_0`:
+    the prior version, which showed the SEARCH/REPLACE payload template but
+    never stated that a reply must be `patch <path>` on a line of its own
+    with a fenced payload, scored 0/5 -- every reply was a bare unified
+    diff that `parse` correctly rejected as "no action found", because the
+    codec was never reached. Adding the envelope text (unchanged) scored
+    5/5 on the same daemon and seed. The loop's own prompt already proved
+    this shape works (the same model, same codec, repaired a real bug
+    through it); a stage that omits the shape it is trying to predict was
+    never measuring the model.
+
+    `SYSTEM`, `_CODEC_HELP`, and `_TRAILER` are imported here, inside the
+    function, rather than once at module load -- not for the usual
+    circular-import reason (`render` does not import anything from
+    `profile`), but so this reads `render`'s CURRENT attributes on every
+    call. A module-level `from ... import SYSTEM` would instead bind a
+    private copy of today's string once, at import time, which is exactly
+    the "parallel prompt free to drift" failure mode the amendment names --
+    a copy that starts identical to `render.SYSTEM` and silently stops
+    tracking it the moment the loop's own prompt changes.
+    `test_the_prompt_is_sourced_from_render_not_copied` monkeypatches
+    `render.SYSTEM`/`render._CODEC_HELP` and asserts the substitution shows
+    up here, which only a live, per-call read can pass.
+
+    Describes ONLY the codec under test (pinned by
     `test_the_prompt_describes_only_the_codec_under_test`): a family being
     scored on `whole_file` must never see SEARCH/REPLACE syntax it could
     borrow from, or a landing measured under one codec's prompt would
-    really be measuring a different one."""
+    really be measuring a different one.
+
+    The file is introduced as `File to patch: <path>` on its own line, in
+    plain prose, rather than the `--- <path> ---` decoration `render.
+    _scope_section` uses for real turns (amendment's second finding): on
+    the SAME live run, 2 of 5 `whole_file` replies that did state an action
+    parsed as `patch --- src/clamp.py ---` -- the model had copied the
+    dashes into the argument, a parse success with an unusable path. The
+    loop mostly avoids this because by the time a real run reaches `patch`,
+    the model has usually already typed that exact path itself in an
+    earlier `read` turn; stage 2's first and only turn has no such prior
+    turn to anchor on, so the header text is the sole place the path
+    appears -- and here, unlike `_CODEC_HELP`, fidelity to the loop's exact
+    formatting is not the goal; not inviting a mistyped path is.
+    """
+    from robigo.context.render import SYSTEM, _CODEC_HELP, _TRAILER
+
     body = fixture_body(fixture)
     return (
-        f"--- {fixture.filename} ---\n{body}\n"
+        f"{SYSTEM}\n{_CODEC_HELP[codec]}\n\n"
+        f"File to patch: {fixture.filename}\n\n{body}\n"
         f"Change the line `{fixture.original.strip()}` to "
         f"`{fixture.expect.strip()}` and nothing else.\n\n"
-        f"{_CODEC_HELP[codec]}\n\nYour action:\n"
+        f"{_TRAILER}\n"
     )
 
 
