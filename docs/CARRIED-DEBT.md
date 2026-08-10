@@ -311,3 +311,96 @@ correctness property rather than a preference.
 4. **Run it twice.** The single worst user-facing defect in two plans —
    `window 0` and a refusal on every second consecutive run — was invisible to
    300 passing tests, to five reviews, and to running the tool once.
+
+---
+
+# Carried debt from plan 03 (profiler stages 0-2)
+
+Written at the whole-branch fix wave's close (ruled 2026-08-10). Three
+Criticals (a window reported twice what any probe demonstrated; three dead
+replay fixtures; `training_ctx` assigned `plan.window` instead of the real
+training context) and two Importants (an unverified window reading `LIMITED`
+beside fabricated 100% numbers; two unmeasured fields shipping as `null` with
+no `dropped` entry) were fixed. Everything below was found by the same review,
+consciously not fixed, and ruled on.
+
+## For plan 04 specifically — both sit on its first code path
+
+- **`best_codec()` has no landing floor.** It returns `max(codecs, key=lands)`
+  unconditionally, so a family where every codec lands 0% still names one as
+  "best" — measured live: granite-code:8b returned exactly that, a 0%-landing
+  codec quoted as the family's best. Plan 04 is the first consumer that would
+  read `best_codec()` to make a real decision; wire the floor before that read
+  happens, not after.
+- **`corpus` is a kwarg default (`"fixtures-v1"`), not derived from what was
+  actually run.** Nothing ties the string to `FIXTURES`'s own identity, so
+  when plan 04 swaps in a mutation-generated corpus, every profile it produces
+  will keep saying `fixtures-v1` unless the call site remembers to pass a new
+  string by hand — the exact kind of drift `dropped`/`measured` exist to
+  prevent everywhere else in this schema.
+
+## Deferred with rulings, non-blocking
+
+- **`verdict_for` cannot express "not measured".** It only ever returns
+  READY/LIMITED/UNUSABLE — there is no verdict for "stage 0 never ran" versus
+  "stage 0 ran and found nothing", so a totally unverified window's UNUSABLE
+  (via `envelope_fidelity=0.0`, which this fix wave's I1 gate now forces) reads
+  identically to a family that genuinely cannot drive the envelope. `dropped`
+  is the only place the two are told apart today.
+- **`max_file_tokens=None` carries two facts.** It means both "not tracked for
+  this codec" (`search_replace`, always) and "tracked, but nothing landed"
+  (`whole_file`, when `lands == 0`) — the same collapse `dropped` exists to
+  prevent for `codecs` as a whole, one level down.
+- **Stage 2 re-implements `render._preamble`'s composition** (assembling
+  `SYSTEM` + codec help + trailer by hand in `landing_prompt`) rather than
+  calling `_preamble` itself, even though this fix wave's own amendment
+  established the principle ("stage 2 presents the same envelope the loop
+  presents") that argues for calling the real function, not a parallel
+  assembly of its three pieces.
+- **Stage 1's `ENVELOPE_PROMPT` paraphrases `render.SYSTEM`** rather than
+  building on it — the same drift class the stage-2 amendment fixed for
+  `landing_prompt`, not yet applied to stage 1.
+- **`run_profile` does not check `client.window` against `plan.window`.**
+  Nothing asserts the client it was handed was actually built with
+  `window=plan.window`; a caller wiring a mismatched pair would get a profile
+  whose stage-0 probes target one number while the client enforces another,
+  silently.
+- **The seeds↔mode invariant is only enforced at the CLI.** `run_profile`
+  itself accepts any `(seeds, mode)` pair, including `mode="full"` with
+  `seeds=1` — only `profile_main`'s `--full` flag keeps the two in lockstep.
+  A caller of `run_profile` directly (as this fix wave's own
+  `test_committed_transcripts_replay.py` and the pre-existing
+  `test_profile_report.py` both are) can produce a "full" profile that never
+  ran ten seeds.
+- **The codec tuple `("search_replace", "whole_file")` is hand-written** at
+  `stage2_codecs`'s default and in `_CODEC_HELP`'s keys, rather than derived
+  from `action.codec.CODECS`'s own keys — a third codec added to `CODECS`
+  would silently never get profiled.
+- **`_KNOWN_ERRORS` lookup (`transcript.py`) is unguarded.** `CallReplayer`
+  looks up `row["error_type"]` with `_KNOWN_ERRORS[...]`, a bare `KeyError` if
+  a transcript ever named an exception class outside the three currently
+  recordable — unreachable from `CallRecorder` today, but a hand-edited or
+  future-format transcript would raise a `KeyError` rather than a message
+  naming what happened.
+
+## Found during the fix wave, not part of the original review
+
+- **`OllamaClient.generate` trusts `prompt_eval_count` without checking
+  `done`.** Measured live, reproducibly, while re-recording this fix wave's
+  transcripts: against `qwen2.5-coder:7b-instruct-q8_0` and
+  `granite-code:8b-instruct-q8_0` specifically (not `codegemma:7b-instruct-
+  q8_0`, tried repeatedly, always clean) — stage 0's own filler probe
+  (`"token "` repeated to fill the window) at `num_predict=1024` deterministically
+  gets back a 200 response with `"done": false` and no `prompt_eval_count`,
+  `eval_count`, or `done_reason` key at all, for the exact same `(model,
+  prompt, seed=0)` every time, including after a full model unload/reload.
+  `body.get("prompt_eval_count", 0)` (client.py) treats the absent key as "0
+  tokens", not as "this response is incomplete" — so this fix wave's own C1
+  fix, which reports exactly that number as `usable_window`, faithfully
+  reports a real daemon defect as `usable_window: 0` for two of the three
+  roster models profiled while re-recording. This is why `tests/transcripts/
+  qwen7b.jsonl` and `granite8b.jsonl` verify a 0-token window at HEAD despite
+  both models genuinely supporting a large one — see the fix-wave report.
+  Not fixed here: out of this wave's scope, and the fix belongs in
+  `client.py` (validate `done` before trusting the stats fields), not in the
+  profiler.
