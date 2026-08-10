@@ -34,6 +34,32 @@ def test_best_codec_is_the_highest_landing_rate():
     assert _profile().best_codec() == "search_replace"
 
 
+def test_best_codec_returns_none_when_every_codec_landed_zero_percent():
+    # THE measured case, pinned directly (CARRIED-DEBT.md, plan 03):
+    # granite-code:8b landed 0% on every codec it was profiled against, and
+    # the pre-fix `max()` still named one of them "best". A floor tested
+    # only against a PASSING codec (the test above, 0.62/0.55) proves
+    # nothing about this one -- both codecs here are genuinely 0.0, not
+    # merely low.
+    profile = _profile(codecs={
+        "search_replace": CodecResult(0.0, 10, None),
+        "whole_file": CodecResult(0.0, 10, None),
+    })
+    assert profile.best_codec() is None
+
+
+def test_best_codec_still_names_a_codec_that_lands_below_the_ready_floor():
+    # The floor is "landed at all" (> 0.0), not `_LANDING_MIN` (0.5) --
+    # fails for an implementation that reuses verdict_for's READY threshold
+    # here instead of its own, narrower one. A codec landing 20% of the
+    # time is real signal plan 05 can still configure the loop around.
+    profile = _profile(codecs={
+        "search_replace": CodecResult(0.0, 10, None),
+        "whole_file": CodecResult(0.2, 10, 1000),
+    })
+    assert profile.best_codec() == "whole_file"
+
+
 def test_seeds_and_mode_are_always_present_in_the_json():
     # A quick 3-seed profile must never be quotable as a result, so the
     # provenance travels with the numbers (spec 5.5).

@@ -24,13 +24,23 @@ def run_profile(
     family: str,
     seeds: int,
     mode: str,
+    corpus: str,
     kv_bits: int = 16,
-    corpus: str = "fixtures-v1",
 ) -> Profile:
     """Stages run cheapest-first and gate each other, and each is able to
     STOP the run, not merely skip its own measurement (spec 5's
     architecture: "Three staged probes, cheapest first, each able to stop
     the run").
+
+    `corpus` has no default (task 4, fixing carried debt from plan 03):
+    the previous `corpus: str = "fixtures-v1"` kwarg default meant nothing
+    tied that string to what was actually run, so the day a real corpus
+    replaced the bundled fixtures, every profile produced here would have
+    kept saying `fixtures-v1` unless every call site remembered to override
+    it by hand. Every caller must now name the corpus explicitly --
+    `cli.profile_main` passes `robigo.profile.fixtures.CORPUS_NAME`, the
+    identity defined once, beside `FIXTURES` itself, not a second literal
+    typed here.
 
     **Stage 0 gates stages 1 and 2.** A family with no verified window has
     nothing for the envelope or codec probes to run against -- both would
