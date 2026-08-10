@@ -179,6 +179,21 @@ def test_a_stage_two_run_that_lands_nothing_differs_from_one_that_never_ran():
     assert any("stage 2" in d for d in never_ran.dropped)
 
 
+def test_identity_and_provenance_arguments_pass_through_unchanged():
+    # Fails if run_profile hardcodes, drops, or swaps any of these instead
+    # of threading the caller's own values through -- a bug a round-trip
+    # comparison against a SECOND run_profile call cannot catch, because a
+    # deterministic hardcoding affects both sides of that comparison
+    # identically (confirmed by hand: mutating `family=family` to a fixed
+    # string left every other test in this file green).
+    profile = _run(_Good(), model="real-model", quant="q4_K_M",
+                   family="real-family", corpus="fixtures-v2")
+    assert profile.model == "real-model"
+    assert profile.quant == "q4_K_M"
+    assert profile.family == "real-family"
+    assert profile.corpus == "fixtures-v2"
+
+
 def test_stage_one_fidelity_exactly_at_the_gate_still_opens_it():
     # Fails if the gate uses `>` instead of `>=` -- a family measured at
     # exactly the documented cutoff must still reach stage 2, the same
