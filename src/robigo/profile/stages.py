@@ -1,12 +1,17 @@
 # src/robigo/profile/stages.py
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 from typing import Callable
 
+from robigo.action.codec import CODECS, PatchError
 from robigo.action.verbs import ActionParseError, parse
+from robigo.context.budget import estimate_tokens
 from robigo.model.client import ContextOverflowError, ModelClient
 from robigo.model.geometry import WindowPlan
+from robigo.profile.fixtures import FIXTURES, Fixture
+from robigo.profile.schema import CodecResult
 
 _PROBE_SEED = 0
 """Fixed, never derived from time, randomness, or call count. Replay
@@ -270,3 +275,203 @@ def stage1_envelope(client: ModelClient, seeds: int) -> Stage1:
         level=0 if fidelity >= _LEVEL1_MIN else 1,
         failures=tuple(failures),
     )
+
+
+_CODEC_HELP = {
+    "search_replace": (
+        "Reply with a patch action whose payload is:\n"
+        "<<<<<<< SEARCH\n<the exact existing lines>\n=======\n"
+        "<the replacement lines>\n>>>>>>> REPLACE"
+    ),
+    "whole_file": (
+        "Reply with a patch action whose payload is the complete new file."
+    ),
+}
+
+_FUNCTION_HEADER = (
+    "def f(items, value=0, factor=1, low=0, high=1, ready=True):\n"
+)
+_FILLER_BODY = "        pass\n"
+
+
+@dataclass(frozen=True)
+class Stage2:
+    """The result of asking the family to land a real edit through a real
+    codec (spec 5, stage 2): does the reply parse as a `patch` action, does
+    the codec it names apply without raising, and does the result still
+    parse as Python? All three, per attempt -- semantic correctness (did
+    the edit actually fix anything) is stage 4's question, not this one.
+
+    `results` is keyed by codec name and NEVER pooled across codecs or
+    across fixtures into one number -- a family that lands cleanly on
+    `search_replace` and never on `whole_file` is two different findings,
+    and averaging them together would hide the one the loop actually needs
+    to pick a codec with. `failures` keeps one line per non-landing attempt
+    (`codec/fixture/seed: reason`), naming which of the three ways it
+    failed -- the diagnostic material, same role as `Stage1.failures`.
+    """
+
+    results: dict[str, CodecResult]
+    failures: tuple[str, ...]
+
+
+def fixture_body(fixture: Fixture) -> str:
+    """The file the model is shown. One definition, used by both the
+    prompt and the applier -- two copies would drift and the codec would
+    be applied to text the model never saw.
+
+    A fixture whose `original` is a bare compound-statement header (the
+    shape `inverted_test` takes: a line ending in `:`, with no suite of
+    its own) is not a valid function body by itself -- `ast.parse` demands
+    an indented block under it, and the brief's own sample wraps every
+    fixture the same way regardless of shape, which made `inverted_test`
+    fail `ast.parse` both before AND after its own patch (confirmed by
+    hand: `def f(...):\\n    if not ready:\\n` raises "expected an indented
+    block after 'if' statement"). A nested `pass` is appended only when the
+    line needs one, so the wrapper stays generic across whatever shape a
+    fixture's single line takes, rather than special-casing one fixture's
+    name. It sits after `fixture.original` and is never inside a matched
+    SEARCH span, so a codec's replacement of the header line leaves it in
+    place and the result stays syntactically complete either way.
+    """
+    body = _FUNCTION_HEADER + fixture.original
+    if fixture.original.rstrip("\n").endswith(":"):
+        body += _FILLER_BODY
+    return body
+
+
+def landing_prompt(fixture: Fixture, codec: str) -> str:
+    """Describes ONLY the codec under test (pinned by
+    `test_the_prompt_describes_only_the_codec_under_test`): a family being
+    scored on `whole_file` must never see SEARCH/REPLACE syntax it could
+    borrow from, or a landing measured under one codec's prompt would
+    really be measuring a different one."""
+    body = fixture_body(fixture)
+    return (
+        f"--- {fixture.filename} ---\n{body}\n"
+        f"Change the line `{fixture.original.strip()}` to "
+        f"`{fixture.expect.strip()}` and nothing else.\n\n"
+        f"{_CODEC_HELP[codec]}\n\nYour action:\n"
+    )
+
+
+def _parses_as_python(text: str) -> bool:
+    """"Lands" (spec 5, stage 2) requires the patched result to still be
+    valid Python -- exactly what `ast.parse` decides, and nothing more.
+
+    `robigo.adapters.python_.PythonAdapter.syntax_ok` performs this
+    identical one-line check, but it lives on a class whose OTHER method
+    (`.run`) shells out to pytest and runs the fixture's real test suite --
+    exactly what this stage must never do (see `stage2_codecs`'s
+    docstring). Importing that class here to reach one pure method would
+    sit a test-runner one attribute access away from a landing-rate loop
+    that iterates `seeds * fixtures * codecs` times; a bare `ast.parse`
+    call gets the identical answer with no such neighbour for a future
+    edit to reach for by reflex. Not used: dropped deliberately, not by
+    oversight."""
+    try:
+        ast.parse(text)
+    except SyntaxError:
+        return False
+    return True
+
+
+def stage2_codecs(
+    client: ModelClient,
+    seeds: int,
+    codecs: tuple[str, ...] = ("search_replace", "whole_file"),
+) -> Stage2:
+    """Does a patch reply PARSE as a patch action, does the named codec
+    APPLY it, and does the result still PARSE AS PYTHON? Whether the edit
+    is semantically right is stage 4's question, not this one -- so this
+    function never runs the fixture's tests, only `ast.parse` on the
+    result (spec 5, stage 2).
+
+    Every fixture is synthesized in memory by `fixture_body` and every
+    codec (`robigo.action.codec.CODECS`, the same table the loop uses) is
+    applied to that in-memory string, never to a file on disk -- there is
+    no working tree here for a patch to land in or corrupt, real or
+    temporary, because nothing this stage measures is ever written
+    anywhere.
+
+    Scored per (fixture, seed) for each codec in `codecs`, `attempts`
+    always equals `len(FIXTURES) * seeds` for that codec (five fixtures by
+    design -- see `FIXTURES`). `results` is never pooled across codecs:
+    each codec gets its own `CodecResult`, because a family's
+    `search_replace` landing rate and its `whole_file` landing rate are
+    the two different numbers the loop needs to pick between.
+
+    `max_file_tokens` is tracked only for `whole_file`, and only from
+    attempts that actually landed -- a size that was ATTEMPTED but did not
+    land is not evidence the codec "manages" that size, and reporting it
+    would be exactly the ceiling-that-isn't-one Stage 0's `verified=True`
+    off-by-one already cost this project once (spec 3.3: at a small
+    window, whole_file's inability to re-emit a large file is the binding
+    constraint, so this ceiling is the number that constraint is measured
+    by). `search_replace`'s payload size does not scale with the file's
+    size the way `whole_file`'s does, so its `max_file_tokens` is always
+    `None` -- reporting a number there would imply a capability this
+    stage never measured.
+    """
+    results: dict[str, CodecResult] = {}
+    failures: list[str] = []
+    for codec in codecs:
+        landed = 0
+        attempts = 0
+        ceiling: int | None = None
+        for fixture in FIXTURES:
+            body = fixture_body(fixture)
+            for seed in range(1, seeds + 1):
+                attempts += 1
+                ok, note = _try_one(client, fixture, codec, body, seed)
+                if ok:
+                    landed += 1
+                    if codec == "whole_file":
+                        size = estimate_tokens(body)
+                        ceiling = size if ceiling is None else max(ceiling, size)
+                else:
+                    failures.append(f"{codec}/{fixture.name}/s{seed}: {note}")
+        results[codec] = CodecResult(
+            lands=landed / attempts if attempts else 0.0,
+            attempts=attempts,
+            max_file_tokens=ceiling,
+        )
+    return Stage2(results=results, failures=tuple(failures))
+
+
+def _try_one(
+    client: ModelClient, fixture: Fixture, codec: str, body: str, seed: int
+) -> tuple[bool, str]:
+    """One (fixture, seed) attempt under one codec. Returns (landed, note)
+    rather than raising: a non-landing attempt is a normal, expected
+    outcome for this stage (unlike a `ModelError`, which is infrastructure
+    failure and does propagate, same as every other stage in this module),
+    and the note is kept verbatim in `Stage2.failures` as diagnostic
+    material.
+
+    Checks the three ways a patch can fail to land, each with a note that
+    names which one happened:
+      1. the reply does not parse as a `patch` action at all -- either it
+         does not parse as any action (`ActionParseError`), or it parses
+         cleanly but names a different verb;
+      2. it parses as `patch` but the named codec raises `PatchError`
+         applying it (e.g. the SEARCH block does not match);
+      3. it applies without raising but the result does not parse as
+         Python.
+    Any one of the three scores this attempt as not landed; only clearing
+    all three counts as landed.
+    """
+    gen = client.generate(landing_prompt(fixture, codec), seed=seed)
+    try:
+        action = parse(gen.text)
+    except ActionParseError as exc:
+        return False, str(exc)
+    if action.verb != "patch":
+        return False, f"emitted '{action.verb}', not a patch"
+    try:
+        new_text = CODECS[codec](body, action.payload or "")
+    except PatchError as exc:
+        return False, str(exc).split("\n")[0]
+    if not _parses_as_python(new_text):
+        return False, "result does not parse as Python"
+    return True, ""
