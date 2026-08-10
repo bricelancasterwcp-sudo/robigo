@@ -20,8 +20,15 @@ from robigo.profile.transcript import CallRecorder, CallReplayer
 # dataclass (the same stale-sample defect test_stage0.py and test_stage1.py
 # already found in earlier tasks; see the task-6 report). Set to 0 here for
 # the same reason those files did.
+#
+# training_ctx=32768 is deliberately far from window=8192 (whole-branch
+# review C3, ruled 2026-08-10): Profile.training_ctx used to be assigned
+# plan.window, so a PLAN whose training_ctx equalled its window could not
+# tell a correct implementation apart from the bug. See
+# test_training_ctx_is_the_models_real_training_context_not_the_planned_window.
 PLAN = WindowPlan(window=8192, limited_by="vram", free_vram=None,
-                  kv_per_token=56 * 1024, weights_bytes=0, overhead_bytes=0)
+                  kv_per_token=56 * 1024, weights_bytes=0, overhead_bytes=0,
+                  training_ctx=32768)
 
 
 class _Good:
@@ -45,7 +52,17 @@ class _Good:
                 f"{fixture.original}=======\n{fixture.expect}>>>>>>> REPLACE\n```\n",
                 20, 10, False,
             )
-        return Generation("ok", 1, 1, False)
+        # The catch-all: stage 0's filler probe, and nothing else (the two
+        # branches above account for stage 1's envelope prompt and stage
+        # 2's fixture prompts). Reports tokens_in=self.window (8192)
+        # rather than a fixed placeholder -- since whole-branch review C1
+        # (ruled 2026-08-10) made stage0_window report Generation.tokens_in
+        # instead of plan.window, a hardcoded small tokens_in here would
+        # make PLAN.window (8192) diverge from the verified usable_window
+        # this file's tests assert (e.g. test_a_good_model_profiles_ready_
+        # and_records_provenance's usable_window == 8192) for a reason
+        # unrelated to what any of those tests actually exercise.
+        return Generation("ok", self.window, 1, False)
 
 
 class _CannotEnvelope(_Good):
@@ -99,30 +116,53 @@ class _HalfEnvelope(_Good):
         return super().generate(prompt, seed=seed)
 
 
-class _WindowNeverVerifies(_Good):
+class _WindowNeverVerifies:
     """Every stage-0 probe is rejected, at every size the bisection tries
     -- including the smallest one -- so `stage0.window` stays 0 and
-    `verified` stays False. Stage 1 and stage 2 behave exactly like
-    `_Good`, isolating run_profile's `usable_window` field from
-    everything else this fake could otherwise affect."""
+    `verified` stays False.
+
+    The assertion that stage 1 and stage 2 never run lives IN the fake
+    (same trick as `_CannotEnvelope`): any prompt that is not stage 0's
+    plain filler probe raises AssertionError, so if `run_profile` ever
+    reached stage 1 or stage 2 after stage 0 found no usable window, the
+    call itself -- not just an absence downstream -- blows up the test.
+    Before the I1 gate existed (whole-branch review, ruled 2026-08-10),
+    this exact scenario's envelope and codec prompts were answered
+    exactly like `_Good`'s, landing `envelope 100%` and `lands 100%`
+    beside a headline `usable_window: 0`, and the verdict read LIMITED --
+    the same verdict a working 4096-token model gets."""
+
+    model = "m"
+    window = 8192
+    num_predict = 512
 
     def generate(self, prompt: str, *, seed: int) -> Generation:
         if "read src/target.py" in prompt or any(
             fixture.filename in prompt for fixture in FIXTURES
         ):
-            return super().generate(prompt, seed=seed)
+            raise AssertionError(
+                "stage 1/2 must not run after stage 0 found no usable window"
+            )
         raise ContextOverflowError("rejected")
 
 
 class _ShrinksWindowBelowTheFloor(_Good):
-    """Accepts stage-0 probes only up to 4096 tokens' worth of characters
-    -- below SUPPORTED_FLOOR, and below PLAN.window(8192) -- so
-    stage0_window's bisection VERIFIES a real window smaller than the
+    """Accepts stage-0 probes only up to `_ACCEPTED_CHARS` characters --
+    comfortably below both SUPPORTED_FLOOR(8192) and PLAN.window(8192) --
+    so stage0_window's bisection VERIFIES a real window smaller than the
     plan, rather than either fully accepting or fully rejecting it. Stage
     1 and stage 2 behave exactly like `_Good`, isolating verdict/window
-    interaction from everything else."""
+    interaction from everything else.
 
-    _ACCEPTED_CHARS = 4096 * 3  # mirrors stages._CHARS_PER_TOKEN
+    Reports `tokens_in=len(prompt)` on acceptance, the same "play the
+    server honestly" convention test_stage0.py's fakes use (C1, ruled
+    2026-08-10): stage0_window now reports `Generation.tokens_in`, not a
+    char-derived target, so a fake hardcoding some other tokens_in would
+    make the verified window it produces arbitrary rather than tied to
+    what this fake actually accepted."""
+
+    _ACCEPTED_CHARS = 5000  # comfortably under SUPPORTED_FLOOR once
+    # reported back 1:1 as this fake's token count.
 
     def generate(self, prompt: str, *, seed: int) -> Generation:
         if "read src/target.py" in prompt or any(
@@ -131,7 +171,7 @@ class _ShrinksWindowBelowTheFloor(_Good):
             return super().generate(prompt, seed=seed)
         if len(prompt) > self._ACCEPTED_CHARS:
             raise ContextOverflowError("too big")
-        return Generation("ok", 1, 1, False)
+        return Generation("ok", len(prompt), 1, False)
 
 
 def _run(client, **kw):
@@ -207,16 +247,60 @@ def test_stage_one_fidelity_exactly_at_the_gate_still_opens_it():
     assert not any("stage 2" in d for d in profile.dropped)
 
 
-def test_a_totally_unverified_window_is_reported_as_the_unverified_zero():
-    # Fails if run_profile falls back to the unverified plan.window when
-    # stage 0 could not confirm ANY window at all -- that fallback would
-    # report a hypothesis nothing ever tested as though it were measured,
-    # exactly the defect class this task exists to prevent. (The brief's
-    # own sample line, `stage0.window or plan.window`, does this; not
-    # used here -- see the report for detail.)
+def test_a_totally_unverified_window_stops_the_run_before_stage_one():
+    # I1 (whole-branch review, ruled 2026-08-10): a totally unverified
+    # window must STOP the run, not merely report usable_window=0 while
+    # stage 1 and stage 2 still execute at num_ctx: 0 (where the daemon
+    # substitutes its own default) -- the pre-fix behaviour landed
+    # `envelope 100%` and `lands 100%` beside `usable_window: 0`, and the
+    # verdict read LIMITED, the same verdict a working 4096-token model
+    # gets. Fails (via the fake's own AssertionError) if run_profile ever
+    # calls stage1_envelope or stage2_codecs after stage 0 found nothing
+    # usable -- not merely if the resulting fields happen to end up empty,
+    # which a coincidentally-matching fake could satisfy without any gate
+    # existing at all. Also fails if run_profile still falls back to the
+    # unverified plan.window (the brief's own sample line, `stage0.window
+    # or plan.window`, does this; not used here).
     profile = _run(_WindowNeverVerifies())
     assert profile.usable_window == 0
     assert any("stage 0" in d for d in profile.dropped)
+    assert any("stage 1" in d for d in profile.dropped)
+    assert any("stage 2" in d for d in profile.dropped)
+    assert profile.envelope_fidelity == 0.0
+    assert profile.codecs == {}
+    assert profile.verdict == "UNUSABLE"
+
+
+def test_training_ctx_is_the_models_real_training_context_not_the_planned_window():
+    # C3 (whole-branch review, ruled 2026-08-10): Profile.training_ctx
+    # used to be assigned plan.window -- min(training_ctx, vram,
+    # user_cap) -- so whenever vram or a user cap bound, the profile
+    # reported THAT limit's number as though it were the model's training
+    # context, and training_ctx == usable_window, a state no real model
+    # can be in (the live granite run this review measured against wrote
+    # training_ctx: 0). PLAN.training_ctx (32768) is deliberately far from
+    # PLAN.window (8192) so a regression back to `training_ctx=plan.window`
+    # is caught by an exact-value assertion, not just an inequality.
+    profile = _run(_Good())
+    assert profile.training_ctx == 32768
+    assert profile.training_ctx != profile.usable_window
+
+
+def test_unmeasured_fields_are_none_and_named_in_dropped():
+    # I4 (whole-branch review, ruled 2026-08-10): payload_corruption and
+    # repeat_rate are hardcoded None -- no stage in this plan measures
+    # either -- and mutating both to 0.0 (which reads as "measured, no
+    # corruption") left every profile test green, because nothing checked
+    # the value OR that "not measured" was ever stated anywhere a reader
+    # could see it. Both properties are pinned here: the value assertions
+    # catch a 0.0 mutation directly; the dropped assertions catch a fix
+    # that nulls the value but never says so, which would still violate
+    # "anything not measured is stated as dropped".
+    profile = _run(_Good())
+    assert profile.payload_corruption is None
+    assert profile.repeat_rate is None
+    assert any("payload_corruption" in d for d in profile.dropped)
+    assert any("repeat_rate" in d for d in profile.dropped)
 
 
 def test_verdict_uses_the_verified_window_not_the_unverified_plan():
