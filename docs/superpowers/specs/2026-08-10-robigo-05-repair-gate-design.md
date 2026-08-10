@@ -59,8 +59,14 @@ a **pass** if and only if all four hold:
 pass  ⇔  the recorded failing test (record.test_id) goes green
       ∧  the whole target suite is green      (broken == 0; baseline.broken is 0)
       ∧  the anchor test file is byte-unchanged
-      ∧  RunResult.outcome == "repaired"      within the turn cap
+      ∧  RunResult.outcome == "pass"          within the turn cap
 ```
+
+`"pass"` is the literal string `loop.OUTCOMES` uses (`loop.py:257`). An earlier
+draft of this document said `"repaired"`, which exists nowhere in the codebase
+— caught while verifying externals for the plan. Recorded rather than silently
+fixed, because plan 01's first process lesson is that plan text naming things
+that do not exist is this project's dominant defect source.
 
 Anything else is a fail, including a run that greens `test_id` while breaking a
 neighbour. The corpus already carries the ground truth each clause needs:
@@ -210,7 +216,7 @@ checked out at its recorded `source_sha`:
                      allow_test_edits=False, use_git=True)
 4. judge    pytest_runner + compare against Baseline
 5. anchor   sha256 of the test file, before vs after
-6. pass  ⇔  outcome == "repaired" ∧ step 4 clean ∧ step 5 unchanged
+6. pass  ⇔  outcome == "pass" ∧ step 4 clean ∧ step 5 unchanged
 ```
 
 Steps 1, 2, 4 and 5 are plan 04's already-mutation-tested harness —
