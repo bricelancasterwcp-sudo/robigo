@@ -34,6 +34,38 @@
 
 The five bundled fixtures are a stopgap so stage 2 can be built and tested now. Plan 04 replaces them with mutation-generated corpora and this module's interface does not change when it does.
 
+## Verified before execution (2026-08-10)
+
+This plan was written before plans 02 and 02b executed, so every interface it
+consumes was checked against the shipped code first. All present and compatible:
+`ServerContextOverflowError` and `ContextOverflowError` (`model/client.py`),
+`CODECS` and `PatchError` (`action/codec.py`), `parse` (`action/verbs.py`),
+`PythonAdapter`, `estimate_tokens` (`context/budget.py`), `WindowPlan` with
+exactly the four fields this plan constructs, and `plan_window` with the
+signature this plan calls. `build_client(args)` reads exactly
+`backend, model, window, num_predict, host` — the five the plan's `Namespace`
+supplies. Nothing in this plan reads run records, so 02b's `rung` → `rungs`
+schema change does not touch it.
+
+**The CLI dispatch is sound and non-breaking.** Routing on a leading `profile`
+argument leaves the existing flat parser intact, so `robigo "<task>"` keeps
+working and no existing CLI test changes. Note the one collision it creates: a
+task that is *exactly* the single word `profile` would be routed to the
+profiler. `robigo "profile the parser"` is unaffected because the whole task is
+one argv element. Acceptable; mention it in the dispatch's comment so the next
+reader does not think it was missed.
+
+**Naming ruling: the transcript classes are `CallRecorder` and `CallReplayer`,
+not `Recorder`/`Replayer`.** `record.py` already ships `RunRecorder` and
+`new_recorder`, which record a *run's* per-turn prompts, replies and test output
+to `.robigo/runs/<id>/` for a human to read. This plan's classes wrap a client to
+record and replay *model calls* for deterministic re-runs. Two different things
+both called "recorder" in one codebase is how this project has repeatedly ended
+up with two answers to one question — see `docs/CARRIED-DEBT.md`, where a
+five-way disagreement about unreadable files and three names for one output
+reservation are both recorded. Name them apart now, while it costs nothing.
+Everywhere this plan writes `Recorder`/`Replayer`, read `CallRecorder`/
+`CallReplayer`.
 ---
 
 ### Task 1: Profile schema and verdict rules
