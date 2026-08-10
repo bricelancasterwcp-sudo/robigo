@@ -64,6 +64,61 @@ class _Rejects(_Accepts):
         return Generation("ok", len(prompt), 1, False)
 
 
+class _AcceptsButNeverMeasures(_Accepts):
+    """Never raises (every call is "accepted" by the server's own
+    accept/reject signal), but every `Generation` it returns reports
+    `tokens_in=0` -- the shape a response with a real `content` string
+    but no `prompt_eval_count` at all takes once `OllamaClient.generate`
+    is fixed to raise for that (client.py); this fake represents any
+    OTHER client that doesn't, so this file keeps covering the case
+    defensively at this layer too (whole-branch review, ruled 2026-08-10,
+    second round)."""
+
+    def generate(self, prompt: str, *, seed: int) -> Generation:
+        self.sizes.append(len(prompt))
+        return Generation("ok", 0, 1, False)
+
+
+def test_a_call_the_server_accepted_but_never_measured_is_not_verified():
+    # Fails if stage0_window ever reports verified=True at window=0 -- that
+    # combination is incoherent on its face ("a probe of size 0 was
+    # accepted" verifies nothing) and was exactly the shape measured live
+    # in the committed transcripts this round of the review reopened:
+    # `Stage0(window=0, verified=True, note='probe accepted')`. A client
+    # that accepts every call but never reports a usable token count must
+    # read the same as one that rejects every call.
+    result = stage0_window(_AcceptsButNeverMeasures(), PLAN)
+    assert result.verified is False
+    assert result.window == 0
+
+
+def test_bisection_still_finds_a_genuinely_measured_smaller_window():
+    # The full-window probe is accepted but unmeasured (tokens_in=0);
+    # anything at or below `boundary` is accepted AND genuinely measured.
+    # Fails if try_probe's tokens_in<=0 guard causes the search to give up
+    # entirely (verified=False) instead of continuing to bisect for a
+    # smaller probe that IS a real measurement -- an unmeasured call at
+    # one size should not discard a genuine measurement available at
+    # another.
+    class _UnmeasuredAboveBoundary(_Accepts):
+        def __init__(self, boundary: int) -> None:
+            super().__init__()
+            self.boundary = boundary
+
+        def generate(self, prompt: str, *, seed: int) -> Generation:
+            self.sizes.append(len(prompt))
+            tokens = len(prompt) if len(prompt) <= self.boundary else 0
+            return Generation("ok", tokens, 1, False)
+
+    def probe(target: int) -> str:
+        return "x" * target
+
+    result = stage0_window(_UnmeasuredAboveBoundary(boundary=5000), PLAN, probe=probe)
+    assert result.verified is True
+    assert result.window == 5000
+    assert result.window > 0
+
+
 def test_a_verified_window_is_returned_unchanged():
     # Fails if stage0_window ever shrinks or re-notes a window the server
     # actually accepted (e.g. always applying a "safety" fraction even on

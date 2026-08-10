@@ -36,8 +36,13 @@ class Stage0:
     server's OWN tokenizer's count for the exact prompt it accepted --
     never computed from the char-estimated target that prompt was built
     for (whole-branch review C1, ruled 2026-08-10; see `stage0_window`'s
-    docstring). `verified` is True exactly when some probe was accepted;
-    `note` explains what happened in either case.
+    docstring). `verified` is True exactly when some probe was BOTH
+    accepted AND reported a positive `tokens_in` -- a call the server did
+    not reject but that came back with no usable count (`tokens_in <= 0`)
+    is not a verified measurement, so it can never produce `verified=True`
+    at `window=0`, which would read as "a probe of size 0 was accepted"
+    and verify nothing (whole-branch review, ruled 2026-08-10, second
+    round). `note` explains what happened in either case.
     """
 
     window: int
@@ -158,9 +163,24 @@ def stage0_window(
 
     def try_probe(target: int) -> Generation | None:
         try:
-            return client.generate(build(target), seed=_PROBE_SEED)
+            gen = client.generate(build(target), seed=_PROBE_SEED)
         except ContextOverflowError:
             return None
+        if gen.tokens_in <= 0:
+            # A call the client accepted (it did not raise) but that
+            # reports zero or fewer tokens is not a measurement this
+            # function can call "verified" -- treated the same as a
+            # rejection for this search (whole-branch review, ruled
+            # 2026-08-10, extending the I1 rule -- "stage 0 must be able
+            # to stop the run" -- to a call that produced no usable
+            # count, not only one the server explicitly rejected).
+            # `verified=True` at `window=0` is incoherent on its face: it
+            # would read as "a probe of size 0 was accepted", which
+            # verifies nothing. `OllamaClient.generate` now raises rather
+            # than returning this (see client.py's matching fix); this
+            # guard is defence in depth against any client that doesn't.
+            return None
+        return gen
 
     gen = try_probe(plan.window)
     if gen is not None:
