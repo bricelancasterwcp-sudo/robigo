@@ -5,12 +5,16 @@ kill criterion -- inherits its trustworthiness from this module, so every
 function here is built to REFUSE to certify a result it cannot back up,
 rather than to report the friendliest-looking answer.
 
-`runner: Callable[[Path], str]` is injected everywhere real work happens
-(`sentinel_ok`, `baseline`, `verify`), so this module's own tests are
-offline and instant -- no daemon, no GPU, no network, no real pytest
+`runner: Callable[[Path, str], str]` is injected everywhere real work
+happens (`sentinel_ok`, `baseline`, `verify`), so this module's own tests
+are offline and instant -- no daemon, no GPU, no network, no real pytest
 subprocess. `pytest_runner`, below, is the one real implementation: it
 shells out to pytest inside `repo` and is what a production caller (task
-4's CLI) passes in place of a test's canned callable.
+4's CLI) passes in place of a test's canned callable. The second
+argument is the top-level package the caller wants invariant 7 checked
+against -- `_apply_and_run`/`baseline` derive it (from a mutant's path,
+or from the clone's own source when no specific mutant is in scope) and
+pass it down; a runner never has to guess.
 
 Four invariants, each one closing a false result this project actually
 produced while measuring plan 04 (2026-08-10):
@@ -35,7 +39,12 @@ produced while measuring plan 04 (2026-08-10):
   7. The code under test must be the mutated clone, not the editable
      install's real source. Without `PYTHONPATH` forced, a subprocess
      started inside a copied tree still imports the real repo, and every
-     mutant appears to survive.
+     mutant appears to survive. This check must ask about the PACKAGE
+     BEING MUTATED, not a fixed name -- a marker that always asks "where
+     does robigo resolve from" answers a question that has nothing to do
+     with a foreign repo's own code, and rejects every foreign repo for
+     the wrong reason (robigo resolving to the real install, not the
+     clone, because robigo was never the code under test there).
 
 Every one of the four is checked BEFORE a caller is allowed to trust the
 number it protects: `sentinel_ok`/`baseline`/`verify` never assume, always
@@ -56,15 +65,22 @@ from typing import Callable
 
 from robigo.profile.corpus import Mutant, _apply, candidates
 
-Runner = Callable[[Path], str]
-"""A runner takes the repo root it should test and returns the raw text of
+Runner = Callable[[Path, str], str]
+"""A runner takes the repo root it should test and the top-level package
+name invariant 7 should be checked against, and returns the raw text of
 what it did there. The real runner (`pytest_runner`) returns the pytest
-short-test-summary output, prefixed with a `ROBIGO_MODULE=<path>` marker
-line naming what `import robigo` resolved to in that same subprocess
-environment -- the fact invariant 7 checks before anything else is
-believed. A test's canned runner constructs that same text by hand, which
-is what makes every test in this module able to run with no daemon, no
-GPU, no network, and no real pytest subprocess."""
+short-test-summary output, prefixed with a `MODULE_UNDER_TEST=<path>`
+marker line naming what `import <package>` resolved to in that same
+subprocess environment -- the fact invariant 7 checks before anything
+else is believed. `<package>` is never hardcoded: `_apply_and_run` derives
+it from whichever `Mutant.path` is in scope, and `baseline` derives it
+from the clone's own source when no specific mutant is in scope, so the
+same runner works identically against robigo's own repo (package
+`robigo`) or any foreign repo `--repo` points at (package `mylib`, or
+whatever its own top-level package is named). A test's canned runner
+constructs that same text by hand, which is what makes every test in this
+module able to run with no daemon, no GPU, no network, and no real pytest
+subprocess."""
 
 
 class WrongTreeError(RuntimeError):
@@ -151,13 +167,14 @@ collection errors often carry no ` - reason` suffix), each anchored at the
 start of its own line. `\\S+` stops at the first whitespace, which is the
 node id's own boundary for every id this project's suite produces."""
 
-_MODULE_MARKER = re.compile(r"^ROBIGO_MODULE=(.+)$", re.MULTILINE)
-"""The marker `pytest_runner` prepends, naming what `import robigo`
-resolved to in the SAME subprocess environment pytest itself ran in. A
-canned test runner that doesn't care about invariant 7 still includes a
-well-formed marker (via this test file's `_output` helper) pointing inside
-the fixture repo -- only the tests that specifically exercise invariant 7
-give it something else."""
+_MODULE_MARKER = re.compile(r"^MODULE_UNDER_TEST=(.+)$", re.MULTILINE)
+"""The marker `pytest_runner` prepends, naming what `import <package>`
+resolved to in the SAME subprocess environment pytest itself ran in --
+`<package>` is whatever `pytest_runner` was asked to check, never a fixed
+name. A canned test runner that doesn't care about invariant 7 still
+includes a well-formed marker (via this test file's `_output` helper)
+pointing inside the fixture repo -- only the tests that specifically
+exercise invariant 7 give it something else."""
 
 
 def _broken_count(text: str) -> int:
@@ -177,8 +194,8 @@ def _broken_ids(text: str) -> tuple[str, ...]:
 
 
 def _module_path(text: str) -> Path | None:
-    """The resolved path the `ROBIGO_MODULE=` marker names, or `None` if
-    the runner's report carries no such marker at all -- treated
+    """The resolved path the `MODULE_UNDER_TEST=` marker names, or `None`
+    if the runner's report carries no such marker at all -- treated
     identically to an out-of-tree path by `_assert_in_clone`: a runner
     that never says where it ran has proven nothing about invariant 7,
     the same as one that says the wrong place."""
@@ -192,10 +209,13 @@ def _assert_in_clone(text: str, repo: Path) -> None:
     """Invariant 7's check: raises `WrongTreeError` unless the runner's
     own report names a module path resolving inside `repo`. Every caller
     of `runner` in this module runs its result through this before
-    trusting any broken-test count -- robigo's editable install means a
-    subprocess started in a copied tree still imports the real repo's
-    source unless `PYTHONPATH` was forced, and when that happens every
-    mutant appears to survive (measured 2026-08-10: 8 of 8)."""
+    trusting any broken-test count -- an editable install (robigo's own,
+    measured 2026-08-10: 8 of 8 mutants appeared to survive without
+    `PYTHONPATH` forced) means a subprocess started in a copied tree can
+    still import a REAL install's source instead of the clone's, for
+    whichever package was checked. This does not care which package the
+    marker names, only whether the path it resolved to is inside `repo`
+    -- `pytest_runner` is what decides which package to ask about."""
     resolved_repo = repo.resolve()
     module_path = _module_path(text)
     if module_path is None or not module_path.is_relative_to(resolved_repo):
@@ -248,20 +268,55 @@ def _resolve_in_clone(repo: Path, relative: Path) -> Path:
     return target
 
 
+def _package_name(relative: Path) -> str:
+    """The top-level importable name for a repo-relative path like
+    `Mutant.path`: `src/mylib/calc.py` -> `mylib`; `mylib/calc.py` (no
+    `src` layout) -> `mylib`; a bare top-level module file such as
+    `src/single.py` or `single.py` (no package directory to name instead)
+    -> `single`, its own name with `.py` stripped.
+
+    This is invariant 7's answer to "which package does this mutation
+    belong to" -- for robigo's own sentinel (`src/robigo/context/
+    budget.py`) this returns `robigo`, the exact name the marker checked
+    before this was generalised to any repo (coordinator review,
+    2026-08-10: the marker was still hardcoded to ask about robigo even
+    after the sentinel target itself was generalised, so every foreign
+    repo was rejected for asking the wrong question rather than for a
+    real problem). Robigo-on-robigo is a SPECIAL CASE of this rule, not a
+    second code path.
+
+    Raises `ValueError` if `relative` has no path components at all (an
+    empty `Path`) -- there is nothing to derive a name from, and guessing
+    would risk asking the wrong question silently."""
+    parts = relative.parts
+    if not parts:
+        raise ValueError(f"{relative!r} has no path components to derive a package from")
+    if parts[0] == "src" and len(parts) > 1:
+        parts = parts[1:]
+    if len(parts) == 1:
+        return Path(parts[0]).stem
+    return parts[0]
+
+
 def _apply_and_run(repo: Path, mutant: Mutant, runner: Runner) -> str:
     """Applies `mutant` to its file inside `repo` (via `_resolve_in_clone`,
     so an absolute or escaping `mutant.path` is refused before anything is
-    written), calls `runner`, and restores the file to its exact original
-    content -- always, even if `runner` raises. The one shared "apply /
-    run / restore" implementation `verify` and both of `sentinel_ok`'s
+    written), calls `runner` with the package `_package_name(mutant.path)`
+    derives, and restores the file to its exact original content --
+    always, even if `runner` raises. The one shared "apply / run /
+    restore" implementation `verify` and both of `sentinel_ok`'s
     strategies use, rather than three copies of the same three steps free
     to drift apart (this project's own `CARRIED-DEBT.md` names that
-    pattern as a recurring defect source)."""
+    pattern as a recurring defect source) -- and the one place that
+    derives invariant 7's package name from a mutant, so `verify` and
+    both sentinel strategies get the fix for free rather than needing
+    their own copy of this logic."""
     target = _resolve_in_clone(repo, mutant.path)
     source = target.read_text()
     target.write_text(_apply(source, mutant))
+    package = _package_name(mutant.path)
     try:
-        return runner(repo)
+        return runner(repo, package)
     finally:
         target.write_text(source)
 
@@ -457,6 +512,33 @@ def _source_files(repo: Path) -> tuple[Path, ...]:
     return tuple(sorted(found))
 
 
+def _primary_package(repo: Path) -> str:
+    """The package name to check invariant 7's marker against when no
+    specific mutant is in scope -- `baseline`'s case, which measures the
+    whole unmodified repo rather than one mutant's file. Derived from the
+    top-level package of the FIRST real source file `_source_files` finds
+    (sorted, so this is deterministic for a given `repo`), via the same
+    `_package_name` every mutant-specific caller uses -- so a single-
+    package repo (robigo's own, or a typical foreign target) gets
+    `baseline` and every later `verify`/`sentinel_ok` call agreeing on the
+    same package name without either side re-deriving it differently.
+
+    Raises `ValueError` if `_source_files(repo)` is empty -- there is no
+    real source to derive a package from at all, and refusing is the
+    honest answer (this module's whole verification standard: guessing
+    would be worse). A repo with more than one top-level package picks
+    the alphabetically-first source file's package; documented as a
+    heuristic, not exhaustive for every possible repo layout, matching
+    `_source_files`'s own documented limitation."""
+    files = _source_files(repo)
+    if not files:
+        raise ValueError(
+            f"{repo} offers no real source file (via _source_files) to "
+            f"derive a package from -- cannot check invariant 7 without one"
+        )
+    return _package_name(files[0])
+
+
 def _find_line(source: str, text: str) -> int:
     """The 1-based line number of the single line in `source` that reads
     exactly `text`. Raises if there is not exactly one -- zero means the
@@ -484,21 +566,28 @@ def _find_line(source: str, text: str) -> int:
 def baseline(repo: Path, runner: Runner) -> Baseline:
     """Measures `repo` completely unmodified: one `runner` call, timed by
     this function (not parsed out of the runner's text, so `seconds` is
-    honest even against a runner that says nothing about timing).
+    honest even against a runner that says nothing about timing). The
+    package `runner` is asked to check is derived from `repo`'s own
+    source (`_primary_package`, since there is no specific `Mutant` in
+    scope here) -- never a fixed name, so this works identically for
+    robigo's own repo and for whatever foreign repo `--repo` points at.
 
     Raises `WrongTreeError` if the runner's own report does not resolve
     inside `repo` (invariant 7) -- there is no safe fallback `Baseline` to
     return for a measurement that might describe the wrong tree; every
     `verify()` call downstream trusts `.broken` unconditionally, so a
     silently-wrong baseline would poison every mutant judged against it.
+    Also propagates `_primary_package`'s `ValueError` if `repo` offers no
+    real source to derive a package from at all.
 
     Does NOT assume `.broken` is zero, and does not special-case it either
     -- it is whatever `_broken_count` finds in `runner`'s report. Measured
     2026-08-10: a `git archive` copy of this project's own repo (no
     `.git`) baselined at 6, because the git-dependent tests fail without
     a real `.git` directory."""
+    package = _primary_package(repo)
     start = time.monotonic()
-    text = runner(repo)
+    text = runner(repo, package)
     elapsed = time.monotonic() - start
     _assert_in_clone(text, repo)
     return Baseline(broken=_broken_count(text), seconds=elapsed)
@@ -594,7 +683,7 @@ _IMPORT_CHECK_TIMEOUT = 30
 _PYTEST_TIMEOUT = 300
 
 
-def pytest_runner(repo: Path) -> str:
+def pytest_runner(repo: Path, package: str) -> str:
     """The one real `Runner`: shells out to pytest inside `repo`. Never
     touches the network, a model daemon, or port 8081 -- this runs pytest
     and one `python -c` import check, both fully local subprocesses.
@@ -602,19 +691,32 @@ def pytest_runner(repo: Path) -> str:
     Forces `PYTHONPATH` to `repo`'s own `src`, and `PYTHONDONTWRITEBYTECODE
     =1` -- stale `.pyc` files have confused two implementers on this
     project, and without `PYTHONPATH` forced a subprocess started inside a
-    copied tree still imports the real repo through robigo's editable
-    install (measured 2026-08-10: `robigo.__file__` resolves to the real
-    repo by default and into the copy only with `PYTHONPATH` set), which
-    silently inverts every mutant's result to "survived".
+    copied tree can still import a REAL install's source instead of the
+    clone's (measured 2026-08-10 for robigo's own editable install:
+    `robigo.__file__` resolved to the real repo by default and into the
+    copy only with `PYTHONPATH` set), which silently inverts a mutant's
+    result to "survived".
 
-    Prepends a `ROBIGO_MODULE=<path>` marker line reporting exactly what
-    `import robigo` resolved to in that SAME environment -- run as its own
-    quick subprocess, before pytest, under identical `cwd`/`env` -- which
-    is what `_assert_in_clone` checks (invariant 7) before any caller
-    trusts a result. If that import check fails (a broken clone, an
-    uninstalled package), the marker is omitted entirely rather than
-    guessed, and every caller's `_assert_in_clone` correctly rejects the
-    run for having no marker at all.
+    Prepends a `MODULE_UNDER_TEST=<path>` marker line reporting exactly
+    what `import <package>` resolved to in that SAME environment -- run as
+    its own quick subprocess, before pytest, under identical `cwd`/`env`
+    -- which is what `_assert_in_clone` checks (invariant 7) before any
+    caller trusts a result. `package` is never hardcoded here: it names
+    whatever top-level package the caller wants checked (robigo's own, or
+    a foreign repo's own package -- `_apply_and_run`/`baseline` derive it
+    and pass it down). Coordinator review (2026-08-10) caught an
+    incomplete first fix: generalising the SENTINEL's target without also
+    generalising this marker still asked "does robigo resolve inside the
+    clone" for every repo, which rejects every foreign repo for the wrong
+    reason (robigo was never the code under test there, so of course it
+    resolves elsewhere) rather than for a real problem.
+
+    If the import check fails for ANY reason -- `package` unimportable in
+    that environment, not a valid identifier, a broken clone -- the
+    marker is omitted entirely rather than guessed, and every caller's
+    `_assert_in_clone` correctly rejects the run for having no marker at
+    all. An unimportable target is "cannot certify", never silently
+    "certified" by falling back to some other answer.
 
     Runs with `--tb=no -rfE`: no tracebacks (keeps output bounded and
     deterministic), but the short summary info section that names every
@@ -624,7 +726,7 @@ def pytest_runner(repo: Path) -> str:
     env["PYTHONPATH"] = str(repo / "src")
 
     import_check = subprocess.run(
-        [sys.executable, "-c", "import robigo; print(robigo.__file__)"],
+        [sys.executable, "-c", f"import {package}; print({package}.__file__)"],
         cwd=repo,
         env=env,
         capture_output=True,
@@ -632,7 +734,9 @@ def pytest_runner(repo: Path) -> str:
         timeout=_IMPORT_CHECK_TIMEOUT,
     )
     marker = (
-        f"ROBIGO_MODULE={import_check.stdout.strip()}\n" if import_check.returncode == 0 else ""
+        f"MODULE_UNDER_TEST={import_check.stdout.strip()}\n"
+        if import_check.returncode == 0
+        else ""
     )
 
     result = subprocess.run(

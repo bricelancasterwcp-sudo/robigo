@@ -16,6 +16,7 @@ from robigo.profile.verify import (
     Baseline,
     Verdict,
     WrongTreeError,
+    _apply_and_run,
     _assert_in_clone,
     _broken_count,
     _broken_ids,
@@ -23,6 +24,8 @@ from robigo.profile.verify import (
     _find_line,
     _is_test_path,
     _module_path,
+    _package_name,
+    _primary_package,
     _resolve_in_clone,
     _sentinel_fast_path,
     _sentinel_via_search,
@@ -78,12 +81,12 @@ def repo(tmp_path: Path) -> Path:
 
 def _output(text: str, *, module_path: object) -> str:
     """Builds runner output the way a well-formed runner does: a
-    `ROBIGO_MODULE=` marker line followed by pytest-shaped text.
+    `MODULE_UNDER_TEST=` marker line followed by pytest-shaped text.
     `module_path=None` omits the marker entirely -- a runner that never
     says where it ran, exercised by the dedicated "no marker" tests."""
     if module_path is None:
         return text
-    return f"ROBIGO_MODULE={module_path}\n{text}"
+    return f"MODULE_UNDER_TEST={module_path}\n{text}"
 
 
 def _inside(repo: Path) -> Path:
@@ -182,7 +185,7 @@ def test_module_path_returns_none_when_no_marker_is_present():
 
 
 def test_module_path_resolves_the_marked_path(repo: Path):
-    resolved = _module_path(f"ROBIGO_MODULE={_inside(repo)}\n430 passed\n")
+    resolved = _module_path(f"MODULE_UNDER_TEST={_inside(repo)}\n430 passed\n")
     assert resolved == _inside(repo).resolve()
 
 
@@ -231,12 +234,110 @@ def test_resolve_in_clone_rejects_a_relative_path_that_escapes_via_traversal(rep
 
 
 # ---------------------------------------------------------------------------
+# _package_name / _primary_package — invariant 7's marker asks about the
+# package being mutated, never a fixed name (coordinator review, 2026-08-10:
+# the marker was still hardcoded to "robigo" even after the sentinel's
+# TARGET was generalised, so every foreign repo was rejected for asking the
+# wrong question).
+# ---------------------------------------------------------------------------
+
+
+def test_package_name_derives_from_a_src_layout_package_directory():
+    assert _package_name(Path("src/mylib/calc.py")) == "mylib"
+
+
+def test_package_name_derives_from_a_flat_layout_package_directory():
+    # No `src/` prefix at all -- still finds the top-level directory.
+    assert _package_name(Path("mylib/calc.py")) == "mylib"
+
+
+def test_package_name_derives_from_a_bare_top_level_module_under_src():
+    # No package DIRECTORY to name -- the module's own name, `.py` stripped.
+    assert _package_name(Path("src/single.py")) == "single"
+
+
+def test_package_name_derives_from_a_bare_top_level_module_without_src():
+    assert _package_name(Path("single.py")) == "single"
+
+
+def test_package_name_returns_robigo_for_robigos_own_sentinel_path_unchanged():
+    # The exact input the marker checked before this generalisation --
+    # pins that robigo-on-robigo is a SPECIAL CASE of this rule, not a
+    # second, separately-maintained code path.
+    assert _package_name(Path("src/robigo/context/budget.py")) == "robigo"
+
+
+def test_package_name_raises_for_a_path_with_no_components():
+    with pytest.raises(ValueError):
+        _package_name(Path("."))
+
+
+def test_primary_package_derives_from_the_first_real_source_file(repo: Path):
+    assert _primary_package(repo) == "robigo"
+
+
+def test_primary_package_raises_when_the_repo_offers_no_real_source(tmp_path: Path):
+    # Fails for an implementation that guesses (e.g. defaulting to the
+    # repo's own directory name) instead of refusing outright -- there is
+    # nothing here to derive a package from.
+    with pytest.raises(ValueError):
+        _primary_package(tmp_path)
+
+
+def test_primary_package_picks_the_alphabetically_first_package_in_a_multi_package_repo(
+    tmp_path: Path,
+):
+    (tmp_path / "src" / "aaa_pkg").mkdir(parents=True)
+    (tmp_path / "src" / "aaa_pkg" / "mod.py").write_text("x = 1\n")
+    (tmp_path / "src" / "zzz_pkg").mkdir(parents=True)
+    (tmp_path / "src" / "zzz_pkg" / "mod.py").write_text("x = 1\n")
+    assert _primary_package(tmp_path) == "aaa_pkg"
+
+
+# ---------------------------------------------------------------------------
+# _apply_and_run derives and passes the package for a mutant's own path --
+# the mechanism `verify`, `_sentinel_fast_path`, and `_sentinel_via_search`
+# all share, so pinning it here covers all three at once.
+# ---------------------------------------------------------------------------
+
+
+def test_apply_and_run_passes_the_mutants_own_derived_package_to_the_runner(repo: Path):
+    seen: dict[str, str] = {}
+
+    def spy_runner(r: Path, package: str) -> str:
+        seen["package"] = package
+        return _output("0 failed, 430 passed\n", module_path=_inside(r))
+
+    mutant = Mutant(TARGET_RELATIVE, 2, "    return 1\n", "    return 2\n", "off_by_one")
+    _apply_and_run(repo, mutant, spy_runner)
+    assert seen["package"] == "robigo"
+
+
+def test_apply_and_run_derives_a_foreign_package_name_not_robigo(tmp_path: Path):
+    # THE fix, proven directly: a mutant from a repo that isn't robigo at
+    # all gets ITS OWN package name, not a hardcoded "robigo".
+    (tmp_path / "src" / "mylib").mkdir(parents=True)
+    (tmp_path / "src" / "mylib" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    seen: dict[str, str] = {}
+
+    def spy_runner(r: Path, package: str) -> str:
+        seen["package"] = package
+        return _output("0 failed, 1 passed\n", module_path=r / "src" / "mylib" / "__init__.py")
+
+    mutant = Mutant(
+        Path("src/mylib/calc.py"), 2, "    return a + b\n", "    return a - b\n", "off_by_one"
+    )
+    _apply_and_run(tmp_path, mutant, spy_runner)
+    assert seen["package"] == "mylib"
+
+
+# ---------------------------------------------------------------------------
 # sentinel_ok — invariant 4
 # ---------------------------------------------------------------------------
 
 
 def test_sentinel_ok_returns_true_when_the_runner_reports_real_breakage(repo: Path):
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         return _output("18 failed, 412 passed in 4.00s\n", module_path=_inside(r))
 
     assert sentinel_ok(repo, runner) is True
@@ -249,7 +350,7 @@ def test_sentinel_ok_returns_false_for_a_blind_harness_that_always_reports_zero(
     # never reports breakage, no matter what was applied, must not be
     # trusted -- measured 2026-08-10, a harness with this exact defect
     # scored 8 of 8 real mutants as survivors.
-    def blind_runner(r: Path) -> str:
+    def blind_runner(r: Path, package: str) -> str:
         return _output("0 failed, 430 passed in 4.00s\n", module_path=_inside(r))
 
     assert sentinel_ok(repo, blind_runner) is False
@@ -259,7 +360,7 @@ def test_sentinel_ok_returns_false_for_a_blind_harness_that_always_reports_zero(
 def test_sentinel_ok_returns_false_when_the_breakage_is_reported_on_the_wrong_tree(repo: Path):
     # Fails for an implementation that only checks `_broken_count > 0`
     # and never checks whose tree the breakage was reported against.
-    def wrong_tree_runner(r: Path) -> str:
+    def wrong_tree_runner(r: Path, package: str) -> str:
         return _output("18 failed, 412 passed in 4.00s\n", module_path=_outside(r))
 
     assert sentinel_ok(repo, wrong_tree_runner) is False
@@ -277,7 +378,7 @@ def test_sentinel_ok_falls_back_to_the_search_when_the_known_target_has_moved(re
         "def estimate_tokens(text: str) -> int:\n    return 999\n"
     )
 
-    def blind_runner(r: Path) -> str:
+    def blind_runner(r: Path, package: str) -> str:
         return _output("0 failed, 430 passed\n", module_path=_inside(r))
 
     assert sentinel_ok(repo, blind_runner) is False
@@ -286,7 +387,7 @@ def test_sentinel_ok_falls_back_to_the_search_when_the_known_target_has_moved(re
 def test_sentinel_ok_restores_the_file_even_when_the_runner_raises(repo: Path):
     # Failure injection on the restore path (CARRIED-DEBT's own named
     # pattern: "write_atomic's cleanup path under failure injection").
-    def exploding_runner(r: Path) -> str:
+    def exploding_runner(r: Path, package: str) -> str:
         raise RuntimeError("boom")
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -329,7 +430,7 @@ def test_sentinel_ok_prefers_the_fast_path_and_skips_the_search_when_it_finds_br
 
     monkeypatch.setattr(verify_module, "_sentinel_via_search", exploding_search)
 
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         return _output("18 failed, 412 passed in 4.00s\n", module_path=_inside(r))
 
     assert sentinel_ok(repo, runner) is True
@@ -349,20 +450,21 @@ def test_sentinel_ok_trusts_the_fast_paths_own_false_without_falling_through_to_
 
     monkeypatch.setattr(verify_module, "_sentinel_via_search", exploding_search)
 
-    def blind_runner(r: Path) -> str:
+    def blind_runner(r: Path, package: str) -> str:
         return _output("0 failed, 430 passed in 4.00s\n", module_path=_inside(r))
 
     assert sentinel_ok(repo, blind_runner) is False
 
 
 def test_sentinel_ok_works_on_a_repo_shaped_nothing_like_robigo(scratch_repo: Path):
-    # THE coordinator's reported failure, reproduced and fixed: pointing
-    # sentinel_ok at a scratch repo used to raise FileNotFoundError
-    # unconditionally. A runner that reports breakage for ANY mutation to
+    # THE coordinator's first reported failure, reproduced and fixed:
+    # pointing sentinel_ok at a scratch repo used to raise
+    # FileNotFoundError unconditionally (the fast path's hardcoded
+    # target). A runner that reports breakage for ANY mutation to
     # widget/core.py (checking the file's actual on-disk content, so this
     # proves the search really did apply a real candidate, not just that
     # something was called) must make this return True.
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         content = (r / "src" / "widget" / "core.py").read_text()
         broken = content != "def double(n):\n    return n * 2\n"
         report = "1 failed, 0 passed\n" if broken else "0 failed, 1 passed\n"
@@ -373,6 +475,30 @@ def test_sentinel_ok_works_on_a_repo_shaped_nothing_like_robigo(scratch_repo: Pa
     assert (scratch_repo / "src" / "widget" / "core.py").read_text() == (
         "def double(n):\n    return n * 2\n"
     )
+
+
+def test_sentinel_ok_asks_the_runner_about_widget_not_robigo_on_a_foreign_repo(
+    scratch_repo: Path,
+):
+    # THE coordinator's SECOND reported failure, reproduced and fixed: the
+    # marker check used to ask "does robigo resolve inside the clone" even
+    # here, which fails by construction for every repo that isn't robigo
+    # (robigo is never the code under test on a foreign repo, so of
+    # course it resolves elsewhere). Recording every `package` the runner
+    # was called with proves the real derived name ("widget") reaches the
+    # runner throughout the whole search, never the fixed "robigo".
+    seen_packages: list[str] = []
+
+    def runner(r: Path, package: str) -> str:
+        seen_packages.append(package)
+        content = (r / "src" / "widget" / "core.py").read_text()
+        broken = content != "def double(n):\n    return n * 2\n"
+        report = "1 failed, 0 passed\n" if broken else "0 failed, 1 passed\n"
+        return _output(report, module_path=r / "src" / "widget" / "__init__.py")
+
+    assert sentinel_ok(scratch_repo, runner) is True
+    assert seen_packages == ["widget"]
+    assert "robigo" not in seen_packages
 
 
 def test_sentinel_ok_never_tries_a_mutation_to_a_test_file(scratch_repo: Path):
@@ -395,7 +521,7 @@ def test_sentinel_ok_never_tries_a_mutation_to_a_test_file(scratch_repo: Path):
         "def test_extra():\n    assert 1 == 1\n"
     )
 
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         outer = (r / "tests" / "test_core.py").read_text()
         inner = (r / "src" / "widget" / "test_extra.py").read_text()
         broken = (
@@ -416,7 +542,7 @@ def test_sentinel_via_search_tries_multiple_real_candidates_in_file_order(scratc
     later_file = scratch_repo / "src" / "widget" / "zzz_later.py"
     later_file.write_text("def triple(n):\n    return n * 3\n")
 
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         content = later_file.read_text()
         broken = content != "def triple(n):\n    return n * 3\n"
         report = "1 failed, 0 passed\n" if broken else "0 failed, 1 passed\n"
@@ -436,7 +562,7 @@ def test_sentinel_via_search_is_bounded_and_does_not_exhaust_every_candidate(
     monkeypatch.setattr(verify_module, "_SENTINEL_SEARCH_LIMIT", 1)
     calls: list[int] = []
 
-    def blind_runner(r: Path) -> str:
+    def blind_runner(r: Path, package: str) -> str:
         calls.append(1)
         return _output("0 failed, 1 passed\n", module_path=r / "src" / "widget" / "__init__.py")
 
@@ -448,7 +574,7 @@ def test_sentinel_fast_path_returns_none_when_the_target_file_is_missing(scratch
     # Fails for an implementation that raises (or crashes) instead of
     # signalling "doesn't apply here" -- `scratch_repo` has no
     # `context/budget.py` at all.
-    assert _sentinel_fast_path(scratch_repo, lambda r: "430 passed\n") is None
+    assert _sentinel_fast_path(scratch_repo, lambda r, package: "430 passed\n") is None
 
 
 def test_sentinel_fast_path_returns_none_when_the_line_has_changed(repo: Path):
@@ -457,11 +583,11 @@ def test_sentinel_fast_path_returns_none_when_the_line_has_changed(repo: Path):
     (repo / "src" / "robigo" / "context" / "budget.py").write_text(
         "def estimate_tokens(text: str) -> int:\n    return 999\n"
     )
-    assert _sentinel_fast_path(repo, lambda r: "430 passed\n") is None
+    assert _sentinel_fast_path(repo, lambda r, package: "430 passed\n") is None
 
 
 def test_sentinel_fast_path_returns_true_for_the_known_good_sentinel(repo: Path):
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         return _output("18 failed, 412 passed\n", module_path=_inside(r))
 
     assert _sentinel_fast_path(repo, runner) is True
@@ -560,7 +686,7 @@ def test_a_disciplined_caller_would_have_aborted_on_the_measured_blind_harness(r
     correctly returns False, which is what a disciplined caller checks
     BEFORE trusting any `verify` result at all."""
 
-    def blind_runner(r: Path) -> str:
+    def blind_runner(r: Path, package: str) -> str:
         return _output("0 failed, 430 passed in 4.00s\n", module_path=_inside(r))
 
     mutant = Mutant(TARGET_RELATIVE, 2, "    return 1\n", "    return 2\n", "off_by_one")
@@ -578,7 +704,7 @@ def test_a_disciplined_caller_would_have_aborted_on_the_measured_blind_harness(r
 
 
 def test_baseline_counts_failures_and_errors_combined(repo: Path):
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         return _output("3 failed, 2 error, 425 passed in 5.00s\n", module_path=_inside(r))
 
     assert baseline(repo, runner).broken == 5
@@ -587,7 +713,7 @@ def test_baseline_counts_failures_and_errors_combined(repo: Path):
 def test_baseline_is_not_assumed_zero(repo: Path):
     # Measured 2026-08-10: a git-archive copy of this project's own repo
     # baselined at 6. Fails for an implementation that hardcodes 0.
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         return _output("6 failed, 400 passed in 5.00s\n", module_path=_inside(r))
 
     assert baseline(repo, runner).broken == 6
@@ -596,7 +722,7 @@ def test_baseline_is_not_assumed_zero(repo: Path):
 def test_baseline_counts_an_error_only_report_with_no_failed_substring_at_all(repo: Path):
     # THE brief's required acceptance test, at the public `baseline()`
     # level rather than just the private `_broken_count` unit.
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         return _output("1 error in 0.01s\n", module_path=_inside(r))
 
     result = baseline(repo, runner)
@@ -607,7 +733,7 @@ def test_baseline_measures_real_wall_clock_seconds(repo: Path):
     # Fails for an implementation that reports 0.0 unconditionally, or
     # that tries to parse a "seconds" figure out of the runner's own text
     # instead of timing the call itself.
-    def slow_runner(r: Path) -> str:
+    def slow_runner(r: Path, package: str) -> str:
         time.sleep(0.05)
         return _output("0 failed, 430 passed in 0.01s\n", module_path=_inside(r))
 
@@ -616,7 +742,7 @@ def test_baseline_measures_real_wall_clock_seconds(repo: Path):
 
 
 def test_baseline_raises_wrong_tree_error_for_a_path_outside_the_repo(repo: Path):
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         return _output("0 failed, 430 passed\n", module_path=_outside(r))
 
     with pytest.raises(WrongTreeError):
@@ -625,7 +751,23 @@ def test_baseline_raises_wrong_tree_error_for_a_path_outside_the_repo(repo: Path
 
 def test_baseline_raises_wrong_tree_error_when_no_marker_is_present(repo: Path):
     with pytest.raises(WrongTreeError):
-        baseline(repo, lambda r: "0 failed, 430 passed in 1.00s\n")
+        baseline(repo, lambda r, package: "0 failed, 430 passed in 1.00s\n")
+
+
+def test_baseline_derives_and_passes_the_repos_own_package_not_a_fixed_name(repo: Path):
+    seen: dict[str, str] = {}
+
+    def spy_runner(r: Path, package: str) -> str:
+        seen["package"] = package
+        return _output("0 failed, 430 passed\n", module_path=_inside(r))
+
+    baseline(repo, spy_runner)
+    assert seen["package"] == "robigo"
+
+
+def test_baseline_propagates_primary_packages_valueerror_on_an_empty_repo(tmp_path: Path):
+    with pytest.raises(ValueError):
+        baseline(tmp_path, lambda r, package: "430 passed\n")
 
 
 # ---------------------------------------------------------------------------
@@ -640,7 +782,7 @@ def _mutant() -> Mutant:
 def test_verify_keeps_a_mutant_with_exactly_one_net_new_failure_and_records_its_id(repo: Path):
     # The "1" case, invariant 6's core: the id must be captured, not just
     # the count.
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         return _output(
             "FAILED tests/test_x.py::test_y - AssertionError\n1 failed, 429 passed in 2.00s\n",
             module_path=_inside(r),
@@ -654,7 +796,7 @@ def test_verify_keeps_a_mutant_with_exactly_one_net_new_failure_and_records_its_
 
 def test_verify_rejects_a_mutant_with_zero_net_new_failures(repo: Path):
     # The "0" case.
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         return _output("0 failed, 430 passed in 2.00s\n", module_path=_inside(r))
 
     verdict = verify(_mutant(), repo, Baseline(broken=0, seconds=1.0), runner)
@@ -667,7 +809,7 @@ def test_verify_rejects_a_mutant_with_zero_net_new_failures(repo: Path):
 def test_verify_rejects_a_mutant_that_breaks_many_tests(repo: Path):
     # The "many" case, using the exact figure ("18 failed") measured
     # 2026-08-10 for a deliberate central-code sentinel.
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         lines = "\n".join(f"FAILED tests/test_x.py::test_{i}" for i in range(18))
         return _output(f"{lines}\n18 failed, 412 passed in 4.00s\n", module_path=_inside(r))
 
@@ -684,7 +826,7 @@ def test_verify_does_not_keep_when_a_nonzero_baseline_makes_the_new_failure_ambi
     # broken tests, not a delta -- so the new one cannot be isolated by id
     # without guessing, and invariant 6 requires the id, not just the
     # count, so this must NOT be kept.
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         lines = "\n".join(f"FAILED tests/test_x.py::test_{i}" for i in range(7))
         return _output(f"{lines}\n7 failed, 423 passed in 4.00s\n", module_path=_inside(r))
 
@@ -700,7 +842,7 @@ def test_verify_rejects_a_survivor_reported_on_the_wrong_tree_rather_than_callin
 ):
     # A "0 failed" report that would otherwise read as a clean survivor,
     # but the module path is outside the clone.
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         return _output("0 failed, 430 passed in 2.00s\n", module_path=_outside(r))
 
     verdict = verify(_mutant(), repo, Baseline(broken=0, seconds=1.0), runner)
@@ -713,7 +855,7 @@ def test_verify_rejects_a_looks_kept_result_reported_on_the_wrong_tree(repo: Pat
     # The more dangerous case: a report that would otherwise satisfy
     # invariant 6 outright (exactly one id, exactly one net new failure),
     # but on the wrong tree -- must not be reported as kept.
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         return _output(
             "FAILED tests/test_x.py::test_y - AssertionError\n1 failed, 429 passed in 2.00s\n",
             module_path=_outside(r),
@@ -727,13 +869,13 @@ def test_verify_rejects_a_looks_kept_result_reported_on_the_wrong_tree(repo: Pat
 def test_verify_raises_valueerror_for_an_absolute_mutant_path(repo: Path):
     bad = Mutant(Path("/etc/passwd"), 1, "a\n", "b\n", "off_by_one")
     with pytest.raises(ValueError):
-        verify(bad, repo, Baseline(broken=0, seconds=1.0), lambda r: "430 passed\n")
+        verify(bad, repo, Baseline(broken=0, seconds=1.0), lambda r, package: "430 passed\n")
 
 
 def test_verify_raises_valueerror_for_a_mutant_path_that_escapes_via_traversal(repo: Path):
     bad = Mutant(Path("../outside.py"), 1, "a\n", "b\n", "off_by_one")
     with pytest.raises(ValueError):
-        verify(bad, repo, Baseline(broken=0, seconds=1.0), lambda r: "430 passed\n")
+        verify(bad, repo, Baseline(broken=0, seconds=1.0), lambda r, package: "430 passed\n")
 
 
 def test_verify_actually_writes_the_mutation_before_the_runner_is_called(repo: Path):
@@ -741,7 +883,7 @@ def test_verify_actually_writes_the_mutation_before_the_runner_is_called(repo: P
     # file on disk, AT THE MOMENT the runner ran, held `mutant.mutated`.
     seen: dict[str, str] = {}
 
-    def spy_runner(r: Path) -> str:
+    def spy_runner(r: Path, package: str) -> str:
         seen["content"] = (r / TARGET_RELATIVE).read_text()
         return _output("0 failed, 430 passed in 1.00s\n", module_path=_inside(r))
 
@@ -750,8 +892,19 @@ def test_verify_actually_writes_the_mutation_before_the_runner_is_called(repo: P
     assert seen["content"] == TARGET_SOURCE.replace(m.original, m.mutated)
 
 
+def test_verify_derives_and_passes_the_mutants_own_package_not_a_fixed_name(repo: Path):
+    seen: dict[str, str] = {}
+
+    def spy_runner(r: Path, package: str) -> str:
+        seen["package"] = package
+        return _output("0 failed, 430 passed in 1.00s\n", module_path=_inside(r))
+
+    verify(_mutant(), repo, Baseline(broken=0, seconds=1.0), spy_runner)
+    assert seen["package"] == "robigo"
+
+
 def test_verify_restores_the_file_after_a_kept_result(repo: Path):
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         return _output(
             "FAILED tests/test_x.py::test_y - AssertionError\n1 failed, 429 passed in 2.00s\n",
             module_path=_inside(r),
@@ -762,7 +915,7 @@ def test_verify_restores_the_file_after_a_kept_result(repo: Path):
 
 
 def test_verify_restores_the_file_after_a_rejected_result(repo: Path):
-    def runner(r: Path) -> str:
+    def runner(r: Path, package: str) -> str:
         return _output("0 failed, 430 passed in 2.00s\n", module_path=_inside(r))
 
     verify(_mutant(), repo, Baseline(broken=0, seconds=1.0), runner)
@@ -770,7 +923,7 @@ def test_verify_restores_the_file_after_a_rejected_result(repo: Path):
 
 
 def test_verify_restores_the_file_even_when_the_runner_raises(repo: Path):
-    def exploding_runner(r: Path) -> str:
+    def exploding_runner(r: Path, package: str) -> str:
         raise RuntimeError("boom")
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -784,7 +937,7 @@ def test_verify_uses_apply_and_raises_if_the_mutants_original_does_not_match_the
     # match what's actually on disk in the clone.
     stale = Mutant(TARGET_RELATIVE, 2, "    return 999\n", "    return 2\n", "off_by_one")
     with pytest.raises(ValueError):
-        verify(stale, repo, Baseline(broken=0, seconds=1.0), lambda r: "430 passed\n")
+        verify(stale, repo, Baseline(broken=0, seconds=1.0), lambda r, package: "430 passed\n")
 
 
 # ---------------------------------------------------------------------------
@@ -808,7 +961,10 @@ def test_find_line_raises_when_the_text_appears_more_than_once():
 
 # ---------------------------------------------------------------------------
 # pytest_runner — the real runner, exercised with `subprocess.run` faked so
-# no real pytest ever executes inside this test suite.
+# no real pytest ever executes inside this test suite. A REAL, un-faked
+# proof that this works against an actual foreign repo (not just against
+# canned `subprocess.run` output) is not possible here by design -- see the
+# task report for a standalone, manually-run acceptance script instead.
 # ---------------------------------------------------------------------------
 
 
@@ -833,7 +989,7 @@ def test_pytest_runner_never_invokes_a_real_subprocess(
         return _FakeCompleted(stdout="0 failed, 430 passed in 4.00s\n")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    pytest_runner(repo)
+    pytest_runner(repo, "robigo")
     assert len(calls) == 2
 
 
@@ -855,7 +1011,7 @@ def test_pytest_runner_sets_pythondontwritebytecode(monkeypatch: pytest.MonkeyPa
         return _FakeCompleted(stdout="0 failed, 430 passed\n")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    pytest_runner(repo)
+    pytest_runner(repo, "robigo")
     assert captured["env"]["PYTHONDONTWRITEBYTECODE"] == "1"  # type: ignore[index]
 
 
@@ -877,8 +1033,31 @@ def test_pytest_runner_forces_pythonpath_to_the_clones_src(
         return _FakeCompleted(stdout="0 failed, 430 passed\n")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    pytest_runner(repo)
+    pytest_runner(repo, "robigo")
     assert captured["env"]["PYTHONPATH"] == str(repo / "src")  # type: ignore[index]
+
+
+def test_pytest_runner_imports_the_given_package_not_a_fixed_name(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+):
+    # THE coordinator's second fix, pinned directly on the real runner:
+    # fails for an implementation that still hardcodes "robigo" in the
+    # import-check command regardless of what `package` it was called
+    # with.
+    seen_import_cmd: list[str] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+        if "-c" in cmd:
+            seen_import_cmd.extend(cmd)
+            return _FakeCompleted(stdout=str(repo / "src" / "widget" / "__init__.py"))
+        return _FakeCompleted(stdout="0 failed, 430 passed\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    pytest_runner(repo, "widget")
+    code = seen_import_cmd[seen_import_cmd.index("-c") + 1]
+    assert "import widget" in code
+    assert "widget.__file__" in code
+    assert "robigo" not in code
 
 
 def test_pytest_runner_returns_the_module_marker_followed_by_pytest_output(
@@ -892,8 +1071,8 @@ def test_pytest_runner_returns_the_module_marker_followed_by_pytest_output(
         return _FakeCompleted(stdout="1 failed, 429 passed in 2.00s\n", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    text = pytest_runner(repo)
-    assert text.startswith(f"ROBIGO_MODULE={module_file}\n")
+    text = pytest_runner(repo, "robigo")
+    assert text.startswith(f"MODULE_UNDER_TEST={module_file}\n")
     assert "1 failed, 429 passed in 2.00s" in text
     _assert_in_clone(text, repo)  # must not raise -- proves the marker round-trips
 
@@ -912,8 +1091,8 @@ def test_pytest_runner_omits_the_marker_when_the_import_check_fails(
         return _FakeCompleted(stdout="0 failed, 430 passed\n")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    text = pytest_runner(repo)
-    assert "ROBIGO_MODULE=" not in text
+    text = pytest_runner(repo, "robigo")
+    assert "MODULE_UNDER_TEST=" not in text
     with pytest.raises(WrongTreeError):
         _assert_in_clone(text, repo)
 
@@ -927,7 +1106,7 @@ def test_pytest_runner_combines_stdout_and_stderr_of_the_pytest_invocation(
         return _FakeCompleted(stdout="1 failed\n", stderr="internal warning: something\n")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    text = pytest_runner(repo)
+    text = pytest_runner(repo, "robigo")
     assert "1 failed" in text
     assert "internal warning: something" in text
 
@@ -946,7 +1125,7 @@ def test_pytest_runner_passes_short_summary_flags_pytest_would_need_for_ids(
         return _FakeCompleted(stdout="0 failed, 430 passed\n")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    pytest_runner(repo)
+    pytest_runner(repo, "robigo")
     assert "-rfE" in seen_pytest_cmd
     assert any("pytest" in part for part in seen_pytest_cmd) or "-m" in seen_pytest_cmd
 
@@ -964,7 +1143,7 @@ def test_pytest_runner_uses_a_bounded_timeout_for_both_subprocess_calls(
         return _FakeCompleted(stdout="0 failed, 430 passed\n")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    pytest_runner(repo)
+    pytest_runner(repo, "robigo")
     assert len(timeouts) == 2
     assert all(isinstance(t, (int, float)) and t > 0 for t in timeouts)
 
@@ -984,5 +1163,5 @@ def test_pytest_runner_runs_python_as_the_interpreter_that_launched_this_process
         return _FakeCompleted(stdout="0 failed, 430 passed\n")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    pytest_runner(repo)
+    pytest_runner(repo, "robigo")
     assert all(cmd[0] == sys.executable for cmd in seen)
