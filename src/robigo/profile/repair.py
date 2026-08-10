@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -534,3 +535,156 @@ def _judge(
         # here, so outcome/turns are preserved rather than lost.
         return excluded(f"unexpected error after the loop ran: {exc!r}",
                         result.outcome, result.turns)
+
+
+@dataclass(frozen=True)
+class Stage4:
+    """Spec 4's stage 4, reduced to the one number the project's kill
+    criterion reads (spec 0.2/1.4: below 33.3%, `robigo` ships as a
+    benchmark repo rather than a tool) -- so every field here exists to
+    make that number checkable, not merely computable.
+
+    `rate` is `float | None`, never a bare `float` defaulting to 0.0, for
+    the exact reason spec 4.4 states about `codecs` and spec 4.4's next
+    paragraph restates for this field specifically: "`repair_rate: None`
+    and `repair_rate: 0.0` are different facts and must stay
+    distinguishable -- 'never measured' versus 'measured and nothing was
+    repaired'." A family that never reached stage 4 (upstream gated it,
+    or `records` was empty) reporting `0.0` here would read, to anyone
+    comparing against 33.3%, as "measured and definitively below
+    threshold" -- indistinguishable from a family that WAS measured and
+    genuinely failed every attempt. `docs/CARRIED-DEBT.md`'s plan-03
+    section already carries the identical gap one layer up
+    (`verdict_for` cannot express "stage 0 never ran" apart from "stage 0
+    ran and found nothing", both reading UNUSABLE via
+    `envelope_fidelity=0.0`) -- this dataclass is the one place in the
+    profiler where that specific collapse must not recur, because unlike
+    `verdict_for`'s three-way string it feeds a numeric threshold
+    comparison with no textual hedge attached.
+
+    `rate` is attempt-level (passes / attempts, spec 4.5) -- the quantity
+    spec 1.4's attempts-to-success arithmetic, and therefore the 33.3%
+    threshold itself, is actually about. The record-level 95% confidence
+    interval spec 6.1 reports beside it is a SEPARATE computation, on
+    purpose: seeds within one record share the same defect, the same
+    file, and the same starting tree, so they are correlated in exactly
+    the way independent Bernoulli trials are not, and an attempt-level
+    interval would claim roughly sqrt(10) more precision than ten
+    correlated seeds per record actually buys (spec 4.5, spec 6.1's
+    worked table). `per_record` is what makes that interval computable
+    at all -- without the per-record (passes, scored) breakdown, only the
+    attempt-level rate survives this stage, and Task 7's gate could
+    report nothing but an overclaiming number. Kept even though `rate`
+    itself is attempt-level: the two are deliberately different views of
+    the same 940 attempts, not a redundant pair.
+
+    `attempts` and `records` count only what actually got a fair chance
+    (spec 4.3.4): `attempts` is `sum(scored)` across `per_record`, never
+    the raw count of `attempt_repair` calls, and `records` is the number
+    of distinct records with at least one scored attempt -- a record
+    every seed of which excluded (a broken clone, a suite that would not
+    run) contributes to neither, so it never inflates `records` while
+    contributing zero real signal. `dropped` names every excluded attempt
+    by record and seed, so a reader can tell "94 records measured" from
+    "94 records attempted, several silently dropped" without re-running
+    anything.
+
+    `all_attempts` carries every `Attempt` this stage produced, scored or
+    excluded, verbatim and unfiltered. Stage 4 itself has no use for the
+    unscored ones beyond `dropped`'s summary, but Task 6's
+    `stage5_discipline` (turns-to-green, repeat rate) is derived from the
+    identical attempt list, filtering by `excluded is None` itself rather
+    than trusting a second reduction of the same data -- reshaping this
+    dataclass to add the field later would mean every caller of stage 4
+    changes too, so it is here from the start even though this stage does
+    not read it back."""
+
+    rate: float | None
+    attempts: int
+    records: int
+    per_record: dict[str, tuple[int, int]]
+    dropped: tuple[str, ...]
+    all_attempts: tuple[Attempt, ...]
+
+
+def stage4_repair(
+    records: Sequence[CorpusRecord],
+    repo: Path,
+    client,
+    *,
+    seeds: int,
+    codec: str,
+    base: Baseline,
+    turn_cap: int = 8,
+    runner: Runner = pytest_runner,
+) -> Stage4:
+    """Every corpus record against every seed (spec 4.1: `seeds` fixed at
+    10 by the `--full` contract in real runs, the frozen 94-record corpus
+    times that is spec 6.1's ~940-attempt, ~12h `N`), reusing the SAME
+    `repo` clone throughout -- `attempt_repair`'s own `reset_clone` is
+    what makes that reuse safe, restoring `repo` to its captured pristine
+    state before every single attempt (see `_PRISTINE_CACHE`'s
+    docstring). This function's only job is the reduction: turn ~940
+    `Attempt`s into the numbers spec 4.5 and Task 7's gate need, without
+    quietly turning a harness fault into a data point.
+
+    `attempt_repair` is called with NO exception handling around it
+    beyond what this function's own body does naturally (nothing) --
+    deliberately, and this is the single most important property of this
+    loop. `attempt_repair` already contains its own last-resort `except
+    Exception` internally and turns every ANTICIPATED failure into an
+    `excluded` `Attempt` on its own; the ONE exception it deliberately
+    lets escape is `CorruptedCloneError`, raised when `repo` starts this
+    process already sitting on a `robigo/*` branch -- a defect in the
+    shared clone itself, identical for every attempt in the run, not a
+    per-record surprise (see that exception's own docstring). A
+    `try/except Exception` wrapped around the call here -- the shape this
+    driver does NOT have -- would silently convert that one loud,
+    immediate abort into the same `excluded` `Attempt` manufactured
+    roughly 940 times over a ~12h run, one per attempt, scoring nothing
+    and reporting a corpus-shaped `dropped` list instead of failing where
+    the actual problem is: `repo`. Two independent readers (implementer
+    and reviewer) flagged this exact hazard in the task that built
+    `attempt_repair`; the contract this loop honours is to add nothing
+    of its own that could reintroduce it. If `CorruptedCloneError`
+    propagates, it propagates all the way out of `stage4_repair` too --
+    intentionally uncaught here, exactly as intentionally uncaught inside
+    `attempt_repair`.
+
+    An attempt whose `excluded` is non-`None` is recorded in `dropped`
+    (spec 4.3.4: it never gave the model a fair chance) and skipped
+    before it can touch `per_record` -- neither the numerator nor the
+    denominator of any rate below ever sees it. Every other attempt
+    updates `per_record[record.name]` as `(passes + int(a.passed), scored
+    + 1)`; `records`/`attempts`/`rate` are all derived from `per_record`
+    afterward, not accumulated in parallel, so there is exactly one place
+    an attempt could be double-counted or miscounted, not two that could
+    drift apart."""
+    per_record: dict[str, tuple[int, int]] = {}
+    dropped: list[str] = []
+    attempts: list[Attempt] = []
+
+    for record in records:
+        for seed in range(seeds):
+            attempt = attempt_repair(
+                record, repo, client, seed=seed, codec=codec, base=base,
+                turn_cap=turn_cap, runner=runner,
+            )
+            attempts.append(attempt)
+            if attempt.excluded is not None:
+                dropped.append(
+                    f"{attempt.record} seed {attempt.seed}: {attempt.excluded}")
+                continue
+            passes, scored = per_record.get(attempt.record, (0, 0))
+            per_record[attempt.record] = (passes + int(attempt.passed), scored + 1)
+
+    scored_total = sum(scored for _, scored in per_record.values())
+    passes_total = sum(passes for passes, _ in per_record.values())
+    return Stage4(
+        rate=(passes_total / scored_total) if scored_total else None,
+        attempts=scored_total,
+        records=len(per_record),
+        per_record=per_record,
+        dropped=tuple(dropped),
+        all_attempts=tuple(attempts),
+    )

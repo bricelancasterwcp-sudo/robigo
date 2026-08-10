@@ -515,6 +515,119 @@ def test_sha_exists_true_for_head_false_for_garbage(tmp_path):
     assert R._sha_exists(repo, "0" * 40) is False
 
 
+# --------------------------------------------------------------------------
+# Task 5 -- the stage-4 aggregate. `stage4_repair` reduces every
+# (record, seed) `Attempt` `attempt_repair` produces into the one number
+# the project's 33.3% kill criterion reads. `attempt_repair` itself is
+# stubbed throughout: these tests are about the REDUCTION (exclusion
+# bookkeeping, None-vs-0.0, per-record retention, and the
+# CorruptedCloneError carve-out), not about repair judgement, which
+# `attempt_repair`'s own tests above already cover.
+# --------------------------------------------------------------------------
+
+
+def test_rate_is_attempt_level_and_per_record_is_kept(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_attempt(record, repo, client, *, seed, **kw):
+        calls.append((record.name, seed))
+        # record "a" passes on even seeds; record "b" never passes
+        ok = record.name == "a" and seed % 2 == 0
+        return R.Attempt(record.name, seed, ok, "pass" if ok else "stalled",
+                         1, 0, None)
+
+    monkeypatch.setattr(R, "attempt_repair", fake_attempt)
+    recs = [_record(name="a"), _record(name="b")]
+    s = R.stage4_repair(recs, tmp_path, object(), seeds=4,
+                        codec="search_replace",
+                        base=Baseline(broken=0, executed=1, seconds=0.1))
+    assert len(calls) == 8
+    assert s.attempts == 8 and s.records == 2
+    assert s.rate == pytest.approx(2 / 8)
+    assert s.per_record == {"a": (2, 4), "b": (0, 4)}
+    assert s.dropped == ()
+    # all_attempts carries every Attempt produced, scored or not, for
+    # Task 6's stage5_discipline to derive its own metrics from.
+    assert len(s.all_attempts) == 8
+    assert all(isinstance(a, R.Attempt) for a in s.all_attempts)
+
+
+def test_excluded_attempts_leave_both_sides_of_the_rate(monkeypatch, tmp_path):
+    def fake_attempt(record, repo, client, *, seed, **kw):
+        if seed == 0:
+            return R.Attempt(record.name, seed, False, "", 0, 0, "daemon died")
+        return R.Attempt(record.name, seed, True, "pass", 1, 0, None)
+
+    monkeypatch.setattr(R, "attempt_repair", fake_attempt)
+    s = R.stage4_repair([_record(name="a")], tmp_path, object(), seeds=3,
+                        codec="search_replace",
+                        base=Baseline(broken=0, executed=1, seconds=0.1))
+    assert s.attempts == 2            # not 3
+    assert s.rate == pytest.approx(1.0)   # 2/2, NOT 2/3
+    assert any("daemon died" in d for d in s.dropped)
+    assert len(s.dropped) == 1
+    assert len(s.all_attempts) == 3   # the excluded one is still recorded
+
+
+def test_a_record_with_every_attempt_excluded_is_not_counted(monkeypatch, tmp_path):
+    monkeypatch.setattr(R, "attempt_repair", lambda record, repo, client, *, seed, **kw:
+                        R.Attempt(record.name, seed, False, "", 0, 0, "clone broken"))
+    s = R.stage4_repair([_record(name="a")], tmp_path, object(), seeds=2,
+                        codec="search_replace",
+                        base=Baseline(broken=0, executed=1, seconds=0.1))
+    assert s.attempts == 0 and s.records == 0
+    assert s.rate is None       # not 0.0 -- nothing was measured
+    assert len(s.dropped) == 2
+
+
+def test_no_records_at_all_means_rate_is_none_not_zero(tmp_path):
+    """The empty-corpus edge of the same invariant: nothing to iterate at
+    all must read identically to "everything excluded" -- both are
+    "never measured", not "measured zero"."""
+    s = R.stage4_repair([], tmp_path, object(), seeds=5,
+                        codec="search_replace",
+                        base=Baseline(broken=0, executed=1, seconds=0.1))
+    assert s.rate is None
+    assert s.attempts == 0 and s.records == 0
+    assert s.dropped == () and s.all_attempts == ()
+
+
+def test_corrupted_clone_error_propagates_through_the_driver_loop(
+    monkeypatch, tmp_path
+):
+    """Carry-forward hazard from the task that built `attempt_repair`,
+    flagged independently by both its implementer and its reviewer:
+    `CorruptedCloneError` names a defect in the shared `repo` itself
+    (already checked out on a `robigo/*` branch before this process
+    touched it), not in one record, and `attempt_repair` deliberately
+    lets it escape rather than swallowing it into an `excluded` Attempt.
+    `stage4_repair` must not wrap the call in a broad `except Exception`
+    -- doing so would convert one loud, immediate abort into the
+    identical exclusion manufactured for every remaining attempt in a
+    ~940-attempt run, scoring nothing while looking like it ran.
+
+    Asserts BOTH that the exception reaches the caller of `stage4_repair`
+    AND that the loop stopped at the very first attempt (`calls == [0]`)
+    -- the second assertion is what a broad `except Exception` would
+    break even though the first, alone, would still superficially look
+    like it passed (a `pytest.raises` around a loop that swallowed the
+    error 1 out of 6 times would still fail overall, but for a confusing
+    reason; asserting the call count makes the failure mode legible)."""
+    calls = []
+
+    def fake_attempt(record, repo, client, *, seed, **kw):
+        calls.append(seed)
+        raise R.CorruptedCloneError(
+            f"{repo} is already checked out on 'robigo/leftover-3'")
+
+    monkeypatch.setattr(R, "attempt_repair", fake_attempt)
+    with pytest.raises(R.CorruptedCloneError, match="robigo/leftover-3"):
+        R.stage4_repair([_record(name="a")], tmp_path, object(), seeds=3,
+                        codec="search_replace",
+                        base=Baseline(broken=0, executed=1, seconds=0.1))
+    assert calls == [0]   # aborted on the FIRST attempt, never swallowed
+
+
 def test_pristine_recaptures_if_the_cached_sha_no_longer_resolves(tmp_path):
     """The second half of Important C: even with the identity-keyed cache
     fix, a cached sha that no longer resolves (e.g. pruned in a long-lived
