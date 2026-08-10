@@ -123,6 +123,45 @@ Falsification tests:
 
 ---
 
+---
+
+### Task 3: The window must not depend on whether a previous run left the model hot
+
+**Files:**
+- Modify: `src/robigo/model/detect.py`
+- Test: `tests/test_window_auto.py`
+
+**Interfaces:**
+- Consumes: `/api/ps`, alongside the `/api/show` and `/api/tags` calls already there.
+- Produces: no signature changes. `plan_window`'s result becomes independent of residency.
+
+**Found by running the tool twice**, which is how the previous plan's last three defects were found too. `usable_window` subtracts `weights_bytes` from free VRAM, which is correct only when the weights are not already loaded — a precondition plan 02 wrote into its docstring and assigned to the CLI. The CLI does not honour it, and Ollama keeps a model resident for five minutes by default, so:
+
+| | first run | second run, within 5 minutes |
+|---|---|---|
+| `nvidia-smi` free | 14,485 MiB | 4,849 MiB |
+| this model resident (`/api/ps` `size_vram`) | 0 | 9,285 MiB |
+| weights (`/api/tags`) | 7,723 MiB | 7,723 MiB |
+| free − weights − 256 | 6,506 MiB | **−3,130 → clamped to 0** |
+| reported window | 32768 (`training_ctx`) | **0 (`vram`) → refuses** |
+
+So `robigo` works, and then refuses when run again on the same model — the second invocation being the more likely one, since the first turn rarely lands the repair. `size_vram` exceeds `weights` because it includes the previous run's KV cache, which is also legitimately available for reuse.
+
+**Invariant 8 — window resolution is idempotent across consecutive runs.** Two runs of the same model on an otherwise-idle machine resolve to the same window and the same `limited_by`, whether or not the first left the model resident. What is available to a model includes whatever that model is already holding.
+
+**Invariant 9 — still measured, never guessed.** Take the resident figure from `/api/ps`, matching by name the way `weights_bytes` matches against `/api/tags` (exact name, then `:latest`). A model that is not resident contributes nothing. If `/api/ps` cannot be read or its shape is wrong, that is the same malformed-response case as its two sibling endpoints: raise `GeometryError`, never assume a number. **Do not** substitute a default — a wrong residency figure moves the window in the direction that overcommits.
+
+Falsification tests, all offline with injected responders:
+
+- Two `plan_window` calls, the second with `/api/ps` reporting the model resident at a plausible `size_vram` and free VRAM reduced by that much, return the identical `WindowPlan`. This is invariant 8 stated directly; it must fail if the residency term is dropped.
+- A *different* model being resident does not inflate this model's window — only the requested model's own residency is added back.
+- `/api/ps` returning `{"models": null}`, a list, a string, or a non-JSON body each raise `GeometryError`, matching the guards its sibling endpoints already carry.
+- Mutation: drop the residency term and confirm the idempotence test goes RED with the `window 0` shape from the table above.
+
+Then run the CLI **twice in a row** against a real model and confirm both runs report the same window.
+
+---
+
 ## Done when
 
 - `pytest -q` green, and green with `socket.socket.connect` patched to raise.
@@ -130,4 +169,5 @@ Falsification tests:
 - An impossible window refuses before turn 1, exit 3, with the arithmetic printed and no model call made.
 - The same failure mid-run is `budget_exhausted`, exit 2, with the branch preserved.
 - Every prompt sent satisfies `estimate_tokens(prompt) + num_predict <= window`.
-- A real CLI run against a small local model completes a repair with `--window` set low enough to force degradation.
+- Two consecutive CLI runs against the same model report the same window.
+- A real CLI run with `--window` low enough to force degradation sends a prompt at a degraded rung, records that rung, and reaches the model — **corrected 2026-08-09**: this bullet previously required the run to *complete a repair*, which is a property of the model, not of robigo. A 1.5b–7b local model frequently fails a repair for reasons visible in its own output (malformed action, wrong file, mismatched SEARCH block), and no amount of correct wiring changes that. What this slice must demonstrate is that degradation happens, is recorded, and produces a prompt the server accepts.
