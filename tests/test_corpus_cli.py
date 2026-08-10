@@ -118,6 +118,46 @@ def test_resolve_targets_mixes_absolute_and_relative_targets_in_one_call(tmp_pat
 
 
 # ---------------------------------------------------------------------------
+# I2 (whole-branch review 2026-08-10) -- an explicit --target is checked
+# against `_is_test_path` too, not only the no-target discovery path
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_targets_refuses_a_relative_target_that_is_test_shaped(tmp_path: Path):
+    # Before I2, `_resolve_targets` applied `_is_test_path` only via
+    # `discover_source_files` (the no-`--target` path) -- an EXPLICIT
+    # `--target tests/test_foo.py` sailed straight through.
+    with pytest.raises(ValueError, match="test-shaped"):
+        cli_module._resolve_targets(tmp_path, tmp_path, [Path("tests/test_foo.py")])
+
+
+def test_resolve_targets_refuses_an_absolute_target_that_is_test_shaped(tmp_path: Path):
+    repo = tmp_path / "repo"
+    (repo / "tests").mkdir(parents=True)
+    absolute = repo / "tests" / "test_foo.py"
+    with pytest.raises(ValueError, match="test-shaped"):
+        cli_module._resolve_targets(repo, repo, [absolute])
+
+
+def test_resolve_targets_refuses_a_target_named_like_a_test_file_without_a_tests_dir(
+    tmp_path: Path,
+):
+    # `_is_test_path` also catches the filename convention alone
+    # (`test_*.py` / `*_test.py`), not only a `tests/`/`test/` directory.
+    with pytest.raises(ValueError, match="test-shaped"):
+        cli_module._resolve_targets(tmp_path, tmp_path, [Path("src/pkg/test_helpers.py")])
+
+
+def test_resolve_targets_still_accepts_an_ordinary_source_target_alongside_the_check(
+    tmp_path: Path,
+):
+    # The control: I2 must not become an over-broad refusal of every
+    # explicit target -- an ordinary source path still passes through.
+    result = cli_module._resolve_targets(tmp_path, tmp_path, [Path("src/pkg/core.py")])
+    assert result == (Path("src/pkg/core.py"),)
+
+
+# ---------------------------------------------------------------------------
 # _clone_repo / _source_sha — the one place this module shells out to a
 # REAL (local, no-network) git subprocess. Dedicated, isolated tests.
 # ---------------------------------------------------------------------------
@@ -219,9 +259,10 @@ def _stub_pipeline(
     monkeypatch.setattr(cli_module, "_clone_repo", lambda repo, dest: None)
     monkeypatch.setattr(cli_module, "_source_sha", lambda clone: "deadbeef" * 5)
     monkeypatch.setattr(cli_module, "sentinel_ok", lambda clone, runner: sentinel)
+    default_base = Baseline(broken=0, executed=1, seconds=1.0)
     monkeypatch.setattr(
         cli_module, "measure_baseline",
-        lambda clone, runner: base if base is not None else Baseline(0, 1.0),
+        lambda clone, runner: base if base is not None else default_base,
     )
     monkeypatch.setattr(cli_module, "_resolve_targets", lambda repo, clone, given: targets)
     captured: dict[str, object] = {}
@@ -348,7 +389,10 @@ def test_target_flag_is_resolved_and_forwarded_to_generate_corpus(
     monkeypatch.setattr(cli_module, "_clone_repo", lambda repo, dest: None)
     monkeypatch.setattr(cli_module, "_source_sha", lambda clone: "s" * 40)
     monkeypatch.setattr(cli_module, "sentinel_ok", lambda clone, runner: True)
-    monkeypatch.setattr(cli_module, "measure_baseline", lambda clone, runner: Baseline(0, 1.0))
+    monkeypatch.setattr(
+        cli_module, "measure_baseline",
+        lambda clone, runner: Baseline(broken=0, executed=1, seconds=1.0),
+    )
 
     def spy_resolve_targets(repo, clone, given):
         seen["given"] = given
@@ -422,7 +466,10 @@ def test_absolute_target_outside_repo_is_a_usage_error_not_a_crash(
 ):
     monkeypatch.setattr(cli_module, "_clone_repo", lambda repo, dest: None)
     monkeypatch.setattr(cli_module, "sentinel_ok", lambda clone, runner: True)
-    monkeypatch.setattr(cli_module, "measure_baseline", lambda clone, runner: Baseline(0, 1.0))
+    monkeypatch.setattr(
+        cli_module, "measure_baseline",
+        lambda clone, runner: Baseline(broken=0, executed=1, seconds=1.0),
+    )
     elsewhere = tmp_path.parent / "definitely-elsewhere.py"
     code = cli_module.corpus_main([
         "--repo", str(tmp_path), "--out", str(tmp_path / "out.json"),
@@ -460,7 +507,7 @@ def _end_to_end_runner(calc_broken_content: str):
     breakage to certify the harness) and the later real generation pass."""
 
     def runner(repo: Path, package: str) -> str:
-        marker = f"MODULE_UNDER_TEST={repo / 'src' / 'mylib' / '__init__.py'}\n"
+        marker = f"MODULE_UNDER_TEST={repo / 'src' / 'mylib' / '__init__.py'}\nEXIT_CODE=0\n"
         calc = (repo / "src" / "mylib" / "calc.py").read_text()
         if calc == calc_broken_content:
             return marker + (
@@ -520,7 +567,7 @@ def test_a_real_run_against_a_repo_with_no_sentinel_target_available_aborts(
     # sentinel_ok fail against this real clone, and corpus_main must abort
     # rather than proceed to "generate" an all-survivors corpus.
     def blind_runner(repo: Path, package: str) -> str:
-        marker = f"MODULE_UNDER_TEST={repo / 'src' / 'mylib' / '__init__.py'}\n"
+        marker = f"MODULE_UNDER_TEST={repo / 'src' / 'mylib' / '__init__.py'}\nEXIT_CODE=0\n"
         return marker + "0 failed, 2 passed\n"
 
     monkeypatch.setattr(cli_module, "pytest_runner", blind_runner)

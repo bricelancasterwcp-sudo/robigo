@@ -21,6 +21,11 @@ from robigo.profile.fixtures import (
     as_corpus_records,
     fixtures_from_corpus,
 )
+from robigo.profile.verify import Baseline
+
+_BASE = Baseline(broken=0, executed=430, seconds=12.3)
+"""A stand-in `Baseline` (I1, whole-branch review 2026-08-10) -- every
+`write_corpus` call in this module now requires one."""
 
 
 @pytest.fixture(autouse=True)
@@ -74,7 +79,7 @@ def test_provenance_is_honest_not_a_fabricated_looking_measurement():
 
 def test_as_corpus_records_round_trips_through_a_real_corpus_file(tmp_path: Path):
     out = tmp_path / "fixtures-v1.json"
-    write_corpus(as_corpus_records(), out, name=CORPUS_NAME, dropped=())
+    write_corpus(as_corpus_records(), out, name=CORPUS_NAME, dropped=(), baseline=_BASE)
     name, records, dropped = read_corpus(out)
     assert name == CORPUS_NAME == "fixtures-v1"
     assert records == as_corpus_records()
@@ -118,7 +123,12 @@ def _record(**kw: object) -> CorpusRecord:
 def test_fixtures_from_corpus_is_the_exact_inverse_of_as_corpus_records():
     # The strongest possible pin: converting fixtures-v1 to corpus records
     # and back must reproduce FIXTURES exactly, field for field.
-    assert fixtures_from_corpus(as_corpus_records()) == FIXTURES
+    result = fixtures_from_corpus(as_corpus_records())
+    assert result.fixtures == FIXTURES
+    # I4 (whole-branch review 2026-08-10): none of the five bundled
+    # fixtures should ever be dropped at conversion time -- they are the
+    # exact shapes `stages.fixture_body`'s own wrapper was designed around.
+    assert result.dropped == ()
 
 
 def test_original_and_expect_map_from_broken_and_fixed_not_swapped():
@@ -134,7 +144,7 @@ def test_original_and_expect_map_from_broken_and_fixed_not_swapped():
         path=mutant.path, line=mutant.line,
         broken=mutant.mutated, fixed=mutant.original, operator=mutant.operator,
     )
-    fixture = fixtures_from_corpus([record])[0]
+    fixture = fixtures_from_corpus([record]).fixtures[0]
     assert fixture.original == mutant.mutated == record.broken
     assert fixture.expect == mutant.original == record.fixed
     assert fixture.original != fixture.expect  # guards against a vacuous pass
@@ -148,12 +158,14 @@ def test_fixtures_from_corpus_preserves_order():
         _record(name="b", path=Path("b.py")),
         _record(name="c", path=Path("c.py")),
     )
-    fixtures = fixtures_from_corpus(records)
+    fixtures = fixtures_from_corpus(records).fixtures
     assert [f.name for f in fixtures] == ["a", "b", "c"]
 
 
 def test_fixtures_from_corpus_on_no_records_returns_an_empty_tuple():
-    assert fixtures_from_corpus(()) == ()
+    result = fixtures_from_corpus(())
+    assert result.fixtures == ()
+    assert result.dropped == ()
 
 
 def test_fixture_filename_is_a_string_not_a_path_object():
@@ -161,7 +173,7 @@ def test_fixture_filename_is_a_string_not_a_path_object():
     # Path) -- fails if the conversion leaks a Path where stages.py's own
     # `landing_prompt`/`_Good`-style test fakes expect a plain string to
     # substring-match against a prompt.
-    fixture = fixtures_from_corpus([_record()])[0]
+    fixture = fixtures_from_corpus([_record()]).fixtures[0]
     assert isinstance(fixture.filename, str)
     assert fixture.filename == "src/mylib/calc.py"
 
@@ -171,12 +183,52 @@ def test_fixtures_from_corpus_round_trips_through_a_written_corpus_file(tmp_path
     # back, convert -- no in-memory record ever reused.
     records = (_record(),)
     out = tmp_path / "generated.json"
-    write_corpus(records, out, name="mylib-v1", dropped=())
+    write_corpus(records, out, name="mylib-v1", dropped=(), baseline=_BASE)
     _, read_records, _ = read_corpus(out)
-    fixtures = fixtures_from_corpus(read_records)
+    fixtures = fixtures_from_corpus(read_records).fixtures
     assert fixtures == (
         Fixture(
             name="calc-dropped_return-2", filename="src/mylib/calc.py",
             original="    sum(values)\n", expect="    return sum(values)\n",
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# I4 (whole-branch review 2026-08-10) — a record whose wrapped body does
+# not parse is dropped at conversion time, and the drop is stated
+# ---------------------------------------------------------------------------
+
+
+def test_a_record_whose_wrapped_body_does_not_parse_is_dropped_not_passed_through():
+    # A line cut from inside a list comprehension's own `if` clause is a
+    # real shape `candidates()` can produce (a real example: `action/
+    # codec.py:49`'s `if not any(...)` inside `_dangling_search_markers`)
+    # -- not a complete statement in isolation at ANY indent, so no filler
+    # or re-indentation can make `stages.fixture_body`'s wrapper parse it.
+    # Before I4, this reached `stage2_codecs` and scored as "result does
+    # not parse as Python" -- indistinguishable from the model's own
+    # failure.
+    record = _record(
+        name="dangling-inverted_condition-49",
+        broken="        if any(start <= match.start() < end for start, end in spans)\n",
+        fixed="        if not any(start <= match.start() < end for start, end in spans)\n",
+    )
+    result = fixtures_from_corpus([record])
+    assert result.fixtures == ()
+    assert len(result.dropped) == 1
+    assert "dangling-inverted_condition-49" in result.dropped[0]
+    assert "does not parse" in result.dropped[0]
+
+
+def test_a_parsing_record_is_kept_alongside_a_dropped_one_in_the_same_call():
+    good = _record(name="calc-dropped_return-2")
+    bad = _record(
+        name="dangling-inverted_condition-49",
+        broken="        if any(start <= match.start() < end for start, end in spans)\n",
+        fixed="        if not any(start <= match.start() < end for start, end in spans)\n",
+    )
+    result = fixtures_from_corpus([good, bad])
+    assert [f.name for f in result.fixtures] == ["calc-dropped_return-2"]
+    assert len(result.dropped) == 1
+    assert "dangling-inverted_condition-49" in result.dropped[0]

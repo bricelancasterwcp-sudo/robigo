@@ -29,8 +29,8 @@ rather than let a reader assume:
       would have mislabelled every profile it produced once a real corpus
       replaced the fixtures -- carried debt this plan exists partly to
       stop repeating. Neither `CorpusRecord`'s ten fields nor
-      `write_corpus`'s `name`/`dropped` keywords carry a default anywhere
-      in this module.
+      `write_corpus`'s `name`/`dropped`/`baseline` keywords carry a
+      default anywhere in this module.
   10. The round trip is checked two ways, because the two catch different
       defects. `from_json(json.loads(to_json())) == original` (whole-
       object equality) catches a VALUE that changed shape in transit. It
@@ -69,6 +69,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+
+from robigo.profile.verify import Baseline
 
 
 @dataclass(frozen=True)
@@ -166,22 +168,42 @@ def _payload(record: CorpusRecord) -> dict[str, object]:
     }
 
 
+def _baseline_payload(baseline: Baseline) -> dict[str, object]:
+    """`Baseline`'s three fields as JSON -- the one mapping `write_corpus`
+    and `read_corpus_baseline` both use, so the two can never describe the
+    shape two different ways."""
+    return {
+        "broken": baseline.broken,
+        "executed": baseline.executed,
+        "seconds": baseline.seconds,
+    }
+
+
 def write_corpus(
     records: Sequence[CorpusRecord],
     path: Path,
     *,
     name: str,
     dropped: Sequence[str],
+    baseline: Baseline,
 ) -> None:
     """Writes one corpus file to `path`: `name` (the corpus's own identity
     -- a required keyword with no default, so this is the one call site
     that actually produces a corpus's name and it cannot repeat plan 03's
     `corpus="fixtures-v1"` mistake), every record in `records` (each via
-    `_payload`, in the order given), and `dropped` (invariant 11 -- every
+    `_payload`, in the order given), `dropped` (invariant 11 -- every
     candidate this corpus's generator rejected, every target it abandoned,
     every record a time budget cut, as free-form strings; also a required
     keyword with no default, so "nothing was dropped" must be said with an
-    explicit `dropped=()` rather than by leaving the argument out).
+    explicit `dropped=()` rather than by leaving the argument out), and
+    `baseline` (I1, whole-branch review 2026-08-10: every kept record's
+    ground truth is a mutant that broke a `baseline.broken == 0` run --
+    `verify()` now REQUIRES this before a keep, but until this field
+    existed a reader of the corpus file had no way to check that half of
+    spec 5.1's rule was ever satisfied, only the generator's own process
+    memory did. Also a required keyword with no default -- the same
+    "state it, don't let a reader assume it" reasoning `dropped` already
+    follows).
 
     Creates `path`'s parent directories if needed, but touches nothing
     else on disk -- this writes a corpus file, never source (constraints:
@@ -190,16 +212,38 @@ def write_corpus(
         "name": name,
         "records": [_payload(record) for record in records],
         "dropped": list(dropped),
+        "baseline": _baseline_payload(baseline),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def read_corpus(path: Path) -> tuple[str, tuple[CorpusRecord, ...], tuple[str, ...]]:
-    """The inverse of `write_corpus`: the corpus's name, every record (via
+    """The inverse of `write_corpus`, for the three fields every existing
+    caller already unpacks: the corpus's name, every record (via
     `CorpusRecord.from_json`, in the file's own order), and everything
     `"dropped"` named -- all three read back off the filesystem, not
-    reconstructed from an in-memory value (verification standard item 4)."""
+    reconstructed from an in-memory value (verification standard item 4).
+
+    Does NOT also return `baseline` -- growing this function's return
+    tuple to four elements would break every existing 3-tuple unpacking
+    call site over a fact (I1's baseline) that has nothing to do with any
+    of them. `read_corpus_baseline`, below, is the dedicated accessor."""
     payload = json.loads(path.read_text(encoding="utf-8"))
     records = tuple(CorpusRecord.from_json(entry) for entry in payload["records"])
     return payload["name"], records, tuple(payload["dropped"])
+
+
+def read_corpus_baseline(path: Path) -> Baseline:
+    """The `Baseline` `write_corpus` recorded alongside this corpus's
+    records (I1, whole-branch review 2026-08-10) -- a reader can now check
+    that a kept record's reference patch was verified against a clean
+    (`broken == 0`) run without re-running the generator or trusting its
+    process memory, the exact gap I1 closes. Raises `KeyError` if `path`
+    was written before this field existed (no default is fabricated for a
+    fact this old a file never recorded)."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entry = payload["baseline"]
+    return Baseline(
+        broken=entry["broken"], executed=entry["executed"], seconds=entry["seconds"]
+    )

@@ -326,18 +326,24 @@ consciously not fixed, and ruled on.
 
 ## For plan 04 specifically — both sit on its first code path
 
-- **`best_codec()` has no landing floor.** It returns `max(codecs, key=lands)`
-  unconditionally, so a family where every codec lands 0% still names one as
-  "best" — measured live: granite-code:8b returned exactly that, a 0%-landing
-  codec quoted as the family's best. Plan 04 is the first consumer that would
-  read `best_codec()` to make a real decision; wire the floor before that read
-  happens, not after.
-- **`corpus` is a kwarg default (`"fixtures-v1"`), not derived from what was
-  actually run.** Nothing ties the string to `FIXTURES`'s own identity, so
-  when plan 04 swaps in a mutation-generated corpus, every profile it produces
-  will keep saying `fixtures-v1` unless the call site remembers to pass a new
-  string by hand — the exact kind of drift `dropped`/`measured` exist to
-  prevent everywhere else in this schema.
+**Both items below are RESOLVED, in plan 04 itself (task 4) and confirmed
+still fixed by its whole-branch fix wave (I7, ruled 2026-08-10) — this
+section previously listed them as open, which would have stated two
+falsehoods about the code plan 05 builds on. Kept here, marked, rather than
+deleted, so the record of what was found and when is not lost.**
+
+- ~~**`best_codec()` has no landing floor.**~~ **Fixed.**
+  `Profile.best_codec()` (`src/robigo/profile/schema.py`) now requires
+  `lands > _LANDING_MIN` before naming a codec "best", returning `None`
+  when every codec landed at or below the floor — a 0%-landing codec is
+  never quoted as best.
+- ~~**`corpus` is a kwarg default (`"fixtures-v1"`).**~~ **Fixed.**
+  `run_profile`'s `corpus: str` parameter (`src/robigo/profile/report.py`)
+  carries no default; every caller must name the corpus explicitly.
+  `cli.profile_main` passes `robigo.profile.fixtures.CORPUS_NAME` — one
+  definition, not a second literal — and `robigo corpus`'s own output
+  (`cli.corpus_main`) derives its `name` from `--repo`, never a fixed
+  string.
 
 ## Deferred with rulings, non-blocking
 

@@ -106,9 +106,21 @@ class Baseline:
     a copy with no `.git` fails every git-dependent test. `seconds` is the
     real wall-clock time `runner` took, measured by this module, not
     parsed out of the runner's own text -- so it is honest even against a
-    runner whose text says nothing about timing at all."""
+    runner whose text says nothing about timing at all.
+
+    `executed` is `passed + broken` -- every test this baseline run actually
+    RAN, as opposed to one a collection error or an early exit (`-x`) kept
+    from ever starting (whole-branch review C2, ruled 2026-08-10). `verify`
+    compares a mutant run's own `executed` total against this figure before
+    trusting any failure count: a real single-test regression changes the
+    passed/broken split without changing the total (`600` stays `600`
+    whether it reads `600 passed` or `599 passed, 1 failed`), while a
+    collection error or a `PYTEST_ADDOPTS=-x` early exit changes the total
+    itself, and no comparison of `broken` alone against this baseline could
+    ever catch that."""
 
     broken: int
+    executed: int
     seconds: float
 
 
@@ -151,6 +163,7 @@ class Verdict:
 
 _FAILED_COUNT = re.compile(r"(\d+) failed")
 _ERROR_COUNT = re.compile(r"(\d+) error")
+_PASSED_COUNT = re.compile(r"(\d+) passed")
 """Independent, unanchored searches -- deliberately NOT one combined
 pattern like `r"(\\d+) failed, (\\d+) error"`, because pytest's own summary
 line omits either clause entirely when its count is zero (`"1 error in
@@ -166,6 +179,29 @@ test, `"FAILED <nodeid> - <reason>"` or `"ERROR <nodeid>"` (setup/
 collection errors often carry no ` - reason` suffix), each anchored at the
 start of its own line. `\\S+` stops at the first whitespace, which is the
 node id's own boundary for every id this project's suite produces."""
+
+_EXIT_CODE = re.compile(r"^EXIT_CODE=(-?\d+)$", re.MULTILINE)
+"""The exit-code marker `pytest_runner` prepends (alongside `MODULE_UNDER_
+TEST=`), naming pytest's own real return code for that run -- whole-branch
+review C1/C2, ruled 2026-08-10: the old `pytest_runner` shelled out to
+pytest and then threw the return code away entirely, so a run pytest itself
+marked INTERRUPTED (a collection error aborts the whole session, exit code
+2, not 0 or 1) was scored purely on its failure/error counts, same as an
+ordinary completed run. A canned test runner that doesn't care about this
+check still includes a well-formed `EXIT_CODE=0` (via this test file's
+`_output` helper) unless it is specifically exercising the abnormal-exit
+path."""
+
+_INTERRUPTED_MARKERS = ("Interrupted:", "INTERNALERROR")
+"""Substrings pytest's own text prints when a run did not complete
+normally: `"!!!!!!!!!!!!!!!!!!! Interrupted: N errors during collection
+!!!!!!!!!!!!!!!!!!!"` for a collection error (measured 2026-08-10 against a
+real `swapped_args` mutation to `action/codec.py`'s module-level
+`re.compile(pattern, flags)` -- exit code 2, this exact text), and
+`"INTERNALERROR>"` for a crash inside pytest itself. Checked as plain
+substrings, not anchored patterns -- pytest does not print either at a
+fixed column, and a false positive here only ever REJECTS a result that an
+exit-code check below would very likely have rejected anyway."""
 
 _MODULE_MARKER = re.compile(r"^MODULE_UNDER_TEST=(.+)$", re.MULTILINE)
 """The marker `pytest_runner` prepends, naming what `import <package>`
@@ -191,6 +227,53 @@ def _broken_ids(text: str) -> tuple[str, ...]:
     them. Used only to isolate the single new failure a kept mutant must
     name (invariant 6); see `verify`."""
     return tuple(_BROKEN_ID.findall(text))
+
+
+def _passed_count(text: str) -> int:
+    """The `"N passed"` figure alone, 0 if pytest's summary never printed
+    one at all (a fully-interrupted collection error reports none)."""
+    match = _PASSED_COUNT.search(text)
+    return int(match.group(1)) if match else 0
+
+
+def _executed_total(text: str) -> int:
+    """`passed + broken` -- every test this run actually EXECUTED, matched
+    against `Baseline.executed` by `verify` (whole-branch review C2). A
+    real single-test regression moves one test from the passed side to the
+    broken side without changing this total; a collection error or a
+    `PYTEST_ADDOPTS=-x` early exit shrinks it, which is exactly the
+    signal invariant 6's "exactly one" arithmetic alone cannot see."""
+    return _passed_count(text) + _broken_count(text)
+
+
+def _exit_code(text: str) -> int | None:
+    """The `EXIT_CODE=` marker's value, or `None` if the runner's report
+    carries no such marker at all -- treated the same as "did not
+    complete normally" by `verify`, exactly the convention `_module_path`
+    already uses for a missing `MODULE_UNDER_TEST=` marker."""
+    match = _EXIT_CODE.search(text)
+    return int(match.group(1)) if match else None
+
+
+def _run_did_not_complete(text: str) -> str | None:
+    """`None` if `text` reports a normal, comparable pytest run (exit code
+    0 or 1, no interruption/crash text); otherwise the reason it does not
+    -- whole-branch review C1/C2's shared predicate, checked before
+    `verify` ever asks "exactly one". A collection error exits 2
+    ("Interrupted: N errors during collection"), never 0 or 1, and prints
+    `"Interrupted:"` -- measured directly against a real `swapped_args`
+    mutation to `action/codec.py`'s module-level `re.compile(pattern,
+    flags)` (whole-branch review C1). `PYTEST_ADDOPTS=-x` does NOT trip
+    this check on its own (an early exit after the first failure still
+    exits 1, with no interruption text) -- that case is caught downstream
+    by `verify`'s own executed-total comparison against the baseline, not
+    here."""
+    exit_code = _exit_code(text)
+    if exit_code not in (0, 1):
+        return f"pytest did not complete normally (exit code {exit_code!r})"
+    if any(marker in text for marker in _INTERRUPTED_MARKERS):
+        return "pytest reported an interrupted run or an internal error"
+    return None
 
 
 def _module_path(text: str) -> Path | None:
@@ -414,10 +497,18 @@ _SENTINEL_SEARCH_LIMIT = 8
 """Bounded attempts for the general sentinel search -- each attempt is one
 full `runner` call, measured at ~15s against robigo's own suite (this
 plan's "Measured before planning" section), so this bounds a worst-case
-search to roughly two minutes. Also doubles as the very first data point
-on the target's own keep rate (Task 4's per-target reporting, invariant
-13) -- these are real candidates from the real repo, not throwaway
-probes."""
+search to roughly two minutes.
+
+Does NOT double as a data point on the target's own keep rate (I3,
+whole-branch review 2026-08-10, correcting an earlier version of this
+docstring that claimed otherwise): `sentinel_ok` runs entirely inside
+`cli.corpus_main`, BEFORE `generate_corpus` is ever called, and its own
+candidates are never threaded into `GenerationResult.targets` or
+`.dropped` -- `render_report`'s printed "candidates proposed/tried/kept"
+and `.seconds` cover only `generate_corpus`'s own loop, not this search.
+A sentinel attempt that happened to break something is not recorded as a
+keep anywhere a reader of the corpus report would see it, and is not
+counted toward any target's `proposed`/`tried` either."""
 
 
 def _sentinel_via_search(repo: Path, runner: Runner) -> bool:
@@ -590,7 +681,9 @@ def baseline(repo: Path, runner: Runner) -> Baseline:
     text = runner(repo, package)
     elapsed = time.monotonic() - start
     _assert_in_clone(text, repo)
-    return Baseline(broken=_broken_count(text), seconds=elapsed)
+    return Baseline(
+        broken=_broken_count(text), executed=_executed_total(text), seconds=elapsed
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -636,13 +729,79 @@ def verify(mutant: Mutant, repo: Path, baseline: Baseline, runner: Runner) -> Ve
     there is no way to attribute a new failure by id under a nonzero
     baseline without guessing -- and invariant 6 is explicit that a kept
     mutant without a verified id is not acceptable, so this function
-    declines rather than guessing."""
+    declines rather than guessing.
+
+    Four checks added by the whole-branch review (2026-08-10), all before
+    "exactly one" is ever asked, and all producing `kept=False` with a
+    `reason` naming which one fired:
+
+    C1/C2 -- `_run_did_not_complete`: a collection error (a mutant that
+    breaks a module's IMPORT, e.g. `swapped_args` on a module-level
+    `re.compile(pattern, flags)`) makes pytest exit 2 and print
+    "Interrupted: N errors during collection" -- never 0 or 1 broken tests
+    reported as an ordinary failure, and rejected here before `broken` is
+    even computed for the "exactly one" arithmetic. Then the executed-test
+    total (`_executed_total`, `passed + broken`) must equal `baseline.
+    executed` -- measured 2026-08-10: `PYTEST_ADDOPTS=-x` ambient in the
+    shell makes a mutant that broke 2 tests report only 1 (pytest stops at
+    the first failure), which passes the exit-code check (a clean `-x`
+    exit is still code 1) but shrinks the executed total below the
+    baseline's, which THIS check catches.
+
+    I1 -- a keep additionally requires `baseline.broken == 0`: the
+    reference patch's own cleanliness (spec 5.1's other half) must be
+    verified, not merely assumed transitively from `baseline()` having
+    run once. A dirty baseline (measured 2026-08-10: 6, in a `git archive`
+    copy) makes EVERY candidate against it unkeepable, regardless of net
+    count -- checked before the net computation, not folded into the
+    "cannot isolate an id" side effect the old code relied on implicitly.
+
+    C2(c) -- the isolated id must itself look like a pytest node id
+    (`"::"` present). A bare file path (`ERROR src/pkg/mod.py`, no `::`)
+    names a collection error, not one specific test, and must never become
+    a kept record's `test_id` even in the (now unreachable via the checks
+    above, but not proven unreachable by construction) case where it is
+    the only broken id in the report."""
     text = _apply_and_run(repo, mutant, runner)
 
     try:
         _assert_in_clone(text, repo)
     except WrongTreeError as exc:
         return Verdict(kept=False, failures=_broken_count(text), test_id=None, reason=str(exc))
+
+    if baseline.broken != 0:
+        return Verdict(
+            kept=False,
+            failures=_broken_count(text),
+            test_id=None,
+            reason=(
+                f"baseline is not clean ({baseline.broken} pre-existing broken "
+                f"test(s)) -- a kept mutant requires baseline.broken == 0 so "
+                f"the reference patch it certifies is verified clean, not "
+                f"merely inferred (I1, whole-branch review 2026-08-10)"
+            ),
+        )
+
+    incomplete = _run_did_not_complete(text)
+    if incomplete is not None:
+        return Verdict(
+            kept=False, failures=_broken_count(text), test_id=None, reason=incomplete
+        )
+
+    executed = _executed_total(text)
+    if executed != baseline.executed:
+        return Verdict(
+            kept=False,
+            failures=_broken_count(text),
+            test_id=None,
+            reason=(
+                f"executed {executed} test(s), baseline executed "
+                f"{baseline.executed} -- not the same suite ran (a collection "
+                f"error or an early exit such as PYTEST_ADDOPTS=-x shrinks "
+                f"this number without necessarily changing failures+errors "
+                f"alone; whole-branch review C1/C2, 2026-08-10)"
+            ),
+        )
 
     broken = _broken_count(text)
     net = broken - baseline.broken
@@ -668,6 +827,18 @@ def verify(mutant: Mutant, repo: Path, baseline: Baseline, runner: Runner) -> Ve
                 f"{len(ids)} broken test ids, not 1 -- cannot isolate which "
                 f"one is new without guessing, so no diagnostic test id can "
                 f"be recorded"
+            ),
+        )
+    if "::" not in ids[0]:
+        return Verdict(
+            kept=False,
+            failures=broken,
+            test_id=None,
+            reason=(
+                f"the one broken id the runner reported ({ids[0]!r}) is not a "
+                f"pytest node id (no '::') -- a bare file/module path names a "
+                f"collection error, not one specific test (C2(c), whole-branch "
+                f"review 2026-08-10)"
             ),
         )
     return Verdict(
@@ -720,8 +891,31 @@ def pytest_runner(repo: Path, package: str) -> str:
 
     Runs with `--tb=no -rfE`: no tracebacks (keeps output bounded and
     deterministic), but the short summary info section that names every
-    broken test's id, which `_broken_ids` depends on."""
+    broken test's id, which `_broken_ids` depends on.
+
+    `PYTEST_ADDOPTS` and `PYTEST_PLUGINS` are dropped from the copied
+    environment before either subprocess runs (whole-branch review C2,
+    ruled 2026-08-10) -- both are ordinary things to have exported in a
+    real operator's shell, and both change what pytest actually does
+    without appearing anywhere in `env`'s own values a caller might think
+    to check: measured directly, `PYTEST_ADDOPTS=-x` ambient in the
+    launching shell turned a mutant that broke 2 tests into a report of
+    exactly 1 (pytest stopped at the first failure), which the OLD
+    `verify()` scored as "exactly one net new failure" -- a false keep,
+    manufactured by a shell variable this function never even looked at.
+    `os.environ.copy()` still inherits every OTHER ambient variable (this
+    is deliberately not a full sanitisation) -- only these two, plugin-
+    loading and pytest-option-injecting by design, are the ones proven to
+    change a VERDICT rather than merely cosmetic output.
+
+    Prepends an `EXIT_CODE=<n>` marker naming pytest's own real return
+    code -- previously computed and thrown away entirely. A collection
+    error exits 2 (`"Interrupted: N errors during collection"`), never 0
+    or 1; `verify`'s `_run_did_not_complete` rejects on this before ever
+    asking "exactly one" (whole-branch review C1)."""
     env = os.environ.copy()
+    env.pop("PYTEST_ADDOPTS", None)
+    env.pop("PYTEST_PLUGINS", None)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONPATH"] = str(repo / "src")
 
@@ -747,4 +941,4 @@ def pytest_runner(repo: Path, package: str) -> str:
         text=True,
         timeout=_PYTEST_TIMEOUT,
     )
-    return marker + result.stdout + result.stderr
+    return f"{marker}EXIT_CODE={result.returncode}\n{result.stdout}{result.stderr}"

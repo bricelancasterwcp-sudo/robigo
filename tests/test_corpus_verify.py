@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 import robigo.profile.verify as verify_module
-from robigo.profile.corpus import Mutant
+from robigo.profile.corpus import Mutant, candidates
 from robigo.profile.verify import (
     Baseline,
     Verdict,
@@ -79,14 +79,18 @@ def repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _output(text: str, *, module_path: object) -> str:
+def _output(text: str, *, module_path: object, exit_code: object = 0) -> str:
     """Builds runner output the way a well-formed runner does: a
-    `MODULE_UNDER_TEST=` marker line followed by pytest-shaped text.
-    `module_path=None` omits the marker entirely -- a runner that never
-    says where it ran, exercised by the dedicated "no marker" tests."""
-    if module_path is None:
-        return text
-    return f"MODULE_UNDER_TEST={module_path}\n{text}"
+    `MODULE_UNDER_TEST=` marker line, an `EXIT_CODE=` marker line
+    (whole-branch review C1/C2: defaults to 0, an ordinary completed run,
+    for every existing caller that doesn't care), then pytest-shaped text.
+    `module_path=None` omits the `MODULE_UNDER_TEST=` marker entirely -- a
+    runner that never says where it ran, exercised by the dedicated "no
+    marker" tests. `exit_code=None` omits the `EXIT_CODE=` marker the same
+    way, for the dedicated abnormal-exit tests."""
+    marker = "" if module_path is None else f"MODULE_UNDER_TEST={module_path}\n"
+    exit_marker = "" if exit_code is None else f"EXIT_CODE={exit_code}\n"
+    return marker + exit_marker + text
 
 
 def _inside(repo: Path) -> Path:
@@ -104,7 +108,7 @@ def _outside(repo: Path) -> Path:
 
 def test_baseline_is_frozen():
     # Fails if `frozen=True` is dropped from the dataclass decorator.
-    b = Baseline(broken=0, seconds=1.0)
+    b = Baseline(broken=0, executed=430, seconds=1.0)
     with pytest.raises(dataclasses.FrozenInstanceError):
         b.broken = 1  # type: ignore[misc]
 
@@ -690,7 +694,7 @@ def test_a_disciplined_caller_would_have_aborted_on_the_measured_blind_harness(r
         return _output("0 failed, 430 passed in 4.00s\n", module_path=_inside(r))
 
     mutant = Mutant(TARGET_RELATIVE, 2, "    return 1\n", "    return 2\n", "off_by_one")
-    base = Baseline(broken=0, seconds=1.0)
+    base = Baseline(broken=0, executed=430, seconds=1.0)
     verdict = verify(mutant, repo, base, blind_runner)
     assert verdict.kept is False
     assert "survived" in verdict.reason
@@ -788,7 +792,7 @@ def test_verify_keeps_a_mutant_with_exactly_one_net_new_failure_and_records_its_
             module_path=_inside(r),
         )
 
-    verdict = verify(_mutant(), repo, Baseline(broken=0, seconds=1.0), runner)
+    verdict = verify(_mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), runner)
     assert verdict.kept is True
     assert verdict.failures == 1
     assert verdict.test_id == "tests/test_x.py::test_y"
@@ -799,7 +803,7 @@ def test_verify_rejects_a_mutant_with_zero_net_new_failures(repo: Path):
     def runner(r: Path, package: str) -> str:
         return _output("0 failed, 430 passed in 2.00s\n", module_path=_inside(r))
 
-    verdict = verify(_mutant(), repo, Baseline(broken=0, seconds=1.0), runner)
+    verdict = verify(_mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), runner)
     assert verdict.kept is False
     assert verdict.test_id is None
     assert verdict.failures == 0
@@ -813,7 +817,7 @@ def test_verify_rejects_a_mutant_that_breaks_many_tests(repo: Path):
         lines = "\n".join(f"FAILED tests/test_x.py::test_{i}" for i in range(18))
         return _output(f"{lines}\n18 failed, 412 passed in 4.00s\n", module_path=_inside(r))
 
-    verdict = verify(_mutant(), repo, Baseline(broken=0, seconds=1.0), runner)
+    verdict = verify(_mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), runner)
     assert verdict.kept is False
     assert verdict.test_id is None
     assert verdict.failures == 18
@@ -824,17 +828,20 @@ def test_verify_does_not_keep_when_a_nonzero_baseline_makes_the_new_failure_ambi
     # Measured 2026-08-10: a baseline of 6 pre-existing broken tests. Net
     # is 1 (7 - 6), but a real runner's report names all 7 currently-
     # broken tests, not a delta -- so the new one cannot be isolated by id
-    # without guessing, and invariant 6 requires the id, not just the
-    # count, so this must NOT be kept.
+    # without guessing. I1 (whole-branch review 2026-08-10) now rejects
+    # this outright and explicitly on `baseline.broken != 0` before ever
+    # reaching the net/id arithmetic -- the SAME "must not be kept"
+    # outcome invariant 6 already required, now reached by a direct
+    # precondition rather than as a side effect of id-counting.
     def runner(r: Path, package: str) -> str:
         lines = "\n".join(f"FAILED tests/test_x.py::test_{i}" for i in range(7))
         return _output(f"{lines}\n7 failed, 423 passed in 4.00s\n", module_path=_inside(r))
 
-    verdict = verify(_mutant(), repo, Baseline(broken=6, seconds=1.0), runner)
+    verdict = verify(_mutant(), repo, Baseline(broken=6, executed=430, seconds=1.0), runner)
     assert verdict.kept is False
     assert verdict.test_id is None
     assert verdict.failures == 7
-    assert "cannot isolate" in verdict.reason
+    assert "baseline is not clean" in verdict.reason
 
 
 def test_verify_rejects_a_survivor_reported_on_the_wrong_tree_rather_than_calling_it_survived(
@@ -845,7 +852,7 @@ def test_verify_rejects_a_survivor_reported_on_the_wrong_tree_rather_than_callin
     def runner(r: Path, package: str) -> str:
         return _output("0 failed, 430 passed in 2.00s\n", module_path=_outside(r))
 
-    verdict = verify(_mutant(), repo, Baseline(broken=0, seconds=1.0), runner)
+    verdict = verify(_mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), runner)
     assert verdict.kept is False
     assert "survived" not in verdict.reason
     assert "clone" in verdict.reason or "tree" in verdict.reason.lower()
@@ -861,7 +868,7 @@ def test_verify_rejects_a_looks_kept_result_reported_on_the_wrong_tree(repo: Pat
             module_path=_outside(r),
         )
 
-    verdict = verify(_mutant(), repo, Baseline(broken=0, seconds=1.0), runner)
+    verdict = verify(_mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), runner)
     assert verdict.kept is False
     assert verdict.test_id is None
 
@@ -869,13 +876,13 @@ def test_verify_rejects_a_looks_kept_result_reported_on_the_wrong_tree(repo: Pat
 def test_verify_raises_valueerror_for_an_absolute_mutant_path(repo: Path):
     bad = Mutant(Path("/etc/passwd"), 1, "a\n", "b\n", "off_by_one")
     with pytest.raises(ValueError):
-        verify(bad, repo, Baseline(broken=0, seconds=1.0), lambda r, package: "430 passed\n")
+        verify(bad, repo, Baseline(broken=0, executed=430, seconds=1.0), lambda r, package: "430 passed\n")
 
 
 def test_verify_raises_valueerror_for_a_mutant_path_that_escapes_via_traversal(repo: Path):
     bad = Mutant(Path("../outside.py"), 1, "a\n", "b\n", "off_by_one")
     with pytest.raises(ValueError):
-        verify(bad, repo, Baseline(broken=0, seconds=1.0), lambda r, package: "430 passed\n")
+        verify(bad, repo, Baseline(broken=0, executed=430, seconds=1.0), lambda r, package: "430 passed\n")
 
 
 def test_verify_actually_writes_the_mutation_before_the_runner_is_called(repo: Path):
@@ -888,7 +895,7 @@ def test_verify_actually_writes_the_mutation_before_the_runner_is_called(repo: P
         return _output("0 failed, 430 passed in 1.00s\n", module_path=_inside(r))
 
     m = _mutant()
-    verify(m, repo, Baseline(broken=0, seconds=1.0), spy_runner)
+    verify(m, repo, Baseline(broken=0, executed=430, seconds=1.0), spy_runner)
     assert seen["content"] == TARGET_SOURCE.replace(m.original, m.mutated)
 
 
@@ -899,7 +906,7 @@ def test_verify_derives_and_passes_the_mutants_own_package_not_a_fixed_name(repo
         seen["package"] = package
         return _output("0 failed, 430 passed in 1.00s\n", module_path=_inside(r))
 
-    verify(_mutant(), repo, Baseline(broken=0, seconds=1.0), spy_runner)
+    verify(_mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), spy_runner)
     assert seen["package"] == "robigo"
 
 
@@ -910,7 +917,7 @@ def test_verify_restores_the_file_after_a_kept_result(repo: Path):
             module_path=_inside(r),
         )
 
-    verify(_mutant(), repo, Baseline(broken=0, seconds=1.0), runner)
+    verify(_mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), runner)
     assert (repo / TARGET_RELATIVE).read_text() == TARGET_SOURCE
 
 
@@ -918,7 +925,7 @@ def test_verify_restores_the_file_after_a_rejected_result(repo: Path):
     def runner(r: Path, package: str) -> str:
         return _output("0 failed, 430 passed in 2.00s\n", module_path=_inside(r))
 
-    verify(_mutant(), repo, Baseline(broken=0, seconds=1.0), runner)
+    verify(_mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), runner)
     assert (repo / TARGET_RELATIVE).read_text() == TARGET_SOURCE
 
 
@@ -927,7 +934,7 @@ def test_verify_restores_the_file_even_when_the_runner_raises(repo: Path):
         raise RuntimeError("boom")
 
     with pytest.raises(RuntimeError, match="boom"):
-        verify(_mutant(), repo, Baseline(broken=0, seconds=1.0), exploding_runner)
+        verify(_mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), exploding_runner)
     assert (repo / TARGET_RELATIVE).read_text() == TARGET_SOURCE
 
 
@@ -937,7 +944,269 @@ def test_verify_uses_apply_and_raises_if_the_mutants_original_does_not_match_the
     # match what's actually on disk in the clone.
     stale = Mutant(TARGET_RELATIVE, 2, "    return 999\n", "    return 2\n", "off_by_one")
     with pytest.raises(ValueError):
-        verify(stale, repo, Baseline(broken=0, seconds=1.0), lambda r, package: "430 passed\n")
+        verify(stale, repo, Baseline(broken=0, executed=430, seconds=1.0), lambda r, package: "430 passed\n")
+
+
+# ---------------------------------------------------------------------------
+# C1 (whole-branch review 2026-08-10) — a collection error must never read
+# as "exactly one" merely because pytest happens to report "1 error"
+# ---------------------------------------------------------------------------
+
+
+def test_c1_a_real_import_breaking_mutant_produces_a_collection_error_shape(repo: Path):
+    """Grounds the C1 fixture in a REAL `Mutant`, cut from the exact
+    `re.compile(pattern, flags)` shape robigo's own `action/codec.py`
+    offers (verification standard item 4), not a synthetic stand-in.
+    `swapped_args` on a module-level `_OPEN_LINE = re.compile(pattern,
+    flags)` swaps the pattern and the flags -- `re.compile` then raises
+    `TypeError` at IMPORT time, because its first argument is no longer a
+    string. This is a fixed point pinned so the behavioural test below
+    (verified against a real pytest run, 2026-08-10) cannot silently drift
+    from what `candidates()` actually proposes for this exact line."""
+    codec_source = '_OPEN_LINE = re.compile(r"^<<<<<<< SEARCH$", re.MULTILINE)\n'
+    mutant = next(
+        m for m in candidates(codec_source, Path("src/robigo/action/codec.py"))
+        if m.operator == "swapped_args"
+    )
+    assert mutant.mutated == '_OPEN_LINE = re.compile(re.MULTILINE, r"^<<<<<<< SEARCH$")\n'
+
+
+_COLLECTION_ERROR_REPORT = (
+    "=========================== short test summary info ============================\n"
+    "ERROR tests/test_codec.py - TypeError: first argument must be string or "
+    "compiled pattern\n"
+    "!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!\n"
+    "1 deselected, 1 error in 0.32s\n"
+)
+"""Reproduces, shape for shape, what a real `pytest -q --tb=no -rfE` run
+printed against the exact mutation above (measured 2026-08-10, run for
+real in an isolated clone): exit code 2, `"Interrupted: N errors during
+collection"`, a bare-FILE id (`ERROR tests/test_codec.py`, no `::`), and
+`0 passed` (no `"passed"` substring at all -- collection aborted before
+any test ran). Before C1's fix, the old `verify()` counted only `broken =
+_broken_count(text) = 1` against a `baseline.broken = 0`, computed `net =
+1`, found exactly one broken id in the report, and returned `kept=True`
+with `test_id="tests/test_codec.py"` -- a FILE, not a node id, and the
+module's tests never ran at all."""
+
+
+def test_c1_an_import_breaking_mutant_is_rejected_not_kept(repo: Path):
+    """C1's acceptance test (verification standard item 4): behavioural,
+    not merely a unit check of one regex. Fails against the code before
+    this fix -- confirmed by reverting `verify`'s C1/C2 checks locally and
+    re-running this exact test, which then asserts `kept is True` never
+    held (see the fix-wave report for the mutation-testing log)."""
+
+    def collection_error_runner(r: Path, package: str) -> str:
+        return _output(_COLLECTION_ERROR_REPORT, module_path=_inside(r), exit_code=2)
+
+    verdict = verify(
+        _mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), collection_error_runner
+    )
+    assert verdict.kept is False
+    assert verdict.test_id is None
+    assert "did not complete normally" in verdict.reason or "exit code" in verdict.reason
+
+
+def test_c1_the_rejection_reason_names_the_abnormal_exit_code(repo: Path):
+    # Invariant: "the reason must say why" (verification standard item 4).
+    def collection_error_runner(r: Path, package: str) -> str:
+        return _output(_COLLECTION_ERROR_REPORT, module_path=_inside(r), exit_code=2)
+
+    verdict = verify(
+        _mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), collection_error_runner
+    )
+    assert "2" in verdict.reason
+
+
+def test_c1_a_collection_error_with_a_baseline_shaped_broken_count_is_still_rejected(repo: Path):
+    # Pins the actual bug shape: `_broken_count` alone reads this exact
+    # report as `1` -- `net == 1` against a zero baseline, precisely the
+    # figure that made the OLD code (which asked only "is net == 1") keep
+    # it. Confirmed directly before asserting the real outcome, so this
+    # test cannot be satisfied by an implementation that accidentally
+    # scores the report as some OTHER broken count instead of actually
+    # checking exit code / Interrupted / executed total.
+    assert _broken_count(_COLLECTION_ERROR_REPORT) == 1
+
+    def collection_error_runner(r: Path, package: str) -> str:
+        return _output(_COLLECTION_ERROR_REPORT, module_path=_inside(r), exit_code=2)
+
+    verdict = verify(
+        _mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), collection_error_runner
+    )
+    assert verdict.kept is False
+
+
+# ---------------------------------------------------------------------------
+# C2 (whole-branch review 2026-08-10) — an ambient PYTEST_ADDOPTS must
+# never change a verdict
+# ---------------------------------------------------------------------------
+
+
+def test_c2_pytest_runner_strips_pytest_addopts_from_the_subprocess_environment(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+):
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-x")
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+        captured.setdefault("env", kwargs.get("env"))
+        if "-c" in cmd:
+            return _FakeCompleted(stdout=str(repo / "src" / "robigo" / "__init__.py"))
+        return _FakeCompleted(stdout="0 failed, 430 passed\n", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    pytest_runner(repo, "robigo")
+    assert "PYTEST_ADDOPTS" not in captured["env"]  # type: ignore[operator]
+
+
+def test_c2_pytest_runner_strips_pytest_plugins_from_the_subprocess_environment(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+):
+    monkeypatch.setenv("PYTEST_PLUGINS", "some_plugin")
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+        captured.setdefault("env", kwargs.get("env"))
+        if "-c" in cmd:
+            return _FakeCompleted(stdout=str(repo / "src" / "robigo" / "__init__.py"))
+        return _FakeCompleted(stdout="0 failed, 430 passed\n", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    pytest_runner(repo, "robigo")
+    assert "PYTEST_PLUGINS" not in captured["env"]  # type: ignore[operator]
+
+
+def test_c2_a_verdict_through_the_real_pytest_runner_is_unaffected_by_ambient_pytest_addopts(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+):
+    """THE brief's required acceptance test for C2 (verification standard
+    item 3): "a test that merely checks the env dict's contents would pass
+    while the behaviour stayed broken." This one does not merely check the
+    env dict -- `subprocess.run` is faked to REPRODUCE real pytest's own
+    `-x` (exit-on-first-failure) semantics, driven by whether the `env` IT
+    RECEIVES still carries `PYTEST_ADDOPTS` -- so if `pytest_runner` ever
+    regressed and stopped stripping it, this fake would report only 1
+    failure (as `PYTEST_ADDOPTS=-x` ambient in the launching shell,
+    measured 2026-08-10, made a real 2-test-breaking mutant report), and
+    `verify()` would wrongly return `kept=True`. With the fix, the fake
+    never sees `PYTEST_ADDOPTS` at all, reports the true 2 failures, and
+    `verify()` correctly rejects it -- proving the BEHAVIOUR, not just the
+    env dict, survives an ambient `PYTEST_ADDOPTS`."""
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-x")
+
+    def fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+        if "-c" in cmd:
+            return _FakeCompleted(stdout=str(repo / "src" / "robigo" / "__init__.py"))
+        env = kwargs.get("env") or {}
+        if "PYTEST_ADDOPTS" in env:  # type: ignore[operator]
+            # The leak this test exists to catch: -x stops after the
+            # FIRST failure, under-reporting a mutant that broke 2.
+            return _FakeCompleted(
+                stdout=(
+                    "FAILED tests/test_x.py::test_a - AssertionError\n"
+                    "1 failed, 428 passed in 2.00s\n"
+                ),
+                returncode=1,
+            )
+        return _FakeCompleted(
+            stdout=(
+                "FAILED tests/test_x.py::test_a - AssertionError\n"
+                "FAILED tests/test_x.py::test_b - AssertionError\n"
+                "2 failed, 428 passed in 2.00s\n"
+            ),
+            returncode=1,
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    verdict = verify(
+        _mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), pytest_runner
+    )
+    assert verdict.kept is False
+    assert verdict.failures == 2
+    assert "too many" in verdict.reason
+
+
+def test_c2_the_executed_total_check_alone_catches_an_early_exit_that_still_exits_1(repo: Path):
+    # A `-x` early exit is NOT caught by the exit-code/Interrupted check
+    # (C1's half) -- it exits cleanly at code 1, same as an ordinary
+    # partial failure. Only the executed-total comparison against the
+    # baseline catches it: pinned directly here, at the `verify()` level,
+    # independent of `pytest_runner`'s own env sanitisation.
+    def early_exit_runner(r: Path, package: str) -> str:
+        return _output(
+            "FAILED tests/test_x.py::test_a - AssertionError\n1 failed, 428 passed in 2.00s\n",
+            module_path=_inside(r), exit_code=1,
+        )
+
+    verdict = verify(
+        _mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), early_exit_runner
+    )
+    assert verdict.kept is False
+    assert "executed" in verdict.reason
+
+
+# ---------------------------------------------------------------------------
+# I1 (whole-branch review 2026-08-10) — a dirty baseline makes every
+# candidate against it unkeepable, checked directly and up front
+# ---------------------------------------------------------------------------
+
+
+def test_i1_a_dirty_baseline_rejects_a_candidate_that_would_otherwise_be_kept(repo: Path):
+    # Isolates I1 from C1/C2 and from invariant 6's id-ambiguity side
+    # effect: a report shaped EXACTLY like an ordinary, clean "exactly one
+    # net new failure" (one id, "::" present, normal exit, matching
+    # executed total) must still be refused when baseline.broken != 0.
+    def runner(r: Path, package: str) -> str:
+        return _output(
+            "FAILED tests/test_x.py::test_y - AssertionError\n1 failed, 429 passed in 2.00s\n",
+            module_path=_inside(r), exit_code=1,
+        )
+
+    verdict = verify(_mutant(), repo, Baseline(broken=1, executed=430, seconds=1.0), runner)
+    assert verdict.kept is False
+    assert verdict.test_id is None
+    assert "baseline is not clean" in verdict.reason
+
+
+def test_i1_a_clean_baseline_with_the_same_report_shape_is_kept(repo: Path):
+    # The control: identical report, `baseline.broken == 0` -- must be
+    # kept, proving I1's check is precise (rejects a dirty baseline,
+    # never a clean one) rather than an over-broad refusal.
+    def runner(r: Path, package: str) -> str:
+        return _output(
+            "FAILED tests/test_x.py::test_y - AssertionError\n1 failed, 429 passed in 2.00s\n",
+            module_path=_inside(r), exit_code=1,
+        )
+
+    verdict = verify(_mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), runner)
+    assert verdict.kept is True
+    assert verdict.test_id == "tests/test_x.py::test_y"
+
+
+# ---------------------------------------------------------------------------
+# C2(c) (whole-branch review 2026-08-10) — the isolated id must itself look
+# like a pytest node id
+# ---------------------------------------------------------------------------
+
+
+def test_c2c_a_bare_file_id_with_no_double_colon_is_never_kept(repo: Path):
+    # Synthetic (not reachable through the checks above, which already
+    # reject this shape earlier via the executed-total mismatch) --
+    # exercises C2(c) as an independent, defence-in-depth check: even a
+    # report that passed every earlier gate must still have its id contain
+    # `"::"` before a keep is returned.
+    def runner(r: Path, package: str) -> str:
+        return _output(
+            "ERROR tests/test_x.py\n1 error, 429 passed in 2.00s\n",
+            module_path=_inside(r), exit_code=1,
+        )
+
+    verdict = verify(_mutant(), repo, Baseline(broken=0, executed=430, seconds=1.0), runner)
+    assert verdict.kept is False
+    assert verdict.test_id is None
+    assert "::" in verdict.reason
 
 
 # ---------------------------------------------------------------------------

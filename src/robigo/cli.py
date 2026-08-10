@@ -23,6 +23,7 @@ from robigo.profile.verify import (
     pytest_runner,
     sentinel_ok,
 )
+from robigo.profile.verify import _is_test_path as is_test_shaped_path
 from robigo.profile.verify import _source_files as discover_source_files
 from robigo.record import new_recorder
 
@@ -347,19 +348,37 @@ def _resolve_targets(
     itself offers, via `robigo.profile.verify._source_files` -- the SAME
     rule `sentinel_ok`'s own general search already uses to decide "which
     files are source", reused rather than a second, independently
-    maintained copy of that filtering logic."""
+    maintained copy of that filtering logic.
+
+    An EXPLICIT `--target` is checked against that same rule too (I2,
+    whole-branch review 2026-08-10) and refused with `ValueError` if it is
+    test-shaped: `_sentinel_via_search`'s own docstring explains why the
+    general discovery path excludes test files -- pytest collects a test
+    file straight out of the clone regardless of whether `import <package>`
+    resolves there at all, so a mutation to one proves nothing about
+    invariant 7, and a "kept" record cut from one would really be a
+    sabotaged assertion wearing a repair task's shape. Before this fix,
+    `discover_source_files` applied the filter but an explicit `--target`
+    bypassed it entirely -- the exact gap I2 closes."""
     if given is None:
         return discover_source_files(clone)
     repo_resolved = repo.resolve()
     resolved: list[Path] = []
     for target in given:
         if not target.is_absolute():
-            resolved.append(target)
-            continue
-        try:
-            resolved.append(target.resolve().relative_to(repo_resolved))
-        except ValueError:
-            raise ValueError(f"--target {target} is not inside --repo {repo}") from None
+            relative = target
+        else:
+            try:
+                relative = target.resolve().relative_to(repo_resolved)
+            except ValueError:
+                raise ValueError(f"--target {target} is not inside --repo {repo}") from None
+        if is_test_shaped_path(relative):
+            raise ValueError(
+                f"--target {target} ({relative}) is test-shaped -- a mutation "
+                f"to a test file proves nothing about invariant 7 and cannot "
+                f"become a corpus record (I2, whole-branch review 2026-08-10)"
+            )
+        resolved.append(relative)
     return tuple(resolved)
 
 
@@ -455,7 +474,7 @@ def corpus_main(argv: list[str]) -> int:
             return OUTCOMES["infrastructure"]
 
     name = f"{args.repo.resolve().name}-v1"
-    write_corpus(result.records, args.out, name=name, dropped=result.dropped)
+    write_corpus(result.records, args.out, name=name, dropped=result.dropped, baseline=base)
     print(render_report(result, name=name))
     print(f"written to {args.out}  ({len(result.records)} records)")
     return 0

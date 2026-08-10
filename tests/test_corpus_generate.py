@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import dataclasses
 import socket
+import subprocess
 import time
 from pathlib import Path
 
@@ -33,7 +34,16 @@ def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(socket.socket, "connect", _blocked)
 
 
-_BASE = Baseline(broken=0, seconds=1.0)
+# executed=2: every runner in this module reports against a 2-test pool
+# (calc.py + other.py, one test each) whenever a candidate is actually
+# KEPT (`_kept_one_survives_other_runner`, `eager_runner`) -- the scenarios
+# that report a different total (1, from a single-file blind runner) never
+# expect a keep at all, so they are unaffected by this baseline not
+# matching their own total exactly (whole-branch review C2's
+# executed-total check only ever downgrades an already-non-kept verdict's
+# REASON text there, never its kept/not-kept outcome -- see progress notes
+# for the per-scenario accounting).
+_BASE = Baseline(broken=0, executed=2, seconds=1.0)
 
 # Two files, each with exactly one real repair candidate (an off_by_one on
 # a single int literal) -- deliberately simple so a test's own runner logic
@@ -48,7 +58,11 @@ _OTHER_PATH = Path("src/mylib/other.py")
 def _marker(repo: Path) -> str:
     # `_assert_in_clone` only ever resolves and range-checks this path --
     # it need not exist on disk, so a plain path under `repo` is enough.
-    return f"MODULE_UNDER_TEST={repo / 'src' / 'mylib' / '__init__.py'}\n"
+    # `EXIT_CODE=0` -- whole-branch review C1/C2: `verify()` now refuses a
+    # keep unless the runner's report carries a normal (0 or 1) exit code;
+    # every canned runner in this module represents an ordinary completed
+    # pytest run, so this is the correct default for all of them.
+    return f"MODULE_UNDER_TEST={repo / 'src' / 'mylib' / '__init__.py'}\nEXIT_CODE=0\n"
 
 
 def _mutated_file(source: str, mutant) -> str:
@@ -345,6 +359,92 @@ def test_seconds_reflects_real_wall_clock_not_a_placeholder(repo: Path):
 
 
 # ---------------------------------------------------------------------------
+# I6 (whole-branch review 2026-08-10) -- one hanging candidate must not
+# discard every record already verified
+# ---------------------------------------------------------------------------
+
+
+def test_a_timing_out_candidate_is_dropped_and_generation_continues_to_the_next_one(
+    repo: Path,
+):
+    # Reachable in robigo's own source (`inverted_condition` on a `while
+    # ... and not ...:` loop); stood in for here with calc.py's own two
+    # real candidates -- one raises `TimeoutExpired`, the other lands a
+    # real keep. Before I6, the exception would propagate straight out of
+    # `generate_corpus` (and past `cli.corpus_main`'s own handler, which
+    # returns before `write_corpus` is ever called), losing this run
+    # entirely rather than just the one candidate.
+    off_by_one = next(
+        m for m in candidates(_CALC_SOURCE, _CALC_PATH) if m.operator == "off_by_one"
+    )
+    dropped_return = next(
+        m for m in candidates(_CALC_SOURCE, _CALC_PATH) if m.operator == "dropped_return"
+    )
+    off_by_one_broken = _mutated_file(_CALC_SOURCE, off_by_one)
+    dropped_return_broken = _mutated_file(_CALC_SOURCE, dropped_return)
+
+    def runner(r: Path, package: str) -> str:
+        calc = (r / _CALC_PATH).read_text()
+        if calc == off_by_one_broken:
+            raise subprocess.TimeoutExpired(cmd=["pytest", "-q"], timeout=300)
+        if calc == dropped_return_broken:
+            return _marker(r) + (
+                "FAILED tests/test_calc.py::test_bump - AssertionError\n"
+                "1 failed, 1 passed in 0.01s\n"
+            )
+        return _marker(r) + "0 failed, 2 passed in 0.01s\n"
+
+    result = generate_corpus(
+        repo, [_CALC_PATH], _BASE, runner,
+        max_records=50, time_budget=60.0, source_repo="r", source_sha="s",
+    )
+    # The timed-out candidate produces no record, but is not silently
+    # absent either, and the OTHER real candidate on the same file is
+    # still tried and kept -- generation did not abort.
+    assert len(result.records) == 1
+    assert result.records[0].operator == "dropped_return"
+    assert any("timed out" in d and "I6" in d for d in result.dropped)
+    assert any("off_by_one" in d for d in result.dropped)
+    outcome = result.targets[0]
+    assert outcome.tried == 2
+    assert outcome.kept == 1
+
+
+def test_records_from_an_earlier_target_survive_a_later_targets_timeout(repo: Path):
+    # The literal claim: "one hanging mutant discards every record
+    # produced so far" -- other.py's candidate is kept FIRST (targets are
+    # walked in order), then EVERY one of calc.py's own candidates times
+    # out. The already-verified other.py record must still be in the
+    # result -- exactly what propagating the exception straight out of
+    # `generate_corpus` would have lost.
+    other_off_by_one = next(
+        m for m in candidates(_OTHER_SOURCE, _OTHER_PATH) if m.operator == "off_by_one"
+    )
+    other_off_by_one_broken = _mutated_file(_OTHER_SOURCE, other_off_by_one)
+
+    def runner(r: Path, package: str) -> str:
+        calc = (r / _CALC_PATH).read_text()
+        if calc != _CALC_SOURCE:
+            raise subprocess.TimeoutExpired(cmd=["pytest", "-q"], timeout=300)
+        other = (r / _OTHER_PATH).read_text()
+        if other == other_off_by_one_broken:
+            return _marker(r) + (
+                "FAILED tests/test_other.py::test_double - AssertionError\n"
+                "1 failed, 1 passed in 0.01s\n"
+            )
+        return _marker(r) + "0 failed, 2 passed in 0.01s\n"
+
+    result = generate_corpus(
+        repo, [_OTHER_PATH, _CALC_PATH], _BASE, runner,
+        max_records=50, time_budget=60.0, source_repo="r", source_sha="s",
+    )
+    assert len(result.records) == 1
+    assert result.records[0].path == _OTHER_PATH
+    assert result.records[0].operator == "off_by_one"
+    assert any("timed out" in d and "I6" in d for d in result.dropped)
+
+
+# ---------------------------------------------------------------------------
 # Frozen dataclasses
 # ---------------------------------------------------------------------------
 
@@ -392,6 +492,19 @@ def test_render_report_states_totals_and_wall_clock():
     assert "kept 4" in text
     assert "rejected 8" in text
     assert "12.5s" in text
+
+
+def test_render_report_states_which_phases_the_wall_clock_excludes():
+    # I3 (whole-branch review 2026-08-10): the printed wall-clock must
+    # state its own scope -- `result.seconds` covers only this module's
+    # candidate loop, not the clone/sentinel/baseline phases that run
+    # earlier in `cli.corpus_main` and are never threaded into
+    # `GenerationResult` at all.
+    text = render_report(_result(), name="mylib-v1")
+    assert "excludes" in text
+    assert "clone" in text
+    assert "sentinel" in text
+    assert "baseline" in text
 
 
 def test_render_report_names_the_corpus_and_carries_dropped_reasons_verbatim():

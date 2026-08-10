@@ -358,6 +358,14 @@ class Stage2:
     failures: tuple[str, ...]
 
 
+_BODY_INDENT = "    "
+"""The one indent level `_FUNCTION_HEADER`'s body ever assumes -- four
+spaces, matching every one of the five bundled `FIXTURES`. `fixture_body`
+re-indents `fixture.original` to exactly this before wrapping it, rather
+than trusting whatever indent the line happened to carry in its own source
+(I4, below)."""
+
+
 def fixture_body(fixture: Fixture) -> str:
     """The file the model is shown. One definition, used by both the
     prompt and the applier -- two copies would drift and the codec would
@@ -376,9 +384,29 @@ def fixture_body(fixture: Fixture) -> str:
     name. It sits after `fixture.original` and is never inside a matched
     SEARCH span, so a codec's replacement of the header line leaves it in
     place and the result stays syntactically complete either way.
-    """
-    body = _FUNCTION_HEADER + fixture.original
-    if fixture.original.rstrip("\n").endswith(":"):
+
+    `fixture.original` is re-indented to exactly `_BODY_INDENT` (four
+    spaces, `_FUNCTION_HEADER`'s one body level) before being wrapped,
+    rather than glued in at whatever indent it happened to carry (I4,
+    whole-branch review 2026-08-10). All five bundled `FIXTURES` already
+    sit at four spaces, so this is a no-op for them -- but a mutant cut
+    from real source can carry ANY indent (zero, at module level; eight or
+    more, nested inside a class method), and the old code glued the line
+    in verbatim while `_FILLER_BODY` stayed a FIXED eight spaces, which
+    only produced a validly-nested block when the original happened to
+    already be at exactly four. Measured across all 986 real candidates
+    from `src/robigo`: 206 (20.9%) produced a body `ast.parse` rejected,
+    scored by `_try_one` as "result does not parse as Python" --
+    indistinguishable from the model breaking the file, when the harness
+    broke it first. Re-indenting closes the majority of that gap (91 of
+    the 986, 9.2%, remain unparseable after this fix alone -- lines cut
+    from a multi-line expression, such as a list comprehension's own `if`
+    clause, that are not a complete statement in isolation at ANY indent;
+    `robigo.profile.fixtures.fixtures_from_corpus` catches and states
+    those, the other half of this same finding, closing it to 0%)."""
+    normalized_original = _BODY_INDENT + fixture.original.lstrip(" ")
+    body = _FUNCTION_HEADER + normalized_original
+    if normalized_original.rstrip("\n").endswith(":"):
         body += _FILLER_BODY
     return body
 

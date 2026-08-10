@@ -10,6 +10,7 @@ from robigo.profile.corpus import candidates
 from robigo.profile.corpus_io import CorpusRecord, read_corpus, write_corpus
 from robigo.profile.fixtures import FIXTURES, Fixture, fixtures_from_corpus
 from robigo.profile.stages import fixture_body, landing_prompt, stage2_codecs
+from robigo.profile.verify import Baseline
 
 
 def _sr_reply(fixture) -> str:
@@ -67,6 +68,27 @@ def test_every_fixture_body_is_valid_python_before_and_after_its_own_patch():
     for fixture in FIXTURES:
         ast.parse(fixture_body(fixture))
         ast.parse(fixture_body(fixture).replace(fixture.original, fixture.expect, 1))
+
+
+def test_fixture_body_reindents_a_line_cut_from_a_deeper_real_source_indent():
+    # I4 (whole-branch review 2026-08-10): all five bundled FIXTURES sit at
+    # exactly four spaces, which the OLD fixed `_FILLER_BODY` (always
+    # eight spaces) only wraps correctly BY COINCIDENCE. A mutant cut from
+    # real source can carry any indent -- here, eight, as if `if not
+    # ready:` had been nested inside a class method rather than a
+    # top-level function. Before this fix: `def f():\n        if not
+    # ready:\n        pass\n` -- the filler `pass` sits at the SAME
+    # indent as the `if` itself, not one level deeper, which `ast.parse`
+    # rejects ("expected an indented block after 'if' statement");
+    # confirmed by hand before writing this test.
+    import ast
+
+    fixture = Fixture(
+        name="deep-inverted_test", filename="src/deep/gate.py",
+        original="        if not ready:\n", expect="        if ready:\n",
+    )
+    ast.parse(fixture_body(fixture))
+    ast.parse(fixture_body(fixture).replace(fixture.original, fixture.expect, 1))
 
 
 def test_a_landing_model_scores_one():
@@ -409,10 +431,15 @@ def test_end_to_end_with_a_real_generated_corpus_converted_to_fixtures():
     )
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "narrow-demo-v1.json"
-        write_corpus([record], out, name="narrow-demo-v1", dropped=())
+        write_corpus(
+            [record], out, name="narrow-demo-v1", dropped=(),
+            baseline=Baseline(broken=0, executed=1, seconds=0.1),
+        )
         _, records, _ = read_corpus(out)
 
-    fixtures = fixtures_from_corpus(records)
+    conversion = fixtures_from_corpus(records)
+    assert conversion.dropped == ()
+    fixtures = conversion.fixtures
     assert fixtures == (
         Fixture(
             name="calc-off_by_one-2", filename="src/tinylib/calc.py",

@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 
 from robigo.profile.corpus import candidates
-from robigo.profile.corpus_io import CorpusRecord, read_corpus, write_corpus
+from robigo.profile.corpus_io import CorpusRecord, read_corpus, read_corpus_baseline, write_corpus
+from robigo.profile.verify import Baseline
 
 # ---------------------------------------------------------------------------
 # Offline guarantee: no test in this module ever needs a real socket --
@@ -43,6 +44,13 @@ def _record(**kw: object) -> CorpusRecord:
         source_sha="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
     )
     return CorpusRecord(**{**defaults, **kw})  # type: ignore[arg-type]
+
+
+_BASE = Baseline(broken=0, executed=430, seconds=12.3)
+"""A stand-in `Baseline` (I1, whole-branch review 2026-08-10) for every
+test in this module that doesn't care about its specific values -- only
+that `write_corpus` now requires one and `read_corpus_baseline` reads it
+back unchanged."""
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +100,13 @@ def test_write_corpus_dropped_has_no_default():
     assert sig.parameters["dropped"].default is inspect.Parameter.empty
 
 
+def test_write_corpus_baseline_has_no_default():
+    # I1 (whole-branch review 2026-08-10): the same "state it, don't let a
+    # reader assume it" rule `name`/`dropped` already follow.
+    sig = inspect.signature(write_corpus)
+    assert sig.parameters["baseline"].default is inspect.Parameter.empty
+
+
 def test_calling_write_corpus_without_name_or_dropped_raises(tmp_path: Path):
     # Fails if either keyword silently defaults instead of being required
     # -- proven behaviourally, not merely via the signature reflection
@@ -99,6 +114,13 @@ def test_calling_write_corpus_without_name_or_dropped_raises(tmp_path: Path):
     # missing call some other way).
     with pytest.raises(TypeError):
         write_corpus((), tmp_path / "corpus.json")  # type: ignore[call-arg]
+
+
+def test_calling_write_corpus_without_baseline_raises(tmp_path: Path):
+    with pytest.raises(TypeError):
+        write_corpus(  # type: ignore[call-arg]
+            (), tmp_path / "corpus.json", name="mylib-v1", dropped=()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +167,7 @@ def test_ground_truth_survives_the_full_round_trip_with_no_source_repo_involved(
         broken=mutant.mutated, fixed=mutant.original, operator=mutant.operator,
     )
     out = tmp_path / "corpus.json"
-    write_corpus([record], out, name="mylib-v1", dropped=())
+    write_corpus([record], out, name="mylib-v1", dropped=(), baseline=_BASE)
     del mutant, record  # simulate "without the source repo, or the mutant, present"
 
     _, records, _ = read_corpus(out)
@@ -236,7 +258,7 @@ def test_write_corpus_records_dropped_reasons_verbatim_and_in_order(tmp_path: Pa
         "context/scope.py: target abandoned, keep rate 0/7",  # duplicate, on purpose
     )
     out = tmp_path / "corpus.json"
-    write_corpus([_record()], out, name="mylib-v1", dropped=dropped)
+    write_corpus([_record()], out, name="mylib-v1", dropped=dropped, baseline=_BASE)
     _, _, read_dropped = read_corpus(out)
     assert read_dropped == dropped  # order AND duplicates preserved -- not deduped/sorted
 
@@ -247,7 +269,7 @@ def test_an_empty_dropped_tuple_is_still_an_explicit_key_in_the_file(tmp_path: P
     # empty list), never an absent key a reader could mistake for "the
     # generator forgot to report what it dropped".
     out = tmp_path / "corpus.json"
-    write_corpus([_record()], out, name="mylib-v1", dropped=())
+    write_corpus([_record()], out, name="mylib-v1", dropped=(), baseline=_BASE)
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert "dropped" in payload
     assert payload["dropped"] == []
@@ -273,7 +295,7 @@ def test_write_then_read_corpus_round_trips_name_records_and_dropped(tmp_path: P
     dropped = ("candidate at other.py:9: broke 3 tests, not exactly one",)
     out = tmp_path / "nested" / "corpus.json"  # parent does not exist yet
 
-    write_corpus(records, out, name="mylib-v1", dropped=dropped)
+    write_corpus(records, out, name="mylib-v1", dropped=dropped, baseline=_BASE)
     name, read_records, read_dropped = read_corpus(out)
 
     assert name == "mylib-v1"
@@ -286,13 +308,13 @@ def test_write_then_read_corpus_round_trips_name_records_and_dropped(tmp_path: P
 
 def test_write_corpus_creates_missing_parent_directories(tmp_path: Path):
     out = tmp_path / "a" / "b" / "c" / "corpus.json"
-    write_corpus([_record()], out, name="mylib-v1", dropped=())
+    write_corpus([_record()], out, name="mylib-v1", dropped=(), baseline=_BASE)
     assert out.is_file()
 
 
 def test_read_corpus_on_zero_records_returns_an_empty_tuple_not_none(tmp_path: Path):
     out = tmp_path / "corpus.json"
-    write_corpus([], out, name="empty-v1", dropped=("target x: barren, keep rate 0/12",))
+    write_corpus([], out, name="empty-v1", dropped=("target x: barren, keep rate 0/12",), baseline=_BASE)
     name, records, dropped = read_corpus(out)
     assert name == "empty-v1"
     assert records == ()
@@ -305,14 +327,52 @@ def test_write_corpus_never_touches_a_path_other_than_its_own_output(tmp_path: P
     # directory it writes into beyond creating it and its own output file.
     sentinel = tmp_path / "do-not-touch.py"
     sentinel.write_text("ORIGINAL\n", encoding="utf-8")
-    write_corpus([_record()], tmp_path / "corpus.json", name="mylib-v1", dropped=())
+    write_corpus([_record()], tmp_path / "corpus.json", name="mylib-v1", dropped=(), baseline=_BASE)
     assert sentinel.read_text(encoding="utf-8") == "ORIGINAL\n"
 
 
-def test_written_file_is_valid_json_with_the_three_top_level_keys(tmp_path: Path):
+def test_written_file_is_valid_json_with_the_four_top_level_keys(tmp_path: Path):
     out = tmp_path / "corpus.json"
-    write_corpus([_record()], out, name="mylib-v1", dropped=("x",))
+    write_corpus([_record()], out, name="mylib-v1", dropped=("x",), baseline=_BASE)
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert set(payload) == {"name", "records", "dropped"}
+    assert set(payload) == {"name", "records", "dropped", "baseline"}
     assert payload["name"] == "mylib-v1"
     assert isinstance(payload["records"], list) and len(payload["records"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# I1 (whole-branch review 2026-08-10) — the baseline is written into the
+# corpus file, and readable back without re-running the generator
+# ---------------------------------------------------------------------------
+
+
+def test_baseline_is_wired_into_the_json_payload_with_all_three_fields(tmp_path: Path):
+    # The structural half: a reader inspecting the raw JSON file (never
+    # re-running the generator, never trusting its process memory) can see
+    # broken/executed/seconds directly.
+    out = tmp_path / "corpus.json"
+    write_corpus([_record()], out, name="mylib-v1", dropped=(), baseline=_BASE)
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["baseline"] == {"broken": 0, "executed": 430, "seconds": 12.3}
+
+
+def test_read_corpus_baseline_round_trips_the_exact_baseline_written(tmp_path: Path):
+    out = tmp_path / "corpus.json"
+    distinct = Baseline(broken=0, executed=987, seconds=42.5)  # values that could not
+    # coincidentally match some hidden internal default (unlike 0/0.0).
+    write_corpus([_record()], out, name="mylib-v1", dropped=(), baseline=distinct)
+    assert read_corpus_baseline(out) == distinct
+
+
+def test_read_corpus_baseline_raises_for_a_file_written_before_this_field_existed(
+    tmp_path: Path,
+):
+    # No default is fabricated for a fact an older file never recorded --
+    # refusing is the honest answer, same principle as `from_json` raising
+    # `KeyError` for a payload missing a required `CorpusRecord` field.
+    out = tmp_path / "old-corpus.json"
+    out.write_text(
+        json.dumps({"name": "mylib-v1", "records": [], "dropped": []}), encoding="utf-8"
+    )
+    with pytest.raises(KeyError):
+        read_corpus_baseline(out)

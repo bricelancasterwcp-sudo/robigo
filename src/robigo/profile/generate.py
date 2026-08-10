@@ -35,10 +35,23 @@ rather than an unbounded grind (invariant 13, invariant 14):
 
 Whatever gets cut short by any of the three is named in `GenerationResult.
 dropped`, never silently absent (this plan's own "Global Constraints":
-"Anything dropped is stated as dropped")."""
+"Anything dropped is stated as dropped").
+
+**I6 (whole-branch review, 2026-08-10): one hanging candidate must not
+discard every record produced so far.** `verify()`'s own `runner` call can
+raise `subprocess.TimeoutExpired` (`pytest_runner`'s real `subprocess.run`
+calls are timeout-bounded) -- reachable in robigo's own source:
+`inverted_condition` on a `while ... and not ...:` loop turns a terminating
+loop into one that never exits. Before this fix, that exception propagated
+straight out of `generate_corpus`, past `cli.corpus_main`'s own `except
+subprocess.TimeoutExpired`, which returns before `write_corpus` is ever
+called -- losing every record already verified, not just the one that
+hung. Caught PER CANDIDATE inside the loop below, named in `dropped`, and
+generation continues with the next candidate."""
 
 from __future__ import annotations
 
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,7 +99,17 @@ class GenerationResult:
     `max_records` or `time_budget` -- cut generation short, if either
     did), the per-target breakdown, and the real wall-clock this module
     itself measured (never parsed out of a runner's own text, the same
-    honesty rule `robigo.profile.verify.Baseline.seconds` follows)."""
+    honesty rule `robigo.profile.verify.Baseline.seconds` follows).
+
+    `seconds`, and every count in `targets`, cover ONLY this function's own
+    candidate loop (I3, whole-branch review 2026-08-10) -- `cli.corpus_main`
+    clones the repo, runs `sentinel_ok`'s own search, and measures
+    `baseline()` BEFORE `generate_corpus` is ever called, and none of that
+    time or those attempts is threaded in here. A real run's total wall-
+    clock is clone + sentinel + baseline + this `.seconds`, not this
+    `.seconds` alone; `render_report`'s printed line says so explicitly
+    rather than leaving a reader to assume this figure is the whole
+    story."""
 
     records: tuple[CorpusRecord, ...]
     dropped: tuple[str, ...]
@@ -163,7 +186,24 @@ def generate_corpus(
                 stopped_for_time = True
                 break
 
-            verdict = verify(mutant, repo, base, runner)
+            try:
+                verdict = verify(mutant, repo, base, runner)
+            except subprocess.TimeoutExpired as exc:
+                # I6: a hanging candidate must not discard every record
+                # verified so far -- caught here, named in `dropped`, and
+                # generation moves on to the next candidate rather than
+                # letting the exception propagate past `cli.corpus_main`'s
+                # own timeout handler (which returns before `write_corpus`
+                # is ever called).
+                tried += 1
+                dropped.append(
+                    f"{target}:{mutant.line} {mutant.operator}: verification "
+                    f"timed out ({exc}), skipped (I6)"
+                )
+                if kept == 0 and tried >= _TARGET_ABANDON_AFTER:
+                    abandoned = True
+                    break
+                continue
             tried += 1
             if verdict.kept:
                 kept += 1
@@ -220,7 +260,15 @@ def render_report(result: GenerationResult, *, name: str) -> str:
     proposed/tried/kept/rejected, the real wall-clock, the keep rate PER
     TARGET (never pooled into one number -- a 4-of-5 target and a 0-of-7
     target averaged together would hide the exact finding invariant 13
-    exists to surface), and every dropped reason verbatim."""
+    exists to surface), and every dropped reason verbatim.
+
+    The wall-clock line states its own scope (I3, whole-branch review
+    2026-08-10): `result.seconds` is this module's candidate loop alone --
+    excluding the clone, the sentinel search, and the baseline measurement,
+    all of which run earlier in `cli.corpus_main` and are not threaded into
+    `GenerationResult` at all. Printing the bare number with no caveat
+    invited exactly the "which phases does this cover" question this line
+    now answers up front."""
     total_proposed = sum(t.proposed for t in result.targets)
     total_tried = sum(t.tried for t in result.targets)
     total_kept = sum(t.kept for t in result.targets)
@@ -228,7 +276,8 @@ def render_report(result: GenerationResult, *, name: str) -> str:
         f"corpus {name}",
         f"  candidates    proposed {total_proposed}  tried {total_tried}  "
         f"kept {total_kept}  rejected {total_tried - total_kept}",
-        f"  wall-clock    {result.seconds:.1f}s",
+        f"  wall-clock    {result.seconds:.1f}s (generation phase only -- "
+        f"excludes clone, sentinel check, and baseline measurement)",
     ]
     for outcome in result.targets:
         note = "  (abandoned as barren)" if outcome.abandoned else ""

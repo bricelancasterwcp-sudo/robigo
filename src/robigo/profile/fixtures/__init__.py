@@ -1,6 +1,7 @@
 # src/robigo/profile/fixtures/__init__.py
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -104,7 +105,20 @@ def as_corpus_records() -> tuple[CorpusRecord, ...]:
     )
 
 
-def fixtures_from_corpus(records: Sequence[CorpusRecord]) -> tuple[Fixture, ...]:
+@dataclass(frozen=True)
+class FixturesFromCorpus:
+    """`fixtures_from_corpus`'s result: the usable `Fixture`s, and every
+    record dropped at conversion time because its wrapped body does not
+    parse (I4, whole-branch review 2026-08-10) -- stated, never silently
+    absent, the same "anything dropped is stated as dropped" rule this
+    plan follows everywhere else (`GenerationResult.dropped`,
+    `corpus_io`'s own `"dropped"` key)."""
+
+    fixtures: tuple[Fixture, ...]
+    dropped: tuple[str, ...]
+
+
+def fixtures_from_corpus(records: Sequence[CorpusRecord]) -> FixturesFromCorpus:
     """The reverse of `as_corpus_records`: any generated corpus's records,
     expressed as `Fixture`s `stage2_codecs` can actually iterate. Closes
     the loop `as_corpus_records` alone left open (coordinator review,
@@ -124,20 +138,46 @@ def fixtures_from_corpus(records: Sequence[CorpusRecord]) -> tuple[Fixture, ...]
     Every one of `CorpusRecord`'s four fields `Fixture` needs (name, path,
     broken, fixed) is REQUIRED with no default (invariant 9) and directly
     derivable here -- there is no fifth field `Fixture` needs that a
-    generated record could fail to carry. What is NOT checked here is
-    whether the resulting `Fixture`, once wrapped by `stages.fixture_body`
-    into stage 2's fixed one-line function header, still PARSES -- that is
-    a structural/shape question about the specific line cut (its
-    indentation, whether it is a complete standalone statement), not a
-    missing-field question, and `stage2_codecs` itself already discovers a
-    body that fails to parse the same way it discovers any other
-    non-landing attempt, per-fixture, without crashing."""
-    return tuple(
-        Fixture(
+    generated record could fail to carry.
+
+    I4 (whole-branch review, 2026-08-10): each candidate `Fixture` IS now
+    checked here for whether `stages.fixture_body` wraps it into something
+    `ast.parse` accepts -- a record whose body does not parse is dropped
+    and named in `.dropped`, rather than passed through to `stage2_codecs`
+    where it would score as "result does not parse as Python", the SAME
+    outcome a genuinely broken model reply produces. Measured across all
+    986 real candidates from `src/robigo`: 206 (20.9%) failed this check
+    before `stages.fixture_body` itself was also fixed to re-indent a
+    mutant's line to the wrapper's own assumed level (that fix alone
+    recovers most of them); this check is the backstop for the rest (91,
+    9.2%) -- lines cut from a multi-line expression (a list comprehension's
+    own `if` clause, an unclosed call spanning several physical lines) that
+    cannot form a complete statement in isolation at ANY indent, a
+    genuinely different defect than the indent mismatch `fixture_body`'s
+    own fix addresses. `stages.fixture_body` is imported HERE, inside the
+    function, not at module level -- `stages.py` already imports `Fixture`/
+    `FIXTURES` from this module at ITS OWN top level, so a top-level import
+    the other way would be a real cycle; deferred to call time, both
+    modules are already fully loaded and the cycle never bites."""
+    from robigo.profile.stages import fixture_body
+
+    kept: list[Fixture] = []
+    dropped: list[str] = []
+    for record in records:
+        fixture = Fixture(
             name=record.name,
             filename=str(record.path),
             original=record.broken,
             expect=record.fixed,
         )
-        for record in records
-    )
+        try:
+            ast.parse(fixture_body(fixture))
+        except SyntaxError as exc:
+            dropped.append(
+                f"{record.name} ({record.path}:{record.line}): wrapped body "
+                f"does not parse as Python ({exc}), dropped at conversion "
+                f"time (I4)"
+            )
+            continue
+        kept.append(fixture)
+    return FixturesFromCorpus(fixtures=tuple(kept), dropped=tuple(dropped))
