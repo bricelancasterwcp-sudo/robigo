@@ -160,7 +160,18 @@ own `name`, not a literal.
 of real records as unwrappable (measured: 91 of 986 from `src/robigo`). Those
 are **harness artifacts and are never scored as model failures.** Its `dropped`
 list must be carried into `Profile.dropped` verbatim, and dropped records must
-be excluded from both the numerator and the denominator of every rate.
+be excluded from both the numerator and the denominator of **stage 2's** rate.
+
+**Scope correction (found while freezing the corpus, before any stage-4 run).**
+This originally said "every rate". It applies to stage 2 only. `fixtures_from_
+corpus` wraps a record's line into a small synthetic function body, and a line
+like a lone `(` cannot parse standing alone — that is a limitation of the
+*wrapper*, not of the record. **Stage 4 writes `record.broken` into the real
+file at `record.path:record.line`, where the surrounding lines supply the
+context the wrapper lacks, so every record is usable there.** The two stages
+therefore have different denominators, both correct. Measured on the frozen
+corpus: 94 records, of which 90 convert for stage 2 (4.3% loss) and all 94 are
+stage-4 material.
 
 *Falsification test:* build a corpus containing a known-unwrappable record;
 assert the resulting `Profile.repair_records` excludes it, that
@@ -209,7 +220,10 @@ For each `(record, seed)` pair, against a clone of the corpus's `source_repo`
 checked out at its recorded `source_sha`:
 
 ```
-1. reset    git checkout -- . && git clean -fdq       (cheap; no re-clone)
+1. reset    git checkout <pristine-branch>            (captured ONCE, see below)
+            git reset --hard <pristine-sha>
+            git clean -fdq
+            delete any robigo/* branches the loop created
 2. break    write record.broken at record.path:record.line
 3. repair   loop.run(task, root=clone, client, adapter=python_,
                      codec=<stage 2's best_codec()>, turn_cap=8,
@@ -219,12 +233,40 @@ checked out at its recorded `source_sha`:
 6. pass  ⇔  outcome == "pass" ∧ step 4 clean ∧ step 5 unchanged
 ```
 
-Steps 1, 2, 4 and 5 are plan 04's already-mutation-tested harness —
+Steps 2, 4 and 5 are plan 04's already-mutation-tested harness —
 `pytest_runner`'s sanitized environment and forced `PYTHONPATH`,
 `Baseline.executed`, `_assert_in_clone`'s `MODULE_UNDER_TEST=` marker. Stage 4
 substitutes "run the loop, *then* run pytest" for "run pytest". It is mostly
 composition, and it must stay that way: a second, parallel implementation of
-any of those four is the drift class this project has paid for repeatedly.
+any of those three is the drift class this project has paid for repeatedly.
+
+**Step 1 was wrong in this document's first draft, and the error was
+project-killing.** It read `git checkout -- . && git clean -fdq`. That does not
+isolate an attempt, because §4.3.1 mandates `use_git=True`: the loop checks out
+a `robigo/*` branch and `git add -A` snapshots the tree — **committing the
+staged defect** — so `git checkout -- .` restores to *that branch's* index, not
+to the pristine tree, and never returns to the original branch. Measured during
+task 4's review:
+
+```
+PRISTINE    branch=master                    other.py='VALUE = 1\n'
+AFTER ATT1  branch=robigo/the-test-fails-1   other.py='VALUE = 999  # stray edit\n'
+AFTER RESET branch=robigo/the-test-fails-1   other.py='VALUE = 999  # stray edit\n'
+            mod.py = the defect, still committed;  git status: clean
+```
+
+One `repo` is shared by every `(record, seed)` attempt and nothing re-clones, so
+record 1's unrepaired defect would persist into every later record,
+`state.broken == 0` could never hold again, and essentially no attempt after the
+first could pass. **The gate would have read a near-zero repair rate and killed
+the project on a harness bug.** The pristine branch and SHA must therefore be
+captured ONCE, before the first attempt, and never re-derived from a tree that
+may already be corrupted — re-deriving after attempt 1 captures the corruption
+as the new "pristine".
+
+§4.3.3's falsification test below is what catches this, and in the first
+implementation it was named here and never written. An invariant stated without
+its test is how this class of defect reaches a measurement.
 
 ### 4.2 The task string
 
@@ -234,9 +276,16 @@ location is one line of code away. **The task names only the failing test id**
 the file the way it would for a real user. A number produced by telling the
 model where the bug is describes a tool nobody has.
 
-*Falsification test:* assert the rendered stage-4 prompt contains neither
+*Falsification test:* assert the **task string** (`task_for`) contains neither
 `record.path` nor `record.line` nor `record.fixed`. Pin it; this is a one-token
 edit away from silently inflating the headline figure.
+
+This originally said "the rendered stage-4 prompt", which is **unsatisfiable and
+was wrong**: scope resolution legitimately puts the defective file's contents in
+the prompt — that is what the tool does for a real user, who also does not say
+where the bug is. The property that matters is that *robigo* was never told the
+location, not that the file is absent from the context robigo assembled for
+itself. Corrected after task 4's review.
 
 ### 4.3 Invariants
 
@@ -346,8 +395,34 @@ figures are exact for a record-level binomial.
 **No feasible sample resolves 33% from 33%.** Stating otherwise would be this
 project's own recurring bug — a value that looks like a measurement but is not.
 
-**Ruling:** N = **100 records × 10 seeds**. Records buy power; seeds buy
-reproducibility and are fixed at 10 by the `--full` contract (§1.1).
+**Ruling:** N = **94 records × 10 seeds** — the frozen corpus (§5), 940 attempts,
+~11.75 h. Records buy power; seeds buy reproducibility and are fixed at 10 by the
+`--full` contract (§1.1).
+
+#### 6.1.1 The record-level interval is itself optimistic — clustering
+
+The table above treats records as independent Bernoulli trials. **They are not.**
+The frozen corpus's 94 records span 19 files and 67 distinct tests, so up to 4
+records share a test and several share a file. Records drawn from one module,
+exercising one test, against one defect operator are correlated for the same
+reason seeds within a record are: they present near-identical work.
+
+So a record-level binomial interval is an *upper bound on precision*, not the
+precision. The honest treatment, decided here before any number exists:
+
+- **Report the record-level interval, labelled as a lower bound on the true
+  width** — never as "the" confidence interval.
+- **Report a cluster-aware interval alongside it**, clustering on `test_id` (67
+  clusters, the binding constraint — fewer than the 94 records and more than the
+  19 files). A cluster bootstrap over `test_id` is sufficient; nothing here needs
+  a closed form.
+- **Report the per-operator breakdown** (§5), since operator is the other axis
+  along which records resemble each other.
+
+This does not change §6.2's decision rule — the point estimate still decides, and
+it is pre-registered. It changes only what may be *claimed* about that estimate's
+precision. Quoting ±0.09 from the table as though records were independent would
+be the exact defect this section exists to prevent.
 
 ### 6.2 The decision rule
 
