@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from robigo.model.detect import detect_geometry, plan_window, weights_bytes
+from robigo.model.detect import (
+    detect_geometry,
+    plan_window,
+    resident_bytes,
+    weights_bytes,
+)
 from robigo.model.geometry import GeometryError, WindowPlan
 
 # Repeated rather than imported from tests/test_geometry.py: cross-test
@@ -25,6 +30,11 @@ QWEN7B = {
 # the live daemon: capabilities, details, digest, model, modified_at, name,
 # size. Only `name` and `size` matter to weights_bytes.
 _TAGS_M = {"models": [{"name": "m", "size": 8 * 1024**3}]}
+
+# Shape of GET /api/ps when nothing is currently loaded, verified against the
+# live daemon: an empty *list*, never `null` -- resident_bytes relies on that
+# distinction to tell "genuinely idle" apart from "malformed response".
+_PS_IDLE = {"models": []}
 
 
 def test_ollama_geometry_comes_from_api_show(monkeypatch):
@@ -48,6 +58,7 @@ def test_plan_window_reports_what_bound_it(monkeypatch):
     # against its own (buggy) reference `weights_bytes`, but not against the
     # amendment's, which this module implements.
     monkeypatch.setattr("robigo.model.detect._tags", lambda host: _TAGS_M)
+    monkeypatch.setattr("robigo.model.detect._ps", lambda host: _PS_IDLE)
     monkeypatch.setattr("robigo.model.detect.free_vram_bytes", lambda: 15 * 1024**3)
     plan = plan_window("ollama", "m", "", user_cap=None)
     assert (plan.window, plan.limited_by) == (32768, "training_ctx")
@@ -59,6 +70,7 @@ def test_a_user_cap_above_the_training_context_is_clamped_not_honoured(monkeypat
         lambda model, host: {"model_info": QWEN7B, "size": 8 * 1024**3},
     )
     monkeypatch.setattr("robigo.model.detect._tags", lambda host: _TAGS_M)
+    monkeypatch.setattr("robigo.model.detect._ps", lambda host: _PS_IDLE)
     monkeypatch.setattr("robigo.model.detect.free_vram_bytes", lambda: 15 * 1024**3)
     # Asking for 65536 on a 32768-trained model must NOT be granted:
     # Ollama would accept it silently and rope-degrade (law 1).
@@ -68,10 +80,11 @@ def test_a_user_cap_above_the_training_context_is_clamped_not_honoured(monkeypat
 
 def test_plan_window_reads_free_vram_before_any_network_call(monkeypatch):
     """usable_window's own precondition is that free_vram is measured
-    BEFORE anything could load the model. detect_geometry's /api/show and
-    weights_bytes's /api/tags are both confirmed (against the live daemon)
-    not to trigger a load, but plan_window reads free VRAM first regardless,
-    so the guarantee holds even if that ever stops being true."""
+    BEFORE anything could load the model. detect_geometry's /api/show,
+    weights_bytes's /api/tags, and resident_bytes's /api/ps are all
+    confirmed (against the live daemon) not to trigger a load, but
+    plan_window reads free VRAM first regardless, so the guarantee holds
+    even if that ever stops being true."""
     calls: list[str] = []
     monkeypatch.setattr(
         "robigo.model.detect.free_vram_bytes",
@@ -85,8 +98,13 @@ def test_plan_window_reads_free_vram_before_any_network_call(monkeypatch):
         "robigo.model.detect._tags",
         lambda host: calls.append("tags") or _TAGS_M,
     )
+    monkeypatch.setattr(
+        "robigo.model.detect._ps",
+        lambda host: calls.append("ps") or _PS_IDLE,
+    )
     plan_window("ollama", "m", "", user_cap=None)
     assert calls[0] == "free_vram"
+    assert "ps" in calls  # resident_bytes actually ran, not skipped silently
 
 
 def test_cli_accepts_the_word_auto(monkeypatch, tmp_path: Path):
@@ -253,6 +271,7 @@ def test_cli_refuses_end_to_end_when_weights_exceed_free_vram(monkeypatch,
         "robigo.model.detect._tags",
         lambda host: {"models": [{"name": "m", "size": 14540 * 1024**2}]},
     )
+    monkeypatch.setattr("robigo.model.detect._ps", lambda host: _PS_IDLE)
     monkeypatch.setattr("robigo.model.detect.free_vram_bytes",
                         lambda: 14571 * 1024**2)
     code = main(["--root", str(tmp_path), "--model", "m", "fix"])
@@ -703,6 +722,220 @@ def test_an_incomplete_tags_read_raises_geometry_error_not_http_exception(
         weights_bytes("ollama", "zzyzx-distinctive-model", "", None)
     assert "/api/tags" in str(e.value)
     assert "never fully arrived" in str(e.value)
+
+
+# --- Task 3 (2026-08-09): the window must not depend on whether a --------
+# --- previous run left the model resident. --------------------------------
+#
+# usable_window subtracts weights_bytes from free VRAM, correct only when
+# those bytes are not already loaded. Ollama's five-minute keep-alive means
+# a second consecutive run on the same model sees free VRAM that ALREADY
+# excludes the weights, and used to subtract them a second time -- clamping
+# the window to 0 and refusing a run that worked a moment earlier.
+# resident_bytes adds back what /api/ps reports resident, restoring
+# usable_window's precondition regardless of the daemon's actual load
+# state.
+
+
+def _plan_window_with_ps(monkeypatch, *, free_mib: int, ps_response: object,
+                          tags_size_mib: int = 7723) -> WindowPlan:
+    """Runs the real plan_window -> usable_window pipeline with QWEN7B
+    geometry, weights held constant at tags_size_mib, and the given /api/ps
+    response and free-VRAM reading -- the exact inputs the fix combines,
+    not a stubbed WindowPlan."""
+    monkeypatch.setattr(
+        "robigo.model.detect._show",
+        lambda model, host: {"model_info": QWEN7B},
+    )
+    monkeypatch.setattr(
+        "robigo.model.detect._tags",
+        lambda host: {"models": [{"name": "m", "size": tags_size_mib * 1024**2}]},
+    )
+    monkeypatch.setattr("robigo.model.detect._ps", lambda host: ps_response)
+    monkeypatch.setattr("robigo.model.detect.free_vram_bytes",
+                        lambda: free_mib * 1024**2)
+    return plan_window("ollama", "m", "", user_cap=None)
+
+
+def test_window_resolution_is_idempotent_across_consecutive_runs(monkeypatch):
+    """Invariant 8, on "an otherwise-idle machine" (its own wording): run 1
+    finds the model absent from /api/ps (cold) with 14485 MiB free -- the
+    brief's own measured figure. Run 2 -- within Ollama's five-minute
+    keep-alive -- finds it resident at a plausible size_vram (9285 MiB,
+    itself LARGER than the 7723 MiB weights because it also carries the
+    prior run's KV cache), with free VRAM down by EXACTLY that much (an
+    idle machine loses only what the model itself now holds; the brief's
+    two real nvidia-smi snapshots differ by a bit more than that, ordinary
+    measurement noise from an active box, which is a different claim from
+    this invariant). Both must resolve to the identical WindowPlan -- every
+    field, not just window and limited_by, because on a truly idle machine
+    the two runs really do see the same effective free VRAM: what a model
+    can use includes whatever it is already holding.
+
+    Falsifiable by: dropping the residency term (mutation-tested below --
+    it must fail with the window-0 shape the brief's table shows for run 2
+    when resident_bytes is not added back), by matching /api/ps by any name
+    rather than this model's own, or by adding residency back even when
+    free_vram_bytes returned None."""
+    resident_mib = 9285
+    first = _plan_window_with_ps(
+        monkeypatch, free_mib=14485, ps_response=_PS_IDLE,
+    )
+    second = _plan_window_with_ps(
+        monkeypatch, free_mib=14485 - resident_mib,
+        ps_response={"models": [{"name": "m", "size_vram": resident_mib * 1024**2}]},
+    )
+    assert first == second
+    # Not just equal to each other -- equal to the specific answer the
+    # brief's table names, so a bug that makes both calls agree on the
+    # WRONG number can't pass this by accident.
+    assert (first.window, first.limited_by) == (32768, "training_ctx")
+
+
+def test_a_different_resident_model_does_not_inflate_this_models_window(
+    monkeypatch,
+):
+    """Only the REQUESTED model's own residency counts. Free VRAM already
+    reflects whatever a different model is holding; crediting its
+    size_vram back too would double-count VRAM this model can never
+    actually reach. Falsifiable by: matching /api/ps entries by first
+    entry, or by summing every entry's size_vram instead of looking up
+    this model's name."""
+    plan = _plan_window_with_ps(
+        monkeypatch, free_mib=4849,
+        ps_response={"models": [
+            {"name": "some-other-model", "size_vram": 9285 * 1024**2},
+        ]},
+    )
+    # No credit for the other model's residency: same arithmetic as a cold
+    # start with only 4849 MiB free -- spare goes negative, clamped to 0.
+    assert (plan.window, plan.limited_by) == (0, "vram")
+
+
+@pytest.mark.parametrize("bad_envelope", [[], ["unexpected", "array"], "oops", None])
+def test_a_non_dict_ps_envelope_raises_geometry_error_not_attribute_error(
+    monkeypatch, bad_envelope
+):
+    """A JSON array, string, or null body from /api/ps -- same family as
+    the /api/show and /api/tags envelope tests -- must not reach
+    `bad_envelope.get("models")` and raise a bare AttributeError.
+    Falsifiable by: reusing `_shaped`'s silent-coerce-to-{} pattern here,
+    which would turn this into "0 resident" instead of a raise."""
+    monkeypatch.setattr("robigo.model.detect._ps", lambda host: bad_envelope)
+    with pytest.raises(GeometryError) as e:
+        resident_bytes("ollama", "zzyzx-distinctive-model", "")
+    assert "/api/ps" in str(e.value)
+
+
+def test_a_null_ps_models_list_raises_geometry_error_not_treated_as_idle(
+    monkeypatch,
+):
+    """{"models": null} must raise, not be read as "nothing loaded". The
+    daemon's real idle shape is an empty LIST (verified live: {"models":
+    []}) -- null is a different, unexplained shape, and collapsing it to
+    the same zero-residency answer would substitute a guessed number for a
+    response that could not actually be trusted. Falsifiable by: coercing
+    a non-list `models` field to [] via `_shaped` instead of raising."""
+    monkeypatch.setattr("robigo.model.detect._ps",
+                        lambda host: {"models": None})
+    with pytest.raises(GeometryError) as e:
+        resident_bytes("ollama", "zzyzx-distinctive-model", "")
+    assert "/api/ps" in str(e.value)
+
+
+def test_a_non_json_ps_body_raises_geometry_error_not_json_decode_error(
+    monkeypatch,
+):
+    """The /api/ps sibling of the non-JSON /api/show and /api/tags tests: a
+    real malformed body reaches resident_bytes's own _decode call for
+    real, not a mock of _decode or _ps itself. Falsifiable by: _ps not
+    routing through _decode/_read at all."""
+    import urllib.request
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda req, timeout=60: _NonJSONResponse(b"not json at all"),
+    )
+    with pytest.raises(GeometryError) as e:
+        resident_bytes("ollama", "zzyzx-distinctive-model", "")
+    assert "/api/ps" in str(e.value)
+    assert "valid JSON" in str(e.value)
+
+
+def test_an_unresident_model_contributes_zero_not_an_error(monkeypatch):
+    """The normal case: /api/ps is well-formed, but this model simply is
+    not in its list (a different model is). Absence is not malformed --
+    it is what an idle-for-this-model daemon actually reports, and must
+    contribute 0 with no error. Falsifiable by: raising whenever the
+    requested model isn't found, the way weights_bytes does for
+    /api/tags (wrong here -- unlike weights, "not resident" is a normal
+    outcome, not a fatal one)."""
+    monkeypatch.setattr(
+        "robigo.model.detect._ps",
+        lambda host: {"models": [
+            {"name": "some-other-model", "size_vram": 4 * 1024**3}
+        ]},
+    )
+    assert resident_bytes("ollama", "zzyzx-distinctive-model", "") == 0
+
+
+def test_resident_bytes_matches_the_latest_tag_like_weights_bytes_does(
+    monkeypatch,
+):
+    """Same exact-then-:latest matching weights_bytes uses against
+    /api/tags, applied here against /api/ps."""
+    monkeypatch.setattr(
+        "robigo.model.detect._ps",
+        lambda host: {"models": [
+            {"name": "codegemma:latest", "size_vram": 5 * 1024**3}
+        ]},
+    )
+    assert resident_bytes("ollama", "codegemma", "") == 5 * 1024**3
+
+
+def test_a_ps_entry_missing_size_vram_raises_geometry_error(monkeypatch):
+    """The model IS resident per /api/ps, but its entry carries no
+    size_vram field at all -- same shape as weights_bytes' own missing-
+    `size` guard against /api/tags. Must raise, not default to 0 (0 would
+    read identically to "not resident", the exact substitution invariant 9
+    forbids)."""
+    monkeypatch.setattr(
+        "robigo.model.detect._ps",
+        lambda host: {"models": [{"name": "zzyzx-distinctive-model"}]},
+    )
+    with pytest.raises(GeometryError) as e:
+        resident_bytes("ollama", "zzyzx-distinctive-model", "")
+    assert "zzyzx-distinctive-model" in str(e.value)
+
+
+def test_a_malformed_ps_size_vram_raises_geometry_error_not_a_raw_type_error(
+    monkeypatch,
+):
+    """The /api/ps sibling of weights_bytes' malformed-/api/tags-size
+    guard: int("not-a-number") must not escape as a raw TypeError/
+    ValueError past resident_bytes's own try/except."""
+    monkeypatch.setattr(
+        "robigo.model.detect._ps",
+        lambda host: {"models": [
+            {"name": "zzyzx-distinctive-model", "size_vram": "not-a-number"}
+        ]},
+    )
+    with pytest.raises(GeometryError) as e:
+        resident_bytes("ollama", "zzyzx-distinctive-model", "")
+    assert "zzyzx-distinctive-model" in str(e.value)
+
+
+def test_resident_bytes_on_llamacpp_never_queries_the_network(monkeypatch):
+    """llama-server has no /api/ps and no keep-alive residency of this
+    kind. Asserted by making _ps explode if it is ever called, not just by
+    checking the return value -- the return value alone would also pass if
+    _ps were called and happened to raise past a swallowed exception."""
+
+    def _boom(host: str) -> object:
+        raise AssertionError("_ps must not be called for backend=llamacpp")
+
+    monkeypatch.setattr("robigo.model.detect._ps", _boom)
+    assert resident_bytes("llamacpp", "m", "") == 0
 
 
 @pytest.mark.live

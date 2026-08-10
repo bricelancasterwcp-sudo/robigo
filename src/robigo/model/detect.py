@@ -120,6 +120,28 @@ def _tags(host: str) -> object:
         return _decode(_read(resp, "/api/tags"), "/api/tags")
 
 
+def _ps(host: str) -> object:
+    """`GET /api/ps`: currently-loaded models, each with a `size_vram` --
+    the only endpoint that reports what is ALREADY resident, as opposed to
+    `/api/tags`' on-disk `size`. Ollama keeps a model loaded for five
+    minutes after its last use by default, so a model absent from this
+    endpoint's `models` list is simply not resident; that is a normal,
+    zero-contribution outcome, not a failure.
+
+    Same decode/read guards as `_show`/`_tags`, and the same reasoning:
+    returns whatever `json.loads` hands back -- NOT `dict`. `resident_bytes`
+    is the caller, and it does NOT reuse `_shaped`'s silent-coerce-to-empty
+    pattern here, because an empty list is a legitimate "nothing loaded"
+    answer this endpoint really does send, and collapsing "wrong shape"
+    into that same empty state would make a malformed response
+    indistinguishable from a genuinely idle daemon -- silently reporting 0
+    residency for a response that could not actually be read, rather than
+    raising."""
+    req = urllib.request.Request(f"{(host or OLLAMA_HOST).rstrip('/')}/api/ps")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return _decode(_read(resp, "/api/ps"), "/api/ps")
+
+
 def _no_gguf_message(what: str, user_cap: int | None) -> str:
     """Wording depends on whether a cap was already given. With no cap,
     `--window <int>` is a real alternative and worth naming. With one
@@ -244,6 +266,71 @@ def weights_bytes(
         ) from exc
 
 
+def resident_bytes(backend: str, model: str, host: str) -> int:
+    """Bytes of THIS model already resident in VRAM, per `/api/ps` -- 0 if
+    it is not currently loaded at all. Matches by name the way
+    `weights_bytes` matches against `/api/tags`: the exact name first, then
+    `f"{model}:latest"`. A DIFFERENT model being resident never contributes
+    here; only an entry matching this one's own name does.
+
+    llama-server has no `/api/ps` and no five-minute keep-alive residency
+    of this kind, so llamacpp never queries the network here and always
+    contributes 0.
+
+    Never guessed. `/api/ps` returning a body that is not JSON, an envelope
+    that is not a `dict`, or a `models` field that is not a `list` (a
+    `null` `models` included -- the daemon shape is `{"models": [...]}`,
+    even when idle it is an empty *list*, never `null`) is malformed, and
+    raises `GeometryError` rather than being coerced into "0 resident" the
+    way `_shaped` coerces its siblings' fields: a genuinely idle daemon and
+    a daemon whose response could not be trusted must not read as the same
+    thing, because collapsing them would silently substitute a guessed 0
+    for a real unknown. Once the `models` list itself is known-good, a
+    model simply absent from it IS the normal "not resident" case, and
+    contributes 0 with no error -- that absence is exactly what an idle
+    daemon reports for every model it knows about."""
+    if backend != "ollama":
+        return 0
+    ps_response = _ps(host)
+    if not isinstance(ps_response, dict):
+        raise GeometryError(
+            f"/api/ps did not return a JSON object ({ps_response!r}); "
+            f"residency cannot be measured, so the usable window is "
+            f"unknown. Pass --window explicitly."
+        )
+    models = ps_response.get("models")
+    if not isinstance(models, list):
+        raise GeometryError(
+            f"/api/ps's 'models' field is {models!r}, not a list; "
+            f"residency cannot be measured, so the usable window is "
+            f"unknown. Pass --window explicitly."
+        )
+    by_name = {
+        entry.get("name"): entry for entry in models if isinstance(entry, dict)
+    }
+    entry = by_name.get(model) or by_name.get(f"{model}:latest")
+    if entry is None:
+        return 0
+    if "size_vram" not in entry:
+        raise GeometryError(
+            f"{model!r} is resident per /api/ps but carries no 'size_vram' "
+            f"field; residency cannot be measured, so the usable window is "
+            f"unknown. Pass --window explicitly."
+        )
+    try:
+        return int(entry["size_vram"])
+    except (TypeError, ValueError, OverflowError) as exc:
+        # Same three exceptions weights_bytes guards on its own size field,
+        # same reason: int(float('inf')) raises OverflowError, and stdlib
+        # json.loads accepts the bare `Infinity` token, so this is reachable
+        # from a hostile daemon response, not just a crafted dict.
+        raise GeometryError(
+            f"{model!r}'s /api/ps size_vram is malformed "
+            f"({entry['size_vram']!r}); residency cannot be measured, so "
+            f"the usable window is unknown. Pass --window explicitly."
+        ) from exc
+
+
 def plan_window(
     backend: str,
     model: str,
@@ -253,17 +340,38 @@ def plan_window(
     kv_bits: int = 16,
     gguf_path: Path | None = None,
 ) -> WindowPlan:
-    """Free VRAM is read FIRST, before `detect_geometry`'s `/api/show` or
-    `weights_bytes`'s `/api/tags`. `usable_window`'s own precondition is
-    that `free_vram` is measured before the model is loaded; reading it
-    before any network call at all makes that hold regardless of what those
-    two read-only endpoints do internally (confirmed neither one loads the
-    model, by measuring `nvidia-smi` unchanged across a real `/api/show`
-    call), rather than relying on that fact staying true.
+    """Free VRAM is read FIRST, before `detect_geometry`'s `/api/show`,
+    `weights_bytes`'s `/api/tags`, or `resident_bytes`'s `/api/ps`.
+    `usable_window`'s own precondition is that `free_vram` reflects VRAM as
+    though this model were not already loaded; reading it before any
+    network call at all makes that measurement itself independent of what
+    those three read-only endpoints do internally (confirmed none of them
+    loads the model, by measuring `nvidia-smi` unchanged across a real
+    `/api/show` call), rather than relying on that fact staying true.
+
+    `nvidia-smi`'s free figure already EXCLUDES this model's weights
+    whenever a previous run left it resident -- Ollama keeps a model loaded
+    for five minutes after its last use by default. `usable_window` still
+    subtracts `weights_bytes` as though nothing were loaded, so on a second
+    consecutive run within that window it would subtract the same weights
+    twice and understate free VRAM by roughly the model's size, eventually
+    clamping to a window of 0 -- the run refuses even though the weights
+    it is "missing" are the very ones already sitting in VRAM, available
+    for reuse. `resident_bytes` is added back here, into `free`, before
+    `usable_window` ever runs, so its subtraction sees VRAM as it would be
+    with this model genuinely absent, regardless of whether it actually
+    is. Skipped when `free` is already `None` (no VRAM reading at all --
+    the vram limit will not apply, so residency has nothing to correct).
+
+    `resident_bytes` matches only THIS model's own name; VRAM held by a
+    DIFFERENT resident model is never added back, because `free_vram_bytes`
+    already excludes it and nothing here counts it a second time.
     """
     free = free_vram_bytes()
     geometry = detect_geometry(backend, model, host, gguf_path, user_cap=user_cap)
     weights = weights_bytes(backend, model, host, gguf_path, user_cap=user_cap)
+    if free is not None:
+        free += resident_bytes(backend, model, host)
     return usable_window(
         geometry,
         free_vram=free,
