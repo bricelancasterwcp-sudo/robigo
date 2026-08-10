@@ -12,8 +12,15 @@ from pathlib import Path
 
 import pytest
 
-from robigo.profile.corpus_io import read_corpus, write_corpus
-from robigo.profile.fixtures import CORPUS_NAME, FIXTURES, as_corpus_records
+from robigo.profile.corpus import candidates
+from robigo.profile.corpus_io import CorpusRecord, read_corpus, write_corpus
+from robigo.profile.fixtures import (
+    CORPUS_NAME,
+    FIXTURES,
+    Fixture,
+    as_corpus_records,
+    fixtures_from_corpus,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -82,3 +89,94 @@ def test_corpus_name_is_defined_once_beside_fixtures_not_a_second_literal():
     import robigo.cli as cli_module
 
     assert cli_module.CORPUS_NAME is CORPUS_NAME
+
+
+# ---------------------------------------------------------------------------
+# fixtures_from_corpus — the OTHER direction: a generated corpus, read back
+# as the Fixture shape stage2_codecs actually iterates (coordinator review,
+# 2026-08-10: as_corpus_records alone only proved fixtures-v1 was
+# EXPRESSIBLE as a corpus file; nothing read a generated one back).
+# ---------------------------------------------------------------------------
+
+
+def _record(**kw: object) -> CorpusRecord:
+    defaults: dict[str, object] = dict(
+        name="calc-dropped_return-2",
+        path=Path("src/mylib/calc.py"),
+        line=2,
+        broken="    sum(values)\n",
+        fixed="    return sum(values)\n",
+        test_id="tests/test_calc.py::test_total_sums",
+        diagnostic="exactly one net new failure",
+        operator="dropped_return",
+        source_repo="/home/user/mylib",
+        source_sha="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+    )
+    return CorpusRecord(**{**defaults, **kw})  # type: ignore[arg-type]
+
+
+def test_fixtures_from_corpus_is_the_exact_inverse_of_as_corpus_records():
+    # The strongest possible pin: converting fixtures-v1 to corpus records
+    # and back must reproduce FIXTURES exactly, field for field.
+    assert fixtures_from_corpus(as_corpus_records()) == FIXTURES
+
+
+def test_original_and_expect_map_from_broken_and_fixed_not_swapped():
+    # Grounded in a REAL Mutant from candidates() (matching this project's
+    # own convention, e.g. test_corpus_io.py's _dropped_return_mutant),
+    # not two hand-typed strings chosen to merely look plausible. Fails if
+    # original/expect are ever swapped relative to broken/fixed.
+    source = "def total(values):\n    return sum(values)\n"
+    mutant = next(
+        m for m in candidates(source, Path("calc.py")) if m.operator == "dropped_return"
+    )
+    record = _record(
+        path=mutant.path, line=mutant.line,
+        broken=mutant.mutated, fixed=mutant.original, operator=mutant.operator,
+    )
+    fixture = fixtures_from_corpus([record])[0]
+    assert fixture.original == mutant.mutated == record.broken
+    assert fixture.expect == mutant.original == record.fixed
+    assert fixture.original != fixture.expect  # guards against a vacuous pass
+    assert fixture.name == record.name
+    assert fixture.filename == "calc.py"
+
+
+def test_fixtures_from_corpus_preserves_order():
+    records = (
+        _record(name="a", path=Path("a.py")),
+        _record(name="b", path=Path("b.py")),
+        _record(name="c", path=Path("c.py")),
+    )
+    fixtures = fixtures_from_corpus(records)
+    assert [f.name for f in fixtures] == ["a", "b", "c"]
+
+
+def test_fixtures_from_corpus_on_no_records_returns_an_empty_tuple():
+    assert fixtures_from_corpus(()) == ()
+
+
+def test_fixture_filename_is_a_string_not_a_path_object():
+    # Fixture.filename predates Path-typed fields (CorpusRecord.path IS a
+    # Path) -- fails if the conversion leaks a Path where stages.py's own
+    # `landing_prompt`/`_Good`-style test fakes expect a plain string to
+    # substring-match against a prompt.
+    fixture = fixtures_from_corpus([_record()])[0]
+    assert isinstance(fixture.filename, str)
+    assert fixture.filename == "src/mylib/calc.py"
+
+
+def test_fixtures_from_corpus_round_trips_through_a_written_corpus_file(tmp_path: Path):
+    # The full loop: write a corpus file (as robigo corpus would), read it
+    # back, convert -- no in-memory record ever reused.
+    records = (_record(),)
+    out = tmp_path / "generated.json"
+    write_corpus(records, out, name="mylib-v1", dropped=())
+    _, read_records, _ = read_corpus(out)
+    fixtures = fixtures_from_corpus(read_records)
+    assert fixtures == (
+        Fixture(
+            name="calc-dropped_return-2", filename="src/mylib/calc.py",
+            original="    sum(values)\n", expect="    return sum(values)\n",
+        ),
+    )

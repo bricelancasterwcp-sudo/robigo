@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 from robigo.profile.corpus_io import CorpusRecord
 
@@ -100,4 +101,43 @@ def as_corpus_records() -> tuple[CorpusRecord, ...]:
             source_sha="n/a",
         )
         for fixture in FIXTURES
+    )
+
+
+def fixtures_from_corpus(records: Sequence[CorpusRecord]) -> tuple[Fixture, ...]:
+    """The reverse of `as_corpus_records`: any generated corpus's records,
+    expressed as `Fixture`s `stage2_codecs` can actually iterate. Closes
+    the loop `as_corpus_records` alone left open (coordinator review,
+    2026-08-10): proving fixtures-v1 is EXPRESSIBLE as a corpus file is
+    only half of "stage 2 consumes a corpus file" -- nothing read a
+    generated one back until this existed.
+
+    The field mapping is the exact inverse of `as_corpus_records`'s own:
+    `Fixture.original` (the DEFECTIVE line a model is shown) is `record.
+    broken`, and `Fixture.expect` (the corrected line) is `record.fixed`
+    -- both dataclasses agree on which of their two line fields is the
+    broken one and which is the fixed one, so this is a direct field
+    rename, not a re-derivation. `Fixture.filename` is `str(record.path)`
+    (`Fixture` predates `Path`-typed fields; `CorpusRecord.path` is a
+    `Path`). `Fixture.name` is `record.name` verbatim.
+
+    Every one of `CorpusRecord`'s four fields `Fixture` needs (name, path,
+    broken, fixed) is REQUIRED with no default (invariant 9) and directly
+    derivable here -- there is no fifth field `Fixture` needs that a
+    generated record could fail to carry. What is NOT checked here is
+    whether the resulting `Fixture`, once wrapped by `stages.fixture_body`
+    into stage 2's fixed one-line function header, still PARSES -- that is
+    a structural/shape question about the specific line cut (its
+    indentation, whether it is a complete standalone statement), not a
+    missing-field question, and `stage2_codecs` itself already discovers a
+    body that fails to parse the same way it discovers any other
+    non-landing attempt, per-fixture, without crashing."""
+    return tuple(
+        Fixture(
+            name=record.name,
+            filename=str(record.path),
+            original=record.broken,
+            expect=record.fixed,
+        )
+        for record in records
     )
