@@ -40,9 +40,17 @@ This plan was written before plans 02 and 02b executed, so every interface it
 consumes was checked against the shipped code first. All present and compatible:
 `ServerContextOverflowError` and `ContextOverflowError` (`model/client.py`),
 `CODECS` and `PatchError` (`action/codec.py`), `parse` (`action/verbs.py`),
-`PythonAdapter`, `estimate_tokens` (`context/budget.py`), `WindowPlan` with
-exactly the four fields this plan constructs, and `plan_window` with the
-signature this plan calls. `build_client(args)` reads exactly
+`PythonAdapter`, `estimate_tokens` (`context/budget.py`), `plan_window` with the signature this plan calls.
+
+**Correction (2026-08-10): the `WindowPlan` claim above was wrong.** This note
+originally said `WindowPlan` had "exactly the four fields this plan constructs".
+It has **six** — `weights_bytes` and `overhead_bytes` were added by plan 02b's fix
+wave, so the window-0 refusal could print its terms honestly. I verified that the
+*names* this plan imports exist and did not check arity, which is the same
+not-quite-verified shape this project keeps finding. **Every `WindowPlan(...)`
+literal in this plan is therefore stale** — Tasks 3, 4, 5 and 6 all contain one.
+Add `weights_bytes=` and `overhead_bytes=` when you transcribe them; Task 3's
+implementer hit this and fixed it locally, and Tasks 4-6 will hit it too. `build_client(args)` reads exactly
 `backend, model, window, num_predict, host` — the five the plan's `Namespace`
 supplies. Nothing in this plan reads run records, so 02b's `rung` → `rungs`
 schema change does not touch it.
@@ -460,6 +468,46 @@ git commit -m "feat: record/replay transcript so profiles reproduce without a GP
 ```
 
 ---
+
+#### Amendment to Task 2 (ruled 2026-08-10): record outcomes, not just replies
+
+Found by Task 3 and reproduced: `CallRecorder` writes a transcript row only after
+`generate` **returns**, so a call that *raises* leaves no row. Stage 0 bisects by
+deliberately provoking `ServerContextOverflowError`, so on a model whose planned
+window is wrong, 7 of 14 probes go unrecorded and replay dies on the very first
+call — the largest probe, which was rejected live.
+
+The consequence is the feature inverted: `--replay` reproduces a profile run only
+when stage 0 found nothing wrong. The runs actually worth recording and sharing —
+a model whose computed window did not hold — are exactly the ones that cannot be
+replayed.
+
+*Invariant:* a transcript records the **outcome** of every call, reply or
+exception, and replay reproduces that outcome — re-raising the same exception
+type with the recorded message. A recorded run replays identically whether or not
+it hit a rejection.
+
+Keep `TranscriptMiss` meaning what it now means: the call was never recorded, or
+its recorded outcomes are used up. A recorded *rejection* is not a miss — it is a
+faithful replay of a call that failed.
+
+Test it end to end at the stage level, not only at the wrapper: record a stage-0
+run against a client that rejects above a threshold, replay it, and assert the
+replayed `Stage0` equals the live one. That assertion is the point of the whole
+record/replay layer, and it currently fails.
+
+#### Amendment to Task 3 (ruled 2026-08-10): do not report a window one token above what was verified
+
+Measured: against a client rejecting prompts over 6000 characters, stage 0
+returns `Stage0(window=2001, verified=True, ...)`. At 3 characters per token the
+largest *accepted* probe was 6000 chars — 2000 tokens — so a prompt for 2001
+tokens (6003 chars) would have been rejected. The number reported as verified is
+one token above anything the server actually accepted.
+
+One token, in the direction that claims more capability than was demonstrated —
+the same ±1 class that cost plan 02b a false refusal and a needless
+over-degradation. `verified=True` must mean "a probe of this size was accepted",
+so report the largest size that actually passed, not the boundary plus one.
 
 ### Task 3: Stage 0 — probe the window rather than trust it
 
