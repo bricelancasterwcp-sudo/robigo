@@ -16,10 +16,15 @@ above the training context changes nothing -- it is a ceiling, never a
 floor)."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from robigo import cli
 from robigo.model.geometry import Geometry, WindowPlan, usable_window
+from robigo.profile.corpus_io import CorpusRecord, write_corpus
+from robigo.profile.fixtures import fixtures_from_corpus
+from robigo.profile.verify import Baseline
 
 
 def test_window_flag_is_passed_to_plan_window_as_the_user_cap(monkeypatch):
@@ -95,3 +100,84 @@ def test_window_above_training_ctx_does_not_raise_the_window():
                              kv_bits=16)
     assert capped.window == uncapped.window
     assert capped.limited_by == "training_ctx"
+
+
+def _record(name, broken, fixed):
+    """A minimal, valid `CorpusRecord` -- every field `CorpusRecord`
+    requires (none carry a default; see `corpus_io.py`'s invariant 9) with
+    plausible values, so tests below only need to vary `name`/`broken`/
+    `fixed`, the three fields that actually decide each test's outcome."""
+    return CorpusRecord(
+        name=name, path=Path("src/pkg/mod.py"), line=3, broken=broken,
+        fixed=fixed, test_id="tests/test_mod.py::test_x",
+        diagnostic="exactly one net new failure", operator="arith",
+        source_repo="/tmp/src", source_sha="deadbeef",
+    )
+
+
+def test_unwrappable_records_leave_the_rate_identical_and_are_named(tmp_path):
+    """Characterization test for P1.2 (plan 05 design §3): a harness
+    artifact -- a record `fixtures_from_corpus` cannot wrap into valid
+    Python (I4, `robigo.profile.fixtures`) -- must not reach the model's
+    score. The rate from a corpus containing an unwrappable record must
+    equal the rate from a corpus where that record is physically absent,
+    proving the drop changes neither numerator nor denominator of
+    anything downstream, not merely that SOME note gets appended.
+
+    This behaviour already exists (plan 04 task 4's I4 fix,
+    `fixtures_from_corpus`'s `ast.parse` check) -- this test is
+    deliberately a characterization test, pinning existing behaviour
+    rather than driving new code, per the task brief's Step 2. `tmp_path`
+    is accepted but unused: no corpus file is written here, only
+    `CorpusRecord`s built directly, matching the brief's own test body
+    exactly."""
+    good = _record("good", "    return a - b\n", "    return a + b\n")
+    # A single physical line cut from a multi-line expression: no wrapping
+    # strategy at any indent forms a complete statement from it.
+    bad = _record("bad", "        for x in (\n", "        for x in (1,\n")
+
+    both = fixtures_from_corpus([good, bad])
+    only_good = fixtures_from_corpus([good])
+
+    assert len(both.fixtures) == len(only_good.fixtures) == 1
+    assert any("bad" in note for note in both.dropped)
+    assert only_good.dropped == ()
+
+
+def test_corpus_flag_routes_records_and_carries_dropped(tmp_path, monkeypatch):
+    """`--corpus PATH` must reach `run_profile` as three things: the
+    corpus file's OWN name (never the bundled `fixtures-v1` constant),
+    `fixtures` built only from records `fixtures_from_corpus` could wrap
+    (the unwrappable `bad` record excluded), and `corpus_dropped` carrying
+    BOTH loss channels named in the brief -- what `read_corpus`'s third
+    return value (the GENERATOR's own drops, written into the file by
+    `write_corpus`'s `dropped=` keyword) reports, and what conversion
+    itself dropped (`FixturesFromCorpus.dropped`). Losing either channel
+    would let a harness artifact go unnamed in the profile that decides
+    whether this project ships (P1.2)."""
+    path = tmp_path / "corpus.json"
+    good = _record("good", "    return a - b\n", "    return a + b\n")
+    bad = _record("bad", "        for x in (\n", "        for x in (1,\n")
+    write_corpus([good, bad], path, name="corpus-under-test",
+                 dropped=("gen dropped: target foo abandoned",),
+                 baseline=Baseline(broken=0, executed=120, seconds=0.4))
+
+    seen = {}
+
+    def fake_run_profile(client, plan, **kw):
+        seen.update(kw)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli, "run_profile", fake_run_profile)
+    monkeypatch.setattr(cli, "plan_window", lambda *a, **k: WindowPlan(
+        window=4096, limited_by="training_ctx", free_vram=None,
+        kv_per_token=57344, weights_bytes=0, overhead_bytes=0, training_ctx=4096))
+    monkeypatch.setattr(cli, "build_client", lambda a: object())
+
+    with pytest.raises(SystemExit):
+        cli.profile_main(["--model", "m", "--corpus", str(path)])
+
+    assert seen["corpus"] == "corpus-under-test"       # the file's own name
+    assert len(seen["fixtures"]) == 1                  # bad one excluded
+    assert any("bad" in n for n in seen["corpus_dropped"])
+    assert any("abandoned" in n for n in seen["corpus_dropped"])  # generator's too

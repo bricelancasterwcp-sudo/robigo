@@ -12,8 +12,8 @@ from robigo.loop import OUTCOMES, run
 from robigo.model.client import LlamaCppClient, ModelClient, OllamaClient
 from robigo.model.detect import plan_window
 from robigo.model.geometry import GeometryError
-from robigo.profile.corpus_io import write_corpus
-from robigo.profile.fixtures import CORPUS_NAME
+from robigo.profile.corpus_io import read_corpus, write_corpus
+from robigo.profile.fixtures import CORPUS_NAME, FIXTURES, fixtures_from_corpus
 from robigo.profile.generate import GenerationResult, generate_corpus, render_report
 from robigo.profile.report import profile_path, render_table, run_profile
 from robigo.profile.transcript import CallRecorder, CallReplayer
@@ -242,6 +242,11 @@ def profile_main(argv: list[str]) -> int:
              "Needed on any box whose daemon rejects prompts below the "
              "model's training context.",
     )
+    parser.add_argument(
+        "--corpus", type=Path, default=None,
+        help="a corpus file from `robigo corpus`; without it the bundled "
+             "fixtures-v1 is measured, which is not a publishable result",
+    )
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
@@ -284,9 +289,33 @@ def profile_main(argv: list[str]) -> int:
         client = CallRecorder(client, args.record)
 
     family = args.model.replace(":", "-").replace("/", "-")
+    if args.corpus:
+        # P1.2 (plan 05 design, spec §3): a real, mined corpus replaces the
+        # bundled fixtures-v1 default -- `corpus_name` is the FILE's own
+        # identity (`write_corpus`'s `name=`), never the literal
+        # "fixtures-v1", the exact mislabelling plan 03's old kwarg default
+        # risked (see `report.run_profile`'s own docstring).
+        corpus_name, records, gen_dropped = read_corpus(args.corpus)
+        converted = fixtures_from_corpus(records)
+        fixtures = converted.fixtures
+        # Both sources of loss travel together: what the GENERATOR dropped
+        # while mining (`read_corpus`'s third return value -- a target
+        # abandoned as barren, a candidate a time budget cut short) and
+        # what CONVERSION dropped as unwrappable (`FixturesFromCorpus.
+        # dropped`, I4 -- a mutant whose wrapped body is not valid Python
+        # at any indent, ~9.2% of real records, measured 91 of 986 from
+        # src/robigo). Neither is a model failure and neither may be
+        # silently absent from the profile that decides whether this
+        # project ships (P1.2) -- both are concatenated into one tuple so
+        # `run_profile` cannot thread one through `dropped` and forget the
+        # other.
+        corpus_dropped = tuple(gen_dropped) + converted.dropped
+    else:
+        corpus_name, fixtures, corpus_dropped = CORPUS_NAME, FIXTURES, ()
     profile = run_profile(client, plan, model=args.model, quant=_quant(args.model),
                           family=family, seeds=seeds, mode=mode,
-                          corpus=CORPUS_NAME, kv_bits=args.kv_bits)
+                          corpus=corpus_name, fixtures=fixtures,
+                          corpus_dropped=corpus_dropped, kv_bits=args.kv_bits)
     print(render_table(profile))
     path = profile_path(family)
     path.parent.mkdir(parents=True, exist_ok=True)

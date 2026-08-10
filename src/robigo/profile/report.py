@@ -6,6 +6,7 @@ from pathlib import Path
 
 from robigo.model.client import ModelClient
 from robigo.model.geometry import WindowPlan
+from robigo.profile.fixtures import FIXTURES, Fixture
 from robigo.profile.schema import ENVELOPE_FIDELITY_MIN, CodecResult, Profile, verdict_for
 from robigo.profile.stages import stage0_window, stage1_envelope, stage2_codecs
 
@@ -26,6 +27,8 @@ def run_profile(
     mode: str,
     corpus: str,
     kv_bits: int = 16,
+    fixtures: tuple[Fixture, ...] = FIXTURES,
+    corpus_dropped: tuple[str, ...] = (),
 ) -> Profile:
     """Stages run cheapest-first and gate each other, and each is able to
     STOP the run, not merely skip its own measurement (spec 5's
@@ -41,6 +44,36 @@ def run_profile(
     `cli.profile_main` passes `robigo.profile.fixtures.CORPUS_NAME`, the
     identity defined once, beside `FIXTURES` itself, not a second literal
     typed here.
+
+    `fixtures` and `corpus_dropped` DO default (plan 05 task 2, P1.2),
+    unlike `corpus` -- to `FIXTURES` and `()`, exactly the values every
+    call site that predates `--corpus` already behaves as if it passed,
+    so `test_committed_transcripts_replay.py`'s and `test_profile_report.
+    py`'s existing calls (none of which name either keyword) keep running
+    the bundled fixtures with nothing dropped, unchanged. `fixtures` is
+    threaded into `stage2_codecs(client, seeds, fixtures=fixtures)` below
+    -- stage 2 measures whichever set was handed to it, real corpus or
+    bundled fixtures alike, with no branch here caring which. `dropped`
+    is extended with every entry of `corpus_dropped` unconditionally,
+    regardless of which stage gate this run lands on: a corpus's own
+    losses are a fact about the CORPUS, not about how far stage 0/1
+    happened to get, so they belong in every profile `--corpus` ever
+    produces, not only the ones that reach stage 2.
+
+    `corpus_dropped` is expected to carry BOTH loss channels
+    `cli.profile_main` concatenates before calling here -- what
+    `read_corpus`'s third return value reports (the GENERATOR's own
+    drops: a target abandoned as barren, a candidate a time budget cut
+    short) and what `fixtures_from_corpus` itself dropped as unwrappable
+    (`FixturesFromCorpus.dropped`, I4: a mutant whose wrapped body is not
+    valid Python at any indent -- measured at ~9.2% of real records, 91
+    of 986 from `src/robigo`). Neither is a model failure, and neither may be
+    excluded from `dropped` while still being excluded from `fixtures`:
+    that would let a harness artifact quietly vanish from BOTH the
+    denominator (it is not in `fixtures`, so stage 2 never scores it) and
+    the written record (P1.2) -- exactly what this parameter exists to
+    prevent, by giving every one of those records an explicit line here
+    regardless of which stage gate this run lands on.
 
     **Stage 0 gates stages 1 and 2.** A family with no verified window has
     nothing for the envelope or codec probes to run against -- both would
@@ -109,7 +142,7 @@ def run_profile(
         stage1 = stage1_envelope(client, seeds)
         fidelity, level = stage1.fidelity, stage1.level
         if fidelity >= ENVELOPE_FIDELITY_MIN:
-            codecs = stage2_codecs(client, seeds).results
+            codecs = stage2_codecs(client, seeds, fixtures=fixtures).results
         else:
             dropped.append(
                 f"stage 2: not run, envelope fidelity {fidelity:.2f} "
@@ -122,6 +155,12 @@ def run_profile(
     dropped.append(
         "repeat_rate: not measured (no stage in this plan measures it)"
     )
+    # Both of `--corpus`'s own loss channels (P1.2): unconditional, same as
+    # payload_corruption/repeat_rate above -- a corpus's losses are a fact
+    # about the CORPUS, not about which stage gate this run happened to
+    # land on, so they belong in `dropped` even on a run that never
+    # reached stage 2 at all.
+    dropped.extend(corpus_dropped)
 
     # stage0.window is never larger than plan.window (Stage0's own scope
     # boundary), and it is 0 exactly when nothing was verified accepted --
