@@ -187,11 +187,34 @@ class Stage1:
     action that was asked for. `failures` keeps the raw, un-truncated-past-
     `_FAILURE_CHARS` model text for every attempt that did not count -- the
     diagnostic material for why a family failed, not just that it did.
+
+    `level` is NOT "the envelope level this family needs" -- only level 0
+    (this stage's own fixed one-action envelope) is ever probed, so `level`
+    can only ever report on level 0, never confirm level 1:
+
+    - `0` means level 0 was measured sufficient (`fidelity >= _LEVEL1_MIN`)
+      -- a real result, backed by the `seeds` attempts actually run.
+    - `1` means level 0 was measured INSUFFICIENT. It is a recommendation
+      to try the two-step envelope (spec 2.3: constrain the header, leave
+      the payload free) next, not a report that level 1 was tried and
+      found to work -- nothing in this stage ever sends a level-1 prompt.
+      Measuring level 1 itself is later work (not yet built as of this
+      task).
+
+    Do not read a `1` here as "level 1 verified" anywhere downstream
+    (including `Profile.envelope_level`, which is `stage1.level` passed
+    through unchanged) -- that reading is exactly the class of overclaim
+    this project's review has repeatedly caught elsewhere (`meta.json`'s
+    `rung`, stage 0's off-by-one `verified=True`): a field naming a
+    capability that was never actually run.
     """
 
     fidelity: float
     attempts: int
     level: int
+    """0 if level 0 (the only envelope this stage probes) was measured
+    sufficient; 1 if it was measured insufficient. Never confirms level 1
+    itself -- see the class docstring."""
     failures: tuple[str, ...]
 
 
@@ -217,6 +240,12 @@ def stage1_envelope(client: ModelClient, seeds: int) -> Stage1:
     replays deterministically under `CallReplayer` -- (model, prompt,
     seed) is the same fixed `ENVELOPE_PROMPT` paired with a different seed
     each time, never a prompt that itself varies by call count or time.
+
+    The returned `level` is derived from THIS stage's fidelity alone
+    (`0` if `fidelity >= _LEVEL1_MIN` else `1`) -- level 1 (the two-step
+    envelope) is never itself probed here, so a `1` means "level 0 was
+    measured insufficient", not "level 1 was verified sufficient". See
+    `Stage1`'s docstring for why that distinction matters.
     """
     good = 0
     failures: list[str] = []

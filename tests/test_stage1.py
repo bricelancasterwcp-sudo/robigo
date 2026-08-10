@@ -1,12 +1,20 @@
 # tests/test_stage1.py
 from __future__ import annotations
 
+from pathlib import Path
+
 from robigo.model.client import Generation
 from robigo.profile.stages import ENVELOPE_PROMPT, stage1_envelope
+from robigo.profile.transcript import CallRecorder, CallReplayer
 
 
 class _Scripted:
     model = "m"
+    # Present so this fake can also be wrapped in CallRecorder/CallReplayer
+    # (see test_a_recorded_mixed_stage1_run_replays_identically below) --
+    # unused by the seven tests ported from the brief.
+    window = 8192
+    num_predict = 512
 
     def __init__(self, *replies: str) -> None:
         self.replies = list(replies)
@@ -58,3 +66,25 @@ def test_every_seed_is_used_so_variance_is_visible():
 
 def test_the_prompt_names_exactly_one_expected_action():
     assert "read src/target.py" in ENVELOPE_PROMPT
+
+
+def test_a_recorded_mixed_stage1_run_replays_identically(tmp_path: Path):
+    # Mirrors test_stage0.py's replay tests. Deliberately a MIXED run (some
+    # seeds parse, some don't) rather than an all-good one: an all-good
+    # replay would still pass even if CallRecorder silently dropped every
+    # failure from the transcript, which is exactly the class of bug Task
+    # 2's amendment (185d8a7, "record and replay call outcomes, not just
+    # successful replies") fixed for stage 0 -- this is the same proof for
+    # stage 1.
+    path = tmp_path / "stage1.jsonl"
+    recorded = stage1_envelope(
+        CallRecorder(_Scripted("read src/target.py", "nope"), path), seeds=5
+    )
+    replayed = stage1_envelope(CallReplayer(path), seeds=5)
+
+    assert replayed == recorded
+    # Sanity: this run actually mixes successes and failures -- otherwise
+    # this test would prove nothing beyond what an all-good run already
+    # would (see the comment above).
+    assert 0.0 < recorded.fidelity < 1.0
+    assert recorded.fidelity == 0.6
