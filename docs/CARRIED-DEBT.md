@@ -383,6 +383,27 @@ consciously not fixed, and ruled on.
   future-format transcript would raise a `KeyError` rather than a message
   naming what happened.
 
+- **Stage 0's verified window is honest but systematically pessimistic — roughly
+  half the model's real capability.** C1's fix made stage 0 report the server's own
+  `tokens_in` for the largest accepted probe, which removed a 2× overclaim. But the
+  probe is still *generated* from a fixed 3-chars-per-token estimate while its
+  `"token "` filler tokenizes at about 6, so a probe aimed at N tokens carries
+  roughly 0.55N. Measured on the committed fixtures: codegemma's `plan.window` is
+  8192 and stage 0 verifies **4528**; granite's is 4096 and it verifies **2262**.
+
+  Nothing false is claimed — those token counts really were accepted — but the
+  reported `usable_window` is bounded by *how densely the probe packs tokens*, not
+  by what the model can hold. A reader, and the loop that configures itself from
+  this field, will under-use the window by ~45%.
+
+  The remedy is in the plan's own measured fact 2, one step further than it was
+  taken: the server's count is feedback, so the probe should grow until its
+  *reported* `tokens_in` reaches the target rather than being sized once from a
+  character estimate. Note the daemon threshold above interacts with this — on this
+  box a probe cannot exceed ~11.5k tokens at all, so a 32768-token window is not
+  verifiable here regardless of filler density, and any fix must report that as
+  "could not verify to the plan's window" rather than silently settling lower.
+
 ## Found during the fix wave, fixed on reopen (ruled 2026-08-10, second round)
 
 - **`OllamaClient.generate` trusted `prompt_eval_count`/`eval_count` without
