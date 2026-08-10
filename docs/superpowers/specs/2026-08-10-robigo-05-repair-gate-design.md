@@ -217,7 +217,16 @@ run and `window_limited_by` still names `training_ctx`.
 ### 4.1 Shape
 
 For each `(record, seed)` pair, against a clone of the corpus's `source_repo`
-checked out at its recorded `source_sha`:
+checked out at its recorded `source_sha`.
+
+**That phrasing is a trap, and it caught the first two implementations.** A plain
+`git checkout <sha>` leaves a **detached HEAD**, where `git branch
+--show-current` returns the empty string. A reset that assumes a branch name
+therefore runs `git checkout -f ''`, exits 128, and excludes *every* attempt — an
+11-hour run that scores nothing. The reset must handle **both** shapes: restore
+by branch when attached, by SHA when detached. Whichever shape the clone is in,
+it must also refuse to start from a `robigo/*` branch, which is a corrupted
+starting state, not a pristine one.
 
 ```
 1. reset    git checkout <pristine-branch>            (captured ONCE, see below)
