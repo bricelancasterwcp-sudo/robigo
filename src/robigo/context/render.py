@@ -56,6 +56,55 @@ class Turn:
     result: str
 
 
+_TRAILER = "Your action:"
+
+
+def _preamble(codec: str) -> str:
+    """The prompt's fixed scaffolding before the scope section: the system
+    message, the codec-specific patch-format help, and the blank line that
+    separates them from the scope section. `render` and `budget._fixed_
+    costs` both build the prompt's opening from this exact text -- never a
+    second copy of the preamble (task 1 invariant 2)."""
+    return "\n".join([SYSTEM, _CODEC_HELP[codec], ""])
+
+
+def _where(diag: Diagnostic) -> str:
+    """Where the failure is, as best the diagnostic can say. Extracted so
+    `render` and the budget derivation share the one three-way fallback
+    rather than each spelling it out."""
+    if diag.file and diag.line:
+        return f"{diag.file}:{diag.line}"
+    if diag.file:
+        return diag.file
+    return "(location unknown)"
+
+
+def _diagnostic_section(diag: Diagnostic) -> str:
+    """The '--- failing test ---' block, exactly as `render` emits it."""
+    return "\n".join(["--- failing test ---", f"{_where(diag)}  {diag.message}", ""])
+
+
+def _turn_block(turn: Turn) -> str:
+    return f"you: {turn.action}\nresult: {turn.result}"
+
+
+def _history_section(history: tuple[Turn, ...]) -> str:
+    """One block per history turn, in order, followed by the trailer that
+    always follows history in `render`'s output -- even with zero turns.
+
+    The trailer lives here, not as a section of its own, because `Budget`
+    seats exactly three fixed costs (system, diagnostic, history) and has
+    no fourth bucket for it. Before task 1, the trailer and the newlines
+    joining the top-level parts were seated by nobody: `estimate_tokens
+    (render(...))` was short of `budget.system + budget.diagnostic +
+    budget.history + _cost(scope, root)` by exactly that (task 1,
+    invariant 1). Folding the trailer into `history`'s measured cost
+    (see `budget._fixed_costs`) costs nothing in practice: the default
+    history reserve already over-budgets for two full `_READ_CAP` reads,
+    which dwarfs one short trailer line."""
+    return "\n".join([_turn_block(turn) for turn in history] + [_TRAILER])
+
+
 def render(
     scope: Scope,
     diag: Diagnostic,
@@ -63,17 +112,12 @@ def render(
     codec: str,
     root: Path,
 ) -> str:
-    parts = [SYSTEM, _CODEC_HELP[codec], "", _scope_section(scope, root)]
-    if diag.file and diag.line:
-        where = f"{diag.file}:{diag.line}"
-    elif diag.file:
-        where = diag.file
-    else:
-        where = "(location unknown)"
-    parts += ["--- failing test ---", f"{where}  {diag.message}", ""]
-    for turn in history:
-        parts.append(f"you: {turn.action}\nresult: {turn.result}")
-    parts.append("Your action:")
+    parts = [
+        _preamble(codec),
+        _scope_section(scope, root),
+        _diagnostic_section(diag),
+        _history_section(history),
+    ]
     return "\n".join(parts)
 
 

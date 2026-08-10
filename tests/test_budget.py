@@ -420,3 +420,95 @@ def test_an_unreadable_file_is_costed_the_way_it_is_rendered(scope: Scope, tmp_p
     (tmp_path / "hop1.py").write_bytes(b"\xff\xfe not utf-8")
     cost = _cost(scope, tmp_path)  # must not raise
     assert cost == estimate_tokens(_scope_section(scope, tmp_path))
+
+
+# --- Task 1: the parts account for the whole, exactly -----------------
+#
+# `estimate_tokens` is `int(len(text) / CHARS_PER_TOKEN) + 1` -- not
+# additive over concatenation -- so this is an equality assertion, never a
+# bound: four independently-estimated pieces summing to the estimate of
+# the whole joined text is not something rounding gives you for free: it
+# has to be true by construction (see `budget._fixed_costs`'s docstring).
+
+
+@pytest.mark.parametrize("codec", ["search_replace", "whole_file"])
+@pytest.mark.parametrize("n_turns", [0, 1, 2])
+@pytest.mark.parametrize("step", [1, 4])  # undegraded, and windowed (rung 4)
+def test_invariant_one_the_parts_account_for_the_whole_exactly(
+    scope: Scope, diag: Diagnostic, tmp_path: Path, step: int, n_turns: int,
+    codec: str,
+):
+    # Would fail on: a Budget built from the old fixed guesses
+    # (SYSTEM_TOKENS/DIAGNOSTIC_TOKENS/the default history reserve)
+    # instead of `measure()`; a `measure()` that estimates each bucket's
+    # own isolated text instead of a prefix delta (breaks the instant
+    # rounding lands unevenly across two of the four buckets, which the
+    # matrix's varying turn counts and codecs are chosen to provoke); or
+    # any of `_preamble`/`_diagnostic_section`/`_history_section` drifting
+    # from what `render` actually emits for the same inputs.
+    from robigo.context.budget import _cost, measure
+
+    candidate = scope.degrade(step)
+    history = tuple(
+        Turn(f"read f{i}.py", "result text " * (i + 1)) for i in range(n_turns)
+    )
+    budget = measure(
+        candidate, diag, history, codec, tmp_path, window=999_999, reserve_out=0,
+    )
+    prompt = render(candidate, diag, history, codec, tmp_path)
+
+    assert estimate_tokens(prompt) == (
+        budget.system + budget.diagnostic + budget.history
+        + _cost(candidate, tmp_path)
+    )
+
+
+def test_invariant_one_holds_for_a_read_cap_sized_history_turn(
+    scope: Scope, diag: Diagnostic, tmp_path: Path,
+):
+    # loop.py's real per-read cap is 4000 chars (`_READ_CAP`) -- the
+    # single largest thing that actually lands in one history turn's
+    # `result`. Would fail if `measure()` fell back to the flat, far more
+    # conservative `_default_history_tokens()` reserve (built for TWO
+    # capped reads) instead of measuring this specific one-turn history,
+    # or if the telescoping arithmetic in `_fixed_costs` lost precision on
+    # a long string.
+    from robigo.context.budget import _cost, measure
+    from robigo.loop import _READ_CAP
+
+    capped_read = "x" * _READ_CAP + "\n<truncated>\n"
+    history = (Turn("read big.py", capped_read),)
+    budget = measure(
+        scope, diag, history, "search_replace", tmp_path, window=999_999,
+        reserve_out=0,
+    )
+    prompt = render(scope, diag, history, "search_replace", tmp_path)
+
+    assert estimate_tokens(prompt) == (
+        budget.system + budget.diagnostic + budget.history
+        + _cost(scope, tmp_path)
+    )
+    # Seated at its own real cost, not at the flat default reserve smuggled
+    # back in under a different name (the default is sized for two full
+    # capped reads, not one, so it must not match here).
+    default_history = Budget(window=1, reserve_out=0).history
+    assert budget.history != default_history
+
+
+def test_measure_derives_system_and_diagnostic_below_the_old_guesses(
+    scope: Scope, diag: Diagnostic, tmp_path: Path,
+):
+    # Invariant 3: once measurable, SYSTEM_TOKENS=350 and
+    # DIAGNOSTIC_TOKENS=600 stop being what a caller with a diag/history in
+    # hand gets. Would fail if `measure()` silently returned the old
+    # constants instead of a real measurement (e.g. a `_fixed_costs` that
+    # forgot to compute `system`/`diagnostic` and fell through to
+    # `Budget`'s dataclass defaults).
+    from robigo.context.budget import DIAGNOSTIC_TOKENS, SYSTEM_TOKENS, measure
+
+    budget = measure(
+        scope, diag, (), "search_replace", tmp_path, window=999_999,
+        reserve_out=0,
+    )
+    assert budget.system < SYSTEM_TOKENS
+    assert budget.diagnostic < DIAGNOSTIC_TOKENS
