@@ -157,6 +157,40 @@ class Verdict:
     reason: str
 
 
+@dataclass(frozen=True)
+class SuiteState:
+    """One suite run, parsed into the shape stage 4's judging step needs:
+    is this repo green, and did the run that produced these numbers actually
+    finish. `incomplete` is non-None whenever it did not -- a collection
+    error, a `-x` early exit, an INTERNALERROR -- in which case `broken` and
+    `executed` describe a run that never ran everything, and no caller may
+    compare them against a baseline as though it did (plan 04's process
+    lesson 2, `docs/CARRIED-DEBT.md`: a mutant that broke a module's import
+    made pytest report `1 error`, which scored as exactly one failure while
+    three tests never ran at all -- the runner's own `Interrupted` line and
+    non-zero exit code were both there and both discarded by the code that
+    lesson was written about).
+
+    `broken_ids` names every currently-broken test's node id, in the order
+    the runner reported them -- the same list invariant 6 (`verify`) uses to
+    isolate a single new failure, exposed here unfiltered because stage 4's
+    caller needs to compare a repair run's ids against a captured
+    diagnostic, not just a count.
+
+    Deliberately NOT `Baseline` or `Verdict` reused with optional fields
+    bolted on: `Baseline` has no `incomplete` because `baseline()` already
+    raises `WrongTreeError` and has no other "did not complete" case of its
+    own to represent, and `Verdict` is a judgement against a specific
+    `Mutant` with a `kept`/`reason` shape this caller does not need. A
+    fourth dataclass, not a reused one stretched to cover a shape it was
+    never designed for."""
+
+    broken: int
+    executed: int
+    broken_ids: tuple[str, ...]
+    incomplete: str | None
+
+
 # ---------------------------------------------------------------------------
 # Parsing the runner's report
 # ---------------------------------------------------------------------------
@@ -308,6 +342,45 @@ def _assert_in_clone(text: str, repo: Path) -> None:
             f"this result rather than silently scoring the real repo's "
             f"source as though it were the mutated copy"
         )
+
+
+# ---------------------------------------------------------------------------
+# The public suite-state accessor
+# ---------------------------------------------------------------------------
+
+
+def suite_state(repo: Path, runner: Runner, package: str) -> SuiteState:
+    """`repo`'s current suite state, whatever is on disk right now -- the
+    one public accessor stage 4 needs over this module's existing private
+    parsers, rather than a second module reimplementing the same regexes
+    and drifting from them (plan 01's process lesson 2, `docs/CARRIED-
+    DEBT.md`: per-task review cannot see cross-module inconsistency, and
+    this project has already paid for exactly that class of defect --
+    five path resolvers with one guarded `ValueError`, three copies of a
+    codec list -- more than once). `baseline` and `verify` above answer a
+    narrower question each ("what did an unmodified run cost", "did this
+    ONE mutant net exactly one new failure"); this answers the plain one a
+    caller checking a completed repair actually asks: is the suite green,
+    and did the run that says so actually finish.
+
+    Invariant 7 first, exactly as `baseline`/`verify` already require:
+    `_assert_in_clone` raises `WrongTreeError` before any of the four
+    figures below is trusted, so a caller of `suite_state` gets the same
+    "refuse rather than certify a result it cannot back up" guarantee every
+    other public function in this module gives, not a weaker one just
+    because this one is new. `package` is never derived here (unlike
+    `baseline`'s `_primary_package`) -- stage 4 already knows which package
+    it repaired, the same way `_apply_and_run` already knows which package
+    a specific `Mutant` belongs to, so there is no "no mutant in scope"
+    case for this function to solve."""
+    text = runner(repo, package)
+    _assert_in_clone(text, repo)
+    return SuiteState(
+        broken=_broken_count(text),
+        executed=_executed_total(text),
+        broken_ids=_broken_ids(text),
+        incomplete=_run_did_not_complete(text),
+    )
 
 
 # ---------------------------------------------------------------------------
