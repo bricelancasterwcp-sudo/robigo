@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from robigo.cli import _quant
+from robigo.model.client import ModelError
 from robigo.model.geometry import WindowPlan
 from robigo.profile.report import run_profile
 from robigo.profile.transcript import CallReplayer
@@ -29,8 +30,11 @@ _TRANSCRIPTS_DIR = Path(__file__).parent / "transcripts"
 # changes how many stage-1/stage-2 calls get made and would itself raise
 # TranscriptMiss, the same way a stale prompt does -- this tuple is part of
 # what "matches the recording" means, not incidental.
+#
+# qwen7b.jsonl is deliberately NOT here -- see
+# test_qwen_transcript_documents_a_real_unmeasurable_probe below for why its
+# committed shape is one row, not a full profile run.
 _FIXTURES = (
-    ("qwen7b.jsonl", 3, "quick"),
     ("granite8b.jsonl", 3, "quick"),
     ("codegemma7b.jsonl", 3, "quick"),
 )
@@ -101,3 +105,73 @@ def test_granite_reads_limited_on_window_alone():
         seeds=3, mode="quick", kv_bits=16,
     )
     assert profile.verdict == "LIMITED"
+
+
+def test_no_committed_row_encodes_an_unmeasured_reply():
+    # Whole-branch review, reopened round (ruled 2026-08-10): the first
+    # re-recording of these fixtures committed exactly the shape this
+    # guards against -- `codegemma7b.jsonl` clean, but `qwen7b.jsonl` and
+    # `granite8b.jsonl` each carried a stage-0 row with `outcome: "reply"`
+    # and `tokens_in: 0`, which `stage0_window` (before this round's fix)
+    # read as `Stage0(window=0, verified=True, note="probe accepted")` --
+    # incoherent on its face and false besides. Fails if any committed
+    # transcript is ever re-recorded (or hand-edited) back into that shape:
+    # a "reply" outcome -- the call was accepted, not rejected or errored
+    # -- must always carry a positive `tokens_in`, or it isn't a
+    # measurement at all (see client.py's matching fix, which now raises
+    # rather than producing this row in the first place).
+    for path in sorted(_TRANSCRIPTS_DIR.glob("*.jsonl")):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row["outcome"] == "reply":
+                assert row["tokens_in"] > 0, (
+                    f"{path.name} line {lineno}: a 'reply' row with "
+                    f"tokens_in={row['tokens_in']!r} is an unmeasured call "
+                    f"masquerading as a measured one"
+                )
+
+
+def test_qwen_transcript_documents_a_real_unmeasurable_probe():
+    # C1's fix reopened this file's own earlier claim (see the fix-wave
+    # report): the "done: false, no stats" daemon response is NOT reliably
+    # reproducible at every size -- it is a genuine, sharp, size-dependent
+    # threshold specific to this model. Measured live, repeatedly, at
+    # qwen2.5-coder:7b-instruct-q8_0's REAL plan.window (32768, its
+    # training context -- this box has ample free VRAM, so nothing smaller
+    # binds): the full-window probe `stage0_window` always sends first
+    # -- 40/40 consecutive live attempts at (model, this exact prompt,
+    # seed=0) failed -- while the same probe at a smaller target (<=
+    # ~11500) succeeded reliably every time it was tried.
+    # `_PROBE_SEED` is fixed at 0 by design (Task 3, so replay
+    # stays deterministic) and `num_predict=1024` is the CLI's own fixed
+    # default -- neither is in this fix wave's scope to change -- so the
+    # immediate full-window probe is the FIRST call any recording attempt
+    # makes, and it cannot currently be recorded as a successful
+    # measurement for this model on this daemon.
+    #
+    # The honest artifact is what is committed: ONE row, `outcome:
+    # "error"`, `error_type: "ModelError"` -- client.py's fix (this round)
+    # correctly refuses to fabricate a `tokens_in: 0` "measurement" for it.
+    # This test pins that the transcript stays in that shape (not silently
+    # reverting to a false reply) and that replaying it reproduces the
+    # exact same failure, byte for byte -- proof that this is a genuine,
+    # reproducible daemon defect, not a fluke of the one live session that
+    # recorded it.
+    path = _TRANSCRIPTS_DIR / "qwen7b.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()]
+    assert len(rows) == 1
+    assert rows[0]["outcome"] == "error"
+    assert rows[0]["error_type"] == "ModelError"
+    assert "prompt_eval_count" in rows[0]["error_message"]
+
+    model = rows[0]["model"]
+    with pytest.raises(ModelError) as e:
+        run_profile(
+            CallReplayer(path), _plan_for(path),
+            model=model, quant=_quant(model), family="qwen-7b",
+            seeds=3, mode="quick", kv_bits=16,
+        )
+    assert str(e.value) == rows[0]["error_message"]
