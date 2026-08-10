@@ -82,11 +82,27 @@ Falsification tests — each must fail when the invariant is broken:
 - Consumes: `fit`, `Budget`, `BudgetExhausted` from `robigo.context.budget`; Task 1's derivation; `client.window`, `client.num_predict`.
 - Produces: no signature changes to `run` or `_execute`.
 
-**Invariant 4 — the prompt sent always fits.** For every turn, the prompt actually passed to `client.generate` satisfies
+**Invariant 4 — the prompt sent always fits, and measurement is the authority.** For every turn, the prompt actually passed to `client.generate` satisfies
 
     estimate_tokens(prompt) + client.num_predict <= client.window
 
-This is the guarantee the whole layer exists for, and it is checkable at the point of use. `fit()` picks the rung by arithmetic; the loop then verifies the assembled result. If a rendered prompt violates this, the accounting is wrong — surface it as the refusal path with a message naming both numbers. **Never send it anyway.** A silent overrun here is the exact failure the ladder was built to prevent, and the only place it can be caught unconditionally.
+**Amended before execution (2026-08-09), from measurement.** The original wording made this a tripwire — verify, and treat a violation as the accounting being broken. Measuring Task 1's decomposition shows a violation is *expected* at a small rate, so a tripwire would refuse runs that had room.
+
+Task 1 seats `system`/`diagnostic`/`history` as telescoping deltas between successive prefixes of the rendered string, which is exact for the scope it measured. `fit()` then degrades the scope, and `estimate_tokens` is `int(len/3.3) + 1` — not additive — so each delta shifts with the new length's residue. Swept across 60 length variants × 4 rungs:
+
+| delta between seated sum and actual rendered cost | samples |
+|---|---|
+| −1 (**under-counts** — says fits when it may not) | 12 |
+| 0 (exact) | 164 |
+| +1 (over-counts, safe) | 64 |
+
+One token, 5% of the time, in the direction that matters. Re-measuring inside `fit` would need `diag`/`history`/`codec` threaded into its signature, which this plan forbids.
+
+So: **arithmetic proposes, measurement decides.** `fit()` chooses a rung — it encodes the fixed ladder and is already tested. The loop then renders that rung and measures it against the real window. If it does not fit, step to the next rung down and measure again; if rung 4 does not fit, refuse. Rendering a candidate is cheap (its files are already read) and there are at most four.
+
+This makes the ladder's decision procedure honest end to end without weakening the fixed order: the order still comes from the spec, only the *stopping point* is decided by measurement rather than by an estimate of an estimate. **Never send a prompt that fails the check.** A silent overrun is the exact failure the ladder was built to prevent, and this is the one place it can be caught unconditionally.
+
+A test must pin the step-down specifically: construct a case where the seated arithmetic accepts a rung whose rendered prompt exceeds the window, and assert the loop sends the next rung down instead of either sending the too-large prompt or refusing.
 
 **Invariant 5 — the outcome mirrors the existing evidence gate.** `loop.py:186` already distinguishes: a context overflow with at least one turn behind it is `budget_exhausted`, with none it is `refused`. `BudgetExhausted` from `fit()` takes the same mapping for the same reason — with evidence the work so far stands, without it there is nothing to preserve. Do not invent a third outcome.
 
