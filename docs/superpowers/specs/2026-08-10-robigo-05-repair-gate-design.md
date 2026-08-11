@@ -277,6 +277,33 @@ as the new "pristine".
 implementation it was named here and never written. An invariant stated without
 its test is how this class of defect reaches a measurement.
 
+**Step 3 and step 4 must use the SAME interpreter, and this document originally
+did not say so.** The recipe above names `adapter=python_` for the repair and a
+bare `pytest_runner` for the judging, and never asks whether the two agree. They
+did not: `PythonAdapter` resolved `.venv` → `venv` → the bare string `"python"`,
+while `pytest_runner` hardcoded `sys.executable`. On any fresh third-party clone
+with no virtualenv of its own, the loop's very first action —
+`adapter.run(root, None)` — ran a `python` with no pytest, raised `AdapterError`,
+and every attempt was excluded as infrastructure **before the model was ever
+called**. Measured live against boltons: stage 2 landed 17% while **100% of
+stage-4 attempts were excluded**. A `--full` run would have spent ~12 hours and
+returned `repair_rate: None` — unmeasured, which §4.4 says is not a pass. The
+gate would have had nothing to read.
+
+**The default interpreter is `sys.executable`, and the reason is the corpus, not
+convenience.** A corpus's `baseline.executed` is measured by `robigo corpus`
+*through `pytest_runner`*, i.e. under `sys.executable` — the frozen corpus
+records `executed: 468`. Stage 4 then excludes any attempt whose `executed` total
+disagrees with that baseline (§4.3.4). So a judge running a different interpreter
+than the one that produced the baseline can diverge on the executed count and
+exclude every attempt for a *second*, independent reason. Agreement with the
+corpus's own baseline is what fixes the default; `--python` overrides it for a
+target repo that genuinely needs its own environment.
+
+This is the cross-module-inconsistency class `CARRIED-DEBT.md` names as its top
+recurring lesson: no per-task review saw it, because each review saw one side.
+It needs a test asserting the two sides cannot diverge, not a convention.
+
 ### 4.2 The task string
 
 Corpus records carry `path` and `line`, so handing the model the defect
