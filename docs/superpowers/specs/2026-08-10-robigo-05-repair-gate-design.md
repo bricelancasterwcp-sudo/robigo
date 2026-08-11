@@ -300,8 +300,8 @@ exclude every attempt for a *second*, independent reason. Agreement with the
 corpus's own baseline is what fixes the default; `--python` overrides it for a
 target repo that genuinely needs its own environment.
 
-This is the cross-module-inconsistency class `CARRIED-DEBT.md` names as its top
-recurring lesson: no per-task review saw it, because each review saw one side.
+This is the cross-module-inconsistency class `CARRIED-DEBT.md` names as plan
+01's process lesson 2: no per-task review saw it, because each review saw one side.
 It needs a test asserting the two sides cannot diverge, not a convention.
 
 ### 4.2 The task string
