@@ -946,7 +946,7 @@ _IMPORT_CHECK_TIMEOUT = 30
 _PYTEST_TIMEOUT = 300
 
 
-def pytest_runner(repo: Path, package: str) -> str:
+def pytest_runner(repo: Path, package: str, *, python: str = sys.executable) -> str:
     """The one real `Runner`: shells out to pytest inside `repo`. Never
     touches the network, a model daemon, or port 8081 -- this runs pytest
     and one `python -c` import check, both fully local subprocesses.
@@ -1004,7 +1004,23 @@ def pytest_runner(repo: Path, package: str) -> str:
     code -- previously computed and thrown away entirely. A collection
     error exits 2 (`"Interrupted: N errors during collection"`), never 0
     or 1; `verify`'s `_run_did_not_complete` rejects on this before ever
-    asking "exactly one" (whole-branch review C1)."""
+    asking "exactly one" (whole-branch review C1).
+
+    `python` (task 8, fix round 1) names the interpreter both subprocesses
+    above run under -- keyword-only, defaulting to `sys.executable` so
+    every existing caller (every test in this file, `stage4_repair`'s own
+    prior hardcoded behaviour) keeps running under the SAME interpreter it
+    always did, with no call site needing to change. It exists at all
+    because this function used to hardcode `sys.executable` unconditionally,
+    which was fine in isolation but became a hazard the moment
+    `repair.attempt_repair` ALSO needed to choose an interpreter for the
+    loop side (`PythonAdapter`) -- two independent hardcoded choices within
+    one attempt is exactly the class of defect `docs/CARRIED-DEBT.md`
+    already tracks (five path resolvers, three codec lists): whichever of
+    the two callers picks the interpreter, this one single parameter is
+    now the only place that choice is made, and `repair.py` is responsible
+    for passing the SAME value to both this function and `PythonAdapter`
+    (see `attempt_repair`'s own docstring)."""
     env = os.environ.copy()
     env.pop("PYTEST_ADDOPTS", None)
     env.pop("PYTEST_PLUGINS", None)
@@ -1012,7 +1028,7 @@ def pytest_runner(repo: Path, package: str) -> str:
     env["PYTHONPATH"] = str(repo / "src")
 
     import_check = subprocess.run(
-        [sys.executable, "-c", f"import {package}; print({package}.__file__)"],
+        [python, "-c", f"import {package}; print({package}.__file__)"],
         cwd=repo,
         env=env,
         capture_output=True,
@@ -1026,7 +1042,7 @@ def pytest_runner(repo: Path, package: str) -> str:
     )
 
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "--tb=no", "-rfE"],
+        [python, "-m", "pytest", "-q", "--tb=no", "-rfE"],
         cwd=repo,
         env=env,
         capture_output=True,

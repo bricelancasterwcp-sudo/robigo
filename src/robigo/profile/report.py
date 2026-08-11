@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -44,6 +45,7 @@ def run_profile(
     records: Sequence[CorpusRecord] = (),
     corpus_baseline: Baseline | None = None,
     turn_cap: int = 8,
+    python: str = sys.executable,
 ) -> Profile:
     """Stages run cheapest-first and gate each other, and each is able to
     STOP the run, not merely skip its own measurement (spec 5's
@@ -189,12 +191,13 @@ def run_profile(
        refusing to run at all.
 
     When all four hold, `stage4_repair(records, repo, client, seeds=seeds,
-    codec=best, base=corpus_baseline, turn_cap=turn_cap)` runs the full
-    (record, seed) grid against the shipped tool, `stage5_discipline
-    (repair.all_attempts)` derives the two loop-discipline numbers from
-    the SAME attempts at zero additional model calls (invariant 7.1), and
-    `repair.dropped` (every excluded attempt, spec 4.3.4) is folded into
-    this function's own `dropped` list -- a corpus-and-repo's own losses
+    codec=best, base=corpus_baseline, turn_cap=turn_cap, python=python)`
+    runs the full (record, seed) grid against the shipped tool,
+    `stage5_discipline(repair.all_attempts)` derives the two loop-discipline
+    numbers from the SAME attempts at zero additional model calls
+    (invariant 7.1), and `repair.dropped` (every excluded attempt, spec
+    4.3.4) is folded into this function's own `dropped` list -- a
+    corpus-and-repo's own losses
     belong in the written profile exactly as `corpus_dropped` already
     does for stage 2's.
 
@@ -207,7 +210,20 @@ def run_profile(
     way to whichever caller can actually fix `repo` (see that exception's
     own docstring for why swallowing it into an `excluded` `Attempt` would
     be silently wrong roughly 940 times over, once per attempt in the
-    run, rather than failing loudly once)."""
+    run, rather than failing loudly once).
+
+    `python` (task 8, fix round 1) is the ONE interpreter `stage4_repair`
+    -> `attempt_repair` uses for BOTH halves of every attempt -- the loop
+    (`PythonAdapter`) and the judge (`pytest_runner`'s executed-total
+    comparison against `corpus_baseline`). Defaults to `sys.executable`,
+    not `PythonAdapter`'s own `.venv`/`venv`/`PATH` search, because
+    `sys.executable` is what `robigo corpus` was itself running under when
+    it measured `corpus_baseline` in the first place -- see
+    `repair.attempt_repair`'s own docstring for the live-confirmed failure
+    this prevents (every attempt against a fresh third-party clone
+    excluded as "loop infrastructure" before the model was ever touched)
+    and for why one shared value, not two independently-defaulted ones,
+    is the actual property that matters."""
     dropped: list[str] = []
     stage0 = stage0_window(client, plan)
     fidelity = 0.0
@@ -286,7 +302,7 @@ def run_profile(
     else:
         repair = stage4_repair(
             records, repo, client, seeds=seeds, codec=best,
-            base=corpus_baseline, turn_cap=turn_cap,
+            base=corpus_baseline, turn_cap=turn_cap, python=python,
         )
         discipline = stage5_discipline(repair.all_attempts)
         dropped.extend(repair.dropped)

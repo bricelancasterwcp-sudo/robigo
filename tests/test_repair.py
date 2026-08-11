@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 import pytest
 from robigo.loop import RunResult
@@ -46,6 +47,90 @@ def _repo(tmp_path):
     run("add", "-A")
     run("commit", "-q", "-m", "initial")
     return tmp_path
+
+
+def test_the_loop_and_the_judge_resolve_the_same_interpreter(tmp_path, monkeypatch):
+    """Fix round 1 (2026-08-10), the property the review flagged as needing
+    a TEST rather than a convention: cross-module agreement cannot be seen
+    by reviewing either module in isolation (`docs/CARRIED-DEBT.md` lesson
+    2, "per-task review cannot see cross-module inconsistency" -- five
+    path resolvers, three copies of a codec list, and now this). Before
+    this fix, `PythonAdapter` (the LOOP side, `adapters/python_.py`)
+    resolved its own interpreter independently
+    of `pytest_runner` (the JUDGE side, `verify.py`, which hardcoded
+    `sys.executable`) -- confirmed live against a real, fresh `boltons`
+    clone with no venv of its own: `PythonAdapter`'s bare `"python"` PATH
+    fallback found no `pytest` at all, and `AdapterError` excluded every
+    single attempt before the model client was ever touched.
+
+    Unlike every OTHER test in this file, `suite_state` is deliberately
+    NOT mocked away here -- letting the REAL `suite_state` call the
+    (spied) `pytest_runner` is the whole point: it proves the interpreter
+    `attempt_repair` bound into `runner` via `functools.partial` actually
+    reaches the real call the judge makes, not merely that the right
+    string sits in some local variable that nothing downstream reads.
+    `run` (the loop) IS mocked, the same way every other test here mocks
+    it -- this test is about interpreter AGREEMENT between the two halves
+    of one attempt, not about re-proving the loop itself works."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    seen: dict[str, object] = {}
+
+    def fake_run(task, root, client, adapter, **kw):
+        # Exactly what attempt_repair constructed PythonAdapter with --
+        # the LOOP side's own resolved interpreter.
+        seen["adapter_python"] = adapter._python
+        return RunResult(outcome="pass", turns=1, exit_code=0, branch=None,
+                         detail="tests pass")
+
+    def fake_pytest_runner(repo_arg, package, *, python=sys.executable):
+        # The JUDGE side's own resolved interpreter, captured from the
+        # real `pytest_runner`'s own keyword-only `python` parameter --
+        # this fake stands in for the real subprocess-shelling body, not
+        # for the signature `attempt_repair` binds `python` onto.
+        seen["runner_python"] = python
+        module_path = repo_arg / "src" / "pkg" / "mod.py"
+        return f"MODULE_UNDER_TEST={module_path}\nEXIT_CODE=0\n1 passed in 0.01s\n"
+
+    monkeypatch.setattr(R, "run", fake_run)
+    monkeypatch.setattr(R, "pytest_runner", fake_pytest_runner)
+
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base,
+                         python="/custom/python")
+
+    assert a.passed is True and a.excluded is None
+    assert seen["adapter_python"] == "/custom/python"
+    assert seen["runner_python"] == "/custom/python"
+    assert seen["adapter_python"] == seen["runner_python"]
+
+
+def test_an_overridden_runner_is_not_forced_to_accept_python(tmp_path, monkeypatch):
+    """The other half of the same design: a caller who explicitly
+    overrides `runner` (a test's canned, `python`-unaware fake -- the
+    ONLY shape any test in this project actually uses via that parameter)
+    must be used AS GIVEN, never wrapped in a `functools.partial(runner,
+    python=...)` that would raise `TypeError` against a plain 2-arg
+    callable. `python` is bound only onto the DEFAULT (`pytest_runner`
+    itself); an explicit `runner=` opts out of that binding entirely."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="pass", turns=1, exit_code=0, branch=None, detail="tests pass"))
+
+    def two_arg_runner(repo_arg, package):
+        # Deliberately the bare Runner shape -- Callable[[Path, str], str],
+        # no `python` keyword at all. Would raise TypeError if
+        # attempt_repair ever partial-bound `python=` onto it.
+        return "MODULE_UNDER_TEST=" + str(repo_arg / "src" / "pkg" / "mod.py") + \
+               "\nEXIT_CODE=0\n1 passed in 0.01s\n"
+
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base,
+                         python="/should-be-ignored/for-runner",
+                         runner=two_arg_runner)
+
+    assert a.passed is True and a.excluded is None
 
 
 def test_the_task_string_never_leaks_the_defect_location():
@@ -624,6 +709,41 @@ def test_no_records_at_all_means_rate_is_none_not_zero(tmp_path):
     assert s.rate is None
     assert s.attempts == 0 and s.records == 0
     assert s.dropped == () and s.all_attempts == ()
+
+
+def test_stage4_repair_threads_python_and_runner_to_every_attempt(
+    monkeypatch, tmp_path
+):
+    """Fix round 1: `stage4_repair` makes no interpreter decision of its
+    own -- it must relay the ONE `python`/`runner` choice its caller gave
+    it to EVERY `attempt_repair` call in the (record, seed) grid
+    unchanged, not just the first, and not silently fall back to
+    `attempt_repair`'s own default for any of them. None of the other
+    `stage4_repair` tests in this file capture these two kwargs (their
+    fakes use `**kw` and ignore it) -- this is the one that inspects the
+    call itself, the same reason `test_stage_4_receives_the_real_
+    arguments_run_profile_was_given` exists one layer up in
+    test_profile_report.py."""
+    seen_python: list[object] = []
+    seen_runner: list[object] = []
+
+    def fake_attempt(record, repo, client, *, seed, codec, base, turn_cap,
+                     python, runner):
+        seen_python.append(python)
+        seen_runner.append(runner)
+        return R.Attempt(record.name, seed, True, "pass", 1, 0, None)
+
+    monkeypatch.setattr(R, "attempt_repair", fake_attempt)
+    sentinel_runner = object()
+    s = R.stage4_repair(
+        [_record(name="a"), _record(name="b")], tmp_path, object(), seeds=2,
+        codec="search_replace", base=Baseline(broken=0, executed=1, seconds=0.1),
+        python="/pinned/python", runner=sentinel_runner,
+    )
+    assert s.attempts == 4   # 2 records x 2 seeds, all scored
+    assert len(seen_python) == 4
+    assert all(p == "/pinned/python" for p in seen_python)
+    assert all(r is sentinel_runner for r in seen_runner)
 
 
 def test_corrupted_clone_error_propagates_through_the_driver_loop(

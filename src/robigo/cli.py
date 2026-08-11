@@ -5,6 +5,7 @@ import argparse
 import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 from robigo.adapters.python_ import PythonAdapter
@@ -15,6 +16,7 @@ from robigo.model.geometry import GeometryError
 from robigo.profile.corpus_io import read_corpus, read_corpus_baseline, write_corpus
 from robigo.profile.fixtures import CORPUS_NAME, FIXTURES, fixtures_from_corpus
 from robigo.profile.generate import GenerationResult, generate_corpus, render_report
+from robigo.profile.repair import CorruptedCloneError
 from robigo.profile.report import profile_path, render_table, run_profile
 from robigo.profile.transcript import CallRecorder, CallReplayer
 from robigo.profile.verify import (
@@ -39,6 +41,17 @@ from robigo.record import new_recorder
 
 # EX_USAGE from sysexits.h, deliberately outside the five contract codes.
 _EX_USAGE = 64
+# EX_DATAERR from sysexits.h -- also deliberately outside the five contract
+# codes, and deliberately DIFFERENT from _EX_USAGE: fix round 1 (2026-08-10)
+# found `CorruptedCloneError` propagating uncaught out of `profile_main`
+# and being turned into exit 1 by Python's own top-level handler -- bitwise
+# identical to `OUTCOMES["stalled"]`, so a script checking `$?` after a
+# long `--full` run would misread a corrupted-clone abort (a defect in the
+# shared --repo clone itself, not a model result at all) as "the model
+# stalled". `CorruptedCloneError`'s own name is the closest sysexits.h
+# category: the on-disk clone -- the "data" this run was handed -- was not
+# in the state this run needed it to be in.
+_EX_CORRUPTED_CLONE = 65
 
 
 def build_client(args: argparse.Namespace) -> ModelClient:
@@ -253,6 +266,19 @@ def profile_main(argv: list[str]) -> int:
              "corpus's source_sha. Stage 4 needs a real working tree; "
              "without it stages 4 and 5 are dropped, not failed.",
     )
+    parser.add_argument(
+        "--python", type=Path, default=None,
+        help="the interpreter stage 4 runs BOTH the model's edits and the "
+             "judging test suite under (fix round 1, 2026-08-10). Defaults "
+             "to sys.executable -- this process's own interpreter -- NOT "
+             "PythonAdapter's usual .venv/venv/PATH search relative to "
+             "--repo: `robigo corpus` measured the corpus's own Baseline "
+             "under sys.executable too (both go through the same `robigo` "
+             "entry point), and stage 4's executed-test comparison against "
+             "that Baseline is only meaningful if the interpreter that "
+             "reads it back agrees. Pass this only to point at a DIFFERENT "
+             "interpreter than the one running `robigo` itself.",
+    )
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
@@ -315,17 +341,40 @@ def profile_main(argv: list[str]) -> int:
         # ever run, so a wrong `--repo` is refused before this command
         # dials a model daemon at all -- not after burning a real window
         # probe or a real generation call on a run that was always going
-        # to be thrown away. `records[0]` speaks for the whole corpus: one
-        # `robigo corpus` run mines one repo at one commit, so every
-        # record in a single corpus file shares one `source_sha` (verified
-        # against the frozen `docs/corpus/boltons-gate-v1.json`, all 94
-        # records share one value).
+        # to be thrown away.
+        #
+        # Every ORDINARY corpus file has exactly one `source_sha` across
+        # every record (one `robigo corpus` run mines one repo at one
+        # commit -- verified directly against the frozen 94-record
+        # `docs/corpus/boltons-gate-v1.json`), but nothing in `corpus_io.py`
+        # actually ENFORCES that on disk: a hand-assembled or merged
+        # corpus file could carry more than one, and trusting `records[0]`
+        # alone as representative would pass this guard on record 0 while
+        # silently mis-staging every OTHER record at line numbers pinned
+        # to a commit that was never even checked. Checked structurally
+        # here (fix round 1, cheapest correct option per the review)
+        # rather than merely documented as an assumption -- a set over up
+        # to ~100 records costs nothing next to the daemon calls this
+        # guard already exists to skip on failure.
+        source_shas = {record.source_sha for record in records}
+        if len(source_shas) > 1:
+            print(
+                f"{args.corpus} is not usable with --repo: its records name "
+                f"{len(source_shas)} different source_sha values "
+                f"({', '.join(sorted(source_shas))}) -- a single --repo can "
+                f"only be checked out at one commit, so no one commit could "
+                f"make every record's line numbers meaningful at once. This "
+                f"corpus was likely hand-assembled or merged from more than "
+                f"one `robigo corpus` run; mine (or split) a corpus with "
+                f"one source_sha per file instead."
+            )
+            return OUTCOMES["refused"]
         try:
             repo_sha = _source_sha(args.repo)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
             print(f"could not read --repo {args.repo}'s current commit: {exc}")
             return OUTCOMES["infrastructure"]
-        corpus_sha = records[0].source_sha
+        corpus_sha = next(iter(source_shas))
         if repo_sha != corpus_sha:
             # Names BOTH shas, explicitly, and never tells the user to
             # pass a flag they already passed (Plan 01 shipped two
@@ -369,22 +418,42 @@ def profile_main(argv: list[str]) -> int:
     if args.record:
         client = CallRecorder(client, args.record)
 
-    # `repo`/`records`/`corpus_baseline` are NOT wrapped in any
-    # `try`/`except` here (task 8's own constraint): `run_profile` ->
-    # `stage4_repair` can raise `CorruptedCloneError` when `repo` starts
-    # this process already checked out on a `robigo/*` branch, and that
-    # exception is deliberately meant to propagate all the way out (see
-    # `report.run_profile`'s own docstring) -- a broad `except Exception`
-    # here would silently convert one loud, immediate abort into ~940
-    # individually swallowed attempts, scoring nothing and reporting a
+    # `repo`/`records`/`corpus_baseline` are NOT wrapped in a broad
+    # `except Exception` here (task 8's own constraint, unchanged): a
+    # `CorruptedCloneError` from `run_profile` -> `stage4_repair` names a
+    # defect in the shared `repo` clone itself, not in one record, and
+    # swallowing it the way that catch swallows a per-record surprise
+    # would silently convert one loud, immediate abort into ~940
+    # individually excluded attempts, scoring nothing and reporting a
     # corpus-shaped `dropped` list instead of failing where the actual
-    # problem is: `repo`.
-    profile = run_profile(client, plan, model=args.model, quant=_quant(args.model),
-                          family=family, seeds=seeds, mode=mode,
-                          corpus=corpus_name, fixtures=fixtures,
-                          corpus_dropped=corpus_dropped, kv_bits=args.kv_bits,
-                          repo=args.repo, records=records,
-                          corpus_baseline=corpus_baseline)
+    # problem is: `repo`. The `except CorruptedCloneError` below is
+    # DIFFERENT from that: it catches this ONE named exception, ONLY it,
+    # and does not try to keep the run going -- it exists purely to fix
+    # the EXIT CODE (fix round 1, confirmed live 2026-08-10), not to
+    # rescue the run.
+    python = str(args.python) if args.python else sys.executable
+    try:
+        profile = run_profile(client, plan, model=args.model, quant=_quant(args.model),
+                              family=family, seeds=seeds, mode=mode,
+                              corpus=corpus_name, fixtures=fixtures,
+                              corpus_dropped=corpus_dropped, kv_bits=args.kv_bits,
+                              repo=args.repo, records=records,
+                              corpus_baseline=corpus_baseline, python=python)
+    except CorruptedCloneError:
+        # Kept loud (the full traceback still prints, exactly as an
+        # uncaught exception would) -- only the EXIT CODE changes.
+        # Confirmed live: left uncaught, this propagated through
+        # `profile_main` and Python's own top-level handler exited 1 --
+        # bitwise identical to `OUTCOMES["stalled"]`, so a script checking
+        # `$?` after a long `--full` run would misread a corrupted-clone
+        # abort (a defect in the clone, not a model result at all) as
+        # "the model stalled". `_EX_CORRUPTED_CLONE` is deliberately
+        # outside the five contract codes, same reasoning as `_EX_USAGE`
+        # above, and deliberately DIFFERENT from `_EX_USAGE` too -- this
+        # is not a usage mistake, it is a harness-level abort of a
+        # different, specific kind.
+        traceback.print_exc()
+        return _EX_CORRUPTED_CLONE
     print(render_table(profile))
     path = profile_path(family)
     path.parent.mkdir(parents=True, exist_ok=True)

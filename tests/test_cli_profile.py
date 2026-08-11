@@ -17,6 +17,7 @@ floor)."""
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,7 @@ from robigo.model.client import Generation
 from robigo.model.geometry import Geometry, WindowPlan, usable_window
 from robigo.profile.corpus_io import CorpusRecord, write_corpus
 from robigo.profile.fixtures import FIXTURES, fixtures_from_corpus
+from robigo.profile.repair import CorruptedCloneError
 from robigo.profile.verify import Baseline
 
 
@@ -105,16 +107,21 @@ def test_window_above_training_ctx_does_not_raise_the_window():
     assert capped.limited_by == "training_ctx"
 
 
-def _record(name, broken, fixed):
+def _record(name, broken, fixed, *, source_sha="deadbeef"):
     """A minimal, valid `CorpusRecord` -- every field `CorpusRecord`
     requires (none carry a default; see `corpus_io.py`'s invariant 9) with
     plausible values, so tests below only need to vary `name`/`broken`/
-    `fixed`, the three fields that actually decide each test's outcome."""
+    `fixed`, the three fields that actually decide each test's outcome.
+    `source_sha` is keyword-only with the same `"deadbeef"` default every
+    existing call site already relied on positionally -- added (fix round
+    1) only so the multi-sha guard test below can build two records that
+    deliberately disagree, without a second, hand-rolled `CorpusRecord`
+    construction drifting from this one."""
     return CorpusRecord(
         name=name, path=Path("src/pkg/mod.py"), line=3, broken=broken,
         fixed=fixed, test_id="tests/test_mod.py::test_x",
         diagnostic="exactly one net new failure", operator="arith",
-        source_repo="/tmp/src", source_sha="deadbeef",
+        source_repo="/tmp/src", source_sha=source_sha,
     )
 
 
@@ -194,6 +201,14 @@ def test_corpus_flag_routes_records_and_carries_dropped(tmp_path, monkeypatch):
     assert seen["repo"] is None
     assert {r.name for r in seen["records"]} == {"good", "bad"}
     assert seen["corpus_baseline"] == Baseline(broken=0, executed=120, seconds=0.4)
+    # Fix round 1: absent --python, the call must carry sys.executable --
+    # NOT None, NOT PythonAdapter's own .venv/venv/PATH search -- because
+    # sys.executable is the interpreter that measured this corpus's own
+    # Baseline (both `robigo profile` and `robigo corpus` go through the
+    # same entry point), and stage 4's executed-total comparison against
+    # that Baseline only means anything if the interpreter reading it
+    # back agrees with the one that wrote it.
+    assert seen["python"] == sys.executable
 
 
 class _Landing:
@@ -321,3 +336,126 @@ def test_a_repo_at_the_wrong_sha_is_refused_not_measured(tmp_path, monkeypatch, 
     assert "deadbeef" in out   # the corpus's own recorded source_sha
     assert repo_sha in out     # --repo's actual, real HEAD
     assert code == OUTCOMES["refused"]
+
+
+def test_records_with_disagreeing_source_shas_are_refused_not_staged(
+    tmp_path, monkeypatch, capsys
+):
+    """MINOR (fix round 1, review's own wording): `records[0].source_sha`
+    alone is not structurally guaranteed to represent the WHOLE corpus --
+    nothing in `corpus_io.py` enforces that every record in a file shares
+    one `source_sha`, only the fact that `robigo corpus` happens to always
+    produce files that do. A hand-assembled or merged corpus could carry
+    more than one.
+
+    `good`'s `source_sha` is deliberately set to `--repo`'s OWN real HEAD
+    -- the exact trap a `records[0]`-only check falls into: record 0
+    would MATCH, the guard would see agreement and let the run proceed,
+    and `other` (a genuinely different `source_sha`) would be silently
+    staged at line numbers pinned to a commit that was never checked
+    against `--repo` at all. Checking the full set closes that gap; this
+    test fails if the guard reads only `records[0]`."""
+    path = tmp_path / "corpus.json"
+    repo, repo_sha = _git_repo(tmp_path)
+    good = _record("good", "    return a - b\n", "    return a + b\n",
+                   source_sha=repo_sha)
+    other = _record("other", "    return a * b\n", "    return a / b\n")
+    # other's source_sha stays "deadbeef" (see _record's default) --
+    # deliberately different from good's real repo_sha above.
+    write_corpus([good, other], path, name="mixed-corpus", dropped=(),
+                 baseline=Baseline(broken=0, executed=1, seconds=0.1))
+
+    monkeypatch.setattr(cli, "plan_window", _unreachable)
+    monkeypatch.setattr(cli, "run_profile", _unreachable)
+
+    code = cli.profile_main(
+        ["--model", "m", "--corpus", str(path), "--repo", str(repo)]
+    )
+
+    out = capsys.readouterr().out
+    assert "2" in out          # names how many distinct source_shas
+    assert "deadbeef" in out   # both disagreeing values named
+    assert repo_sha in out
+    assert code == OUTCOMES["refused"]
+
+
+def test_python_flag_reaches_run_profile_as_a_string(monkeypatch):
+    """`--python /some/interpreter` (fix round 1) must reach `run_profile`
+    as that exact string -- `type=Path` on the argparse flag means
+    `args.python` itself is a `Path`, and `attempt_repair`/`PythonAdapter`/
+    `pytest_runner` all type their own `python` parameter as `str`, so the
+    CLI must convert, not pass the `Path` object straight through."""
+    seen = {}
+
+    def fake_run_profile(client, plan, **kw):
+        seen.update(kw)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli, "run_profile", fake_run_profile)
+    monkeypatch.setattr(cli, "plan_window", lambda *a, **k: WindowPlan(
+        window=4096, limited_by="training_ctx", free_vram=None,
+        kv_per_token=57344, weights_bytes=0, overhead_bytes=0, training_ctx=4096))
+    monkeypatch.setattr(cli, "build_client", lambda a: object())
+
+    with pytest.raises(SystemExit):
+        cli.profile_main(["--model", "m", "--python", "/custom/python"])
+
+    assert seen["python"] == "/custom/python"
+    assert isinstance(seen["python"], str)
+
+
+def test_no_python_flag_defaults_to_sys_executable(monkeypatch):
+    """Absent --python, the default reaching `run_profile` must be
+    `sys.executable` specifically -- not `None`, and not `PythonAdapter`'s
+    own `.venv`/`venv`/`PATH` search (see the corpus-flag test above for
+    why that distinction is load-bearing: `sys.executable` is what
+    `robigo corpus` was itself running under when it measured whatever
+    corpus's `Baseline`, since both go through the same `robigo` entry
+    point)."""
+    seen = {}
+
+    def fake_run_profile(client, plan, **kw):
+        seen.update(kw)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli, "run_profile", fake_run_profile)
+    monkeypatch.setattr(cli, "plan_window", lambda *a, **k: WindowPlan(
+        window=4096, limited_by="training_ctx", free_vram=None,
+        kv_per_token=57344, weights_bytes=0, overhead_bytes=0, training_ctx=4096))
+    monkeypatch.setattr(cli, "build_client", lambda a: object())
+
+    with pytest.raises(SystemExit):
+        cli.profile_main(["--model", "m"])
+
+    assert seen["python"] == sys.executable
+
+
+def test_a_corrupted_clone_error_exits_a_code_that_does_not_alias_stalled(
+    monkeypatch, capsys
+):
+    """IMPORTANT (fix round 1): confirmed live -- left uncaught,
+    `CorruptedCloneError` propagated through `profile_main` and Python's
+    own top-level handler exited 1, bitwise identical to
+    `OUTCOMES["stalled"]`. A script checking `$?` after a long `--full`
+    run would misread a corrupted-clone abort (a defect in the shared
+    `--repo` clone itself, not a model result) as "the model stalled".
+    This must stay LOUD (the traceback still prints) while the exit code
+    moves off every contract code."""
+    monkeypatch.setattr(cli, "plan_window", lambda *a, **k: WindowPlan(
+        window=4096, limited_by="training_ctx", free_vram=None,
+        kv_per_token=57344, weights_bytes=0, overhead_bytes=0, training_ctx=4096))
+    monkeypatch.setattr(cli, "build_client", lambda a: object())
+
+    def fake_run_profile(client, plan, **kw):
+        raise CorruptedCloneError("repo is already on a robigo/* branch")
+
+    monkeypatch.setattr(cli, "run_profile", fake_run_profile)
+
+    code = cli.profile_main(["--model", "m"])
+
+    err = capsys.readouterr().err
+    assert code == cli._EX_CORRUPTED_CLONE
+    assert code not in OUTCOMES.values()   # never aliases a run outcome
+    assert code != cli._EX_USAGE           # and is distinct from _EX_USAGE too
+    assert "CorruptedCloneError" in err    # still loud: the traceback printed
+    assert "robigo/* branch" in err

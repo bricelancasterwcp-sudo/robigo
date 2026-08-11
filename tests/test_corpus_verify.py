@@ -1434,3 +1434,27 @@ def test_pytest_runner_runs_python_as_the_interpreter_that_launched_this_process
     monkeypatch.setattr(subprocess, "run", fake_run)
     pytest_runner(repo, "robigo")
     assert all(cmd[0] == sys.executable for cmd in seen)
+
+
+def test_pytest_runner_uses_an_explicitly_given_python_for_both_subprocesses(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+):
+    # Fix round 1 (2026-08-10): `python` used to be `sys.executable`
+    # hardcoded directly into both subprocess.run calls -- now a
+    # keyword-only parameter (default sys.executable, pinned by the test
+    # above), and repair.attempt_repair relies on a caller-supplied value
+    # actually reaching BOTH subprocess argv[0]s, not just the import
+    # check or just the pytest invocation.
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+        seen.append(list(cmd))
+        if "-c" in cmd:
+            return _FakeCompleted(stdout=str(repo / "src" / "robigo" / "__init__.py"))
+        return _FakeCompleted(stdout="0 failed, 430 passed\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    pytest_runner(repo, "robigo", python="/custom/python")
+    assert len(seen) == 2
+    assert all(cmd[0] == "/custom/python" for cmd in seen)
+    assert not any(cmd[0] == sys.executable for cmd in seen)

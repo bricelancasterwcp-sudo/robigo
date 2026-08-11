@@ -601,19 +601,20 @@ def test_stage_4_and_5_results_are_wired_into_the_profile(monkeypatch):
 
 def test_stage_4_receives_the_real_arguments_run_profile_was_given(monkeypatch):
     # Fails if run_profile hardcodes, drops, or swaps any of records/repo/
-    # client/seeds/codec/base/turn_cap on their way into stage4_repair --
-    # a round-trip comparison against the returned Profile alone (the test
-    # above) cannot catch a wrong argument that stage4_repair's OWN fake
-    # ignores, so this inspects the call itself.
+    # client/seeds/codec/base/turn_cap/python on their way into
+    # stage4_repair -- a round-trip comparison against the returned
+    # Profile alone (the test above) cannot catch a wrong argument that
+    # stage4_repair's OWN fake ignores, so this inspects the call itself.
     captured = {}
     record = _record()
     repo = Path("/fake-repo")
     base = _baseline()
 
     def fake_stage4_repair(records, repo_arg, client, *, seeds, codec, base,
-                           turn_cap):
+                           turn_cap, python):
         captured.update(records=records, repo=repo_arg, seeds=seeds,
-                        codec=codec, base=base, turn_cap=turn_cap)
+                        codec=codec, base=base, turn_cap=turn_cap,
+                        python=python)
         return Stage4(rate=1.0, attempts=1, records=1, per_record={},
                      dropped=(), all_attempts=())
 
@@ -622,7 +623,7 @@ def test_stage_4_receives_the_real_arguments_run_profile_was_given(monkeypatch):
                         lambda *a, **k: Stage5(None, None))
 
     _run(_Good(), repo=repo, records=(record,), corpus_baseline=base,
-        seeds=1, turn_cap=3)
+        seeds=1, turn_cap=3, python="/custom/python")
 
     assert captured["records"] == (record,)
     assert captured["repo"] == repo
@@ -630,6 +631,36 @@ def test_stage_4_receives_the_real_arguments_run_profile_was_given(monkeypatch):
     assert captured["codec"] == "search_replace"
     assert captured["base"] == base
     assert captured["turn_cap"] == 3
+    assert captured["python"] == "/custom/python"
+
+
+def test_run_profiles_own_python_default_is_sys_executable(monkeypatch):
+    # The default matters as much as the plumbing (task 8, fix round 1,
+    # bullet 4): `sys.executable` is what `robigo corpus` was itself
+    # running under when it measured the frozen corpus's Baseline, so a
+    # caller of run_profile who never thinks about --python at all must
+    # still get an interpreter that AGREES with that baseline, not
+    # PythonAdapter's own .venv/venv/PATH search (which would resolve
+    # relative to --repo, a completely different tree, and need not have
+    # anything installed at all).
+    import sys as sys_module
+
+    captured = {}
+
+    def fake_stage4_repair(records, repo_arg, client, *, seeds, codec, base,
+                           turn_cap, python):
+        captured["python"] = python
+        return Stage4(rate=1.0, attempts=1, records=1, per_record={},
+                     dropped=(), all_attempts=())
+
+    monkeypatch.setattr(report_module, "stage4_repair", fake_stage4_repair)
+    monkeypatch.setattr(report_module, "stage5_discipline",
+                        lambda *a, **k: Stage5(None, None))
+
+    _run(_Good(), repo=Path("/fake-repo"), records=(_record(),),
+        corpus_baseline=_baseline(), seeds=1)
+
+    assert captured["python"] == sys_module.executable
 
 
 def test_a_full_run_profile_call_drives_a_real_stage_4_and_stage_5(

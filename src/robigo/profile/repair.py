@@ -1,8 +1,10 @@
 # src/robigo/profile/repair.py
 from __future__ import annotations
 
+import functools
 import hashlib
 import subprocess
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -355,7 +357,8 @@ def attempt_repair(
     codec: str,
     base: Baseline,
     turn_cap: int = 8,
-    runner: Runner = pytest_runner,
+    python: str = sys.executable,
+    runner: Runner | None = None,
 ) -> Attempt:
     """One (record, seed) repair attempt through the SHIPPED tool
     (`use_git=True`, the real `turn_cap`, the real `codec`,
@@ -424,10 +427,58 @@ def attempt_repair(
     `CorruptedCloneError` is the ONE exception this safety net does NOT
     catch (Important B, fix round 2) -- it propagates and ends the run
     immediately, on purpose, because it names a defect in the shared
-    `repo` itself, not in one record; see that exception's own docstring."""
+    `repo` itself, not in one record; see that exception's own docstring.
+
+    `python` (task 8, fix round 1 -- confirmed live, "python cannot import
+    pytest" excluded EVERY attempt against a real third-party clone)
+    governs BOTH halves of this attempt, and that agreement is the whole
+    point: the LOOP side (`PythonAdapter(python=python)`, below -- the
+    model's edits and the loop's own scope discovery run under it) and the
+    JUDGE side (`suite_state`'s `runner`, which reads the post-attempt
+    suite state) used to be two INDEPENDENT interpreter choices within one
+    attempt -- `PythonAdapter()`'s own default resolution (`.venv/bin/
+    python` -> `venv/bin/python` -> bare `"python"`, searched relative to
+    `repo`) versus `pytest_runner`'s formerly-hardcoded `sys.executable`.
+    Confirmed live against a fresh `boltons` clone with no venv of its
+    own: `PythonAdapter._preflight` ran bare `"python" -m pytest
+    --version`, found no `pytest` on `PATH`, and raised `AdapterError` at
+    the very first line of `loop._execute` -- before the model client was
+    ever touched, `result.outcome == "infrastructure"`, and every single
+    attempt in a `--full` run would fail this identical way, for a reason
+    that has nothing to do with the model being profiled. The JUDGE side's
+    own independent choice was never even reached in that failure (the
+    LOOP side fails first, unconditionally), but it is an equally real
+    second hazard: even a `repo` whose PATH-resolved `"python"` genuinely
+    has `pytest` need not be the SAME interpreter `sys.executable`
+    resolves to, and `suite_state`'s executed-total comparison against
+    `base.executed` (the frozen corpus's own recorded `Baseline`, spec 4's
+    exclusion rule) is only meaningful if the interpreter that produced
+    `base.executed` also produces the number being compared against it.
+
+    Defaults to `sys.executable` -- deliberately NOT `PythonAdapter`'s own
+    `.venv`/`venv`/`PATH` search -- because `sys.executable` is what
+    `robigo corpus` was itself running under when IT measured the corpus's
+    `Baseline.executed` in the first place (both are invoked through the
+    same `robigo` entry point, hence the same interpreter, by
+    construction). Threading anything else through by default would make
+    every attempt's executed-total comparison meaningless from the start,
+    not just occasionally wrong.
+
+    `runner`, when the CALLER explicitly overrides it (a test's canned,
+    `python`-unaware fake; the only shape any test in this project actually
+    uses today), is passed through AS GIVEN -- `python` is bound only onto
+    the DEFAULT (`pytest_runner` itself, via `functools.partial` below),
+    never forced onto a caller-supplied replacement, so a caller who has
+    already chosen to replace `pytest_runner` entirely keeps full control
+    of what it does and is not asked to also accept a `python=` keyword it
+    may not even declare."""
+    effective_runner = (
+        runner if runner is not None
+        else functools.partial(pytest_runner, python=python)
+    )
     try:
         return _judge(record, repo, client, seed=seed, codec=codec, base=base,
-                      turn_cap=turn_cap, runner=runner)
+                      turn_cap=turn_cap, python=python, runner=effective_runner)
     except CorruptedCloneError:
         raise
     except Exception as exc:
@@ -444,6 +495,7 @@ def _judge(
     codec: str,
     base: Baseline,
     turn_cap: int,
+    python: str,
     runner: Runner,
 ) -> Attempt:
     """The unguarded body `attempt_repair` wraps in its last-resort safety
@@ -452,6 +504,12 @@ def _judge(
     below), while `attempt_repair` itself only has to catch whatever this
     function did not anticipate. See `attempt_repair`'s docstring for the
     load-bearing ORDER these checks run in.
+
+    `python` is the SAME value `attempt_repair` already used to build
+    `runner` (already bound onto `pytest_runner` there, if `runner` was
+    not itself overridden) -- passed down here separately only because
+    this is where `PythonAdapter` is actually constructed, not because it
+    is a second independent choice.
 
     The post-run section (everything from `_INFRA_OUTCOMES` onward) is
     itself wrapped in one more `try`/`except` beyond its own specific
@@ -481,7 +539,7 @@ def _judge(
         # off (spec 4.3.1). A defect on any of those paths counts against
         # the tool, because a user meets it.
         result: RunResult = run(
-            task_for(record), repo, client, PythonAdapter(),
+            task_for(record), repo, client, PythonAdapter(python=python),
             codec=codec, turn_cap=turn_cap, allow_test_edits=False, use_git=True,
         )
     except Exception as exc:
@@ -633,7 +691,8 @@ def stage4_repair(
     codec: str,
     base: Baseline,
     turn_cap: int = 8,
-    runner: Runner = pytest_runner,
+    python: str = sys.executable,
+    runner: Runner | None = None,
 ) -> Stage4:
     """Every corpus record against every seed (spec 4.1: `seeds` fixed at
     10 by the `--full` contract in real runs, the frozen 94-record corpus
@@ -676,7 +735,15 @@ def stage4_repair(
     + 1)`; `records`/`attempts`/`rate` are all derived from `per_record`
     afterward, not accumulated in parallel, so there is exactly one place
     an attempt could be double-counted or miscounted, not two that could
-    drift apart."""
+    drift apart.
+
+    `python`/`runner` (task 8, fix round 1) are passed straight through to
+    every `attempt_repair` call unchanged -- this function makes no
+    interpreter decision of its own, it only relays the ONE choice its own
+    caller (`report.run_profile`) made, so every attempt in this ~940-call
+    loop resolves the identical interpreter, not just the identical
+    default. See `attempt_repair`'s own docstring for why that agreement
+    -- LOOP side and JUDGE side alike -- is load-bearing, not cosmetic."""
     per_record: dict[str, tuple[int, int]] = {}
     dropped: list[str] = []
     attempts: list[Attempt] = []
@@ -685,7 +752,7 @@ def stage4_repair(
         for seed in range(seeds):
             attempt = attempt_repair(
                 record, repo, client, seed=seed, codec=codec, base=base,
-                turn_cap=turn_cap, runner=runner,
+                turn_cap=turn_cap, python=python, runner=runner,
             )
             attempts.append(attempt)
             if attempt.excluded is not None:
