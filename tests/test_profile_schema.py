@@ -7,6 +7,7 @@ from robigo.profile.schema import (
     SUPPORTED_FLOOR,
     CodecResult,
     Profile,
+    select_best_codec,
     verdict_for,
 )
 
@@ -19,7 +20,10 @@ def _profile(**kw) -> Profile:
         envelope_level=0, envelope_fidelity=0.98,
         codecs={"search_replace": CodecResult(0.62, 30, None),
                 "whole_file": CodecResult(0.55, 30, 1400)},
-        payload_corruption=None, repeat_rate=None, verdict="READY",
+        payload_corruption=None, repeat_rate=None,
+        repair_rate=None, repair_attempts=0, repair_records=0,
+        turns_to_green_median=None,
+        verdict="READY",
         seeds=3, mode="quick", corpus="fixtures-v1", dropped=(),
     )
     return Profile(**{**defaults, **kw})
@@ -58,6 +62,29 @@ def test_best_codec_still_names_a_codec_that_lands_below_the_ready_floor():
         "whole_file": CodecResult(0.2, 10, 1000),
     })
     assert profile.best_codec() == "whole_file"
+
+
+def test_profile_best_codec_delegates_to_the_module_level_function():
+    # Task 7 brief: "Do not compute the best codec by constructing a
+    # throwaway Profile... refactor it to a module-level function both
+    # call. One definition, not two." Pinned directly: calling
+    # `select_best_codec` on the SAME `codecs` dict a `Profile` carries
+    # must produce the identical answer `Profile.best_codec()` does, for
+    # every one of the three shapes the tests above already exercise (a
+    # real winner, an all-zero dict, and a below-floor-but-nonzero
+    # winner). This fails if `Profile.best_codec` is ever reverted to its
+    # own private copy of the `max(...)`-with-floor logic that happens to
+    # agree with `select_best_codec` today but is free to drift from it
+    # tomorrow -- exactly the "three copies of a codec list" defect class
+    # CARRIED-DEBT.md already names.
+    real_winner = {"search_replace": CodecResult(0.62, 30, None),
+                   "whole_file": CodecResult(0.55, 30, 1400)}
+    all_zero = {"search_replace": CodecResult(0.0, 10, None),
+                "whole_file": CodecResult(0.0, 10, None)}
+    below_floor = {"search_replace": CodecResult(0.0, 10, None),
+                   "whole_file": CodecResult(0.2, 10, 1000)}
+    for codecs in (real_winner, all_zero, below_floor, {}):
+        assert select_best_codec(codecs) == _profile(codecs=codecs).best_codec()
 
 
 def test_seeds_and_mode_are_always_present_in_the_json():
@@ -100,6 +127,40 @@ def test_ready_when_everything_clears():
 def test_dropped_work_is_recorded_rather_than_silent():
     payload = json.loads(_profile(dropped=("stage2 udiff: time",)).to_json())
     assert payload["dropped"] == ["stage2 udiff: time"]
+
+
+# --- Task 7 (plan 05): repair_rate / repeat_rate None-vs-zero honesty ------
+#
+# `repair_rate: None` means NOT MEASURED; `repair_rate: 0.0` means measured,
+# nothing repaired. These are different facts and must stay distinguishable
+# after a to_json/from_json round trip -- a family whose repair_rate is None
+# has not passed the gate, because it has not been measured at all.
+
+
+def test_none_and_zero_repair_rates_are_distinguishable_in_json():
+    never = _profile(repair_rate=None).to_json()
+    zero = _profile(repair_rate=0.0).to_json()
+    assert never != zero
+    assert Profile.from_json(json.loads(never)).repair_rate is None
+    assert Profile.from_json(json.loads(zero)).repair_rate == 0.0
+
+
+def test_none_and_zero_turns_to_green_median_are_distinguishable_in_json():
+    # The identical honesty property, pinned for turns_to_green_median too:
+    # this project has already shipped the None-vs-zero collapse once, for
+    # CodecResult.max_file_tokens (see that field's own docstring) -- this
+    # is the same class of field, and the same falsification must hold.
+    never = _profile(turns_to_green_median=None).to_json()
+    zero = _profile(turns_to_green_median=0.0).to_json()
+    assert never != zero
+    assert Profile.from_json(json.loads(never)).turns_to_green_median is None
+    assert Profile.from_json(json.loads(zero)).turns_to_green_median == 0.0
+
+
+def test_every_new_repair_and_discipline_field_round_trips():
+    p = _profile(repair_rate=0.31, repair_attempts=1000, repair_records=100,
+                 turns_to_green_median=2.0, repeat_rate=0.18)
+    assert Profile.from_json(json.loads(p.to_json())) == p
 
 
 # --- Boundary coverage for verdict_for's thresholds ------------------------
