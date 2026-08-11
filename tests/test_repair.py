@@ -72,6 +72,25 @@ def test_a_clean_repair_passes(tmp_path, monkeypatch):
     assert a.passed is True and a.excluded is None and a.turns == 2
 
 
+def test_a_clean_repairs_repeats_comes_from_the_run_result(tmp_path, monkeypatch):
+    """`Attempt.repeats` was hardcoded to `0` at every construction site
+    until Task 6 wired it to `result.repeats` -- Stage 5's repeat-rate
+    would silently read zero for every attempt regardless of how many
+    times the model actually repeated itself. Threaded through the
+    `passed` path here; the not-`passed` path is covered separately
+    below, since that is a different `Attempt(...)` construction."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="pass", turns=3, exit_code=0, branch=None, detail="tests pass",
+        repeats=2))
+    monkeypatch.setattr(R, "suite_state", lambda *a, **k: SuiteState(
+        broken=0, executed=1, broken_ids=(), incomplete=None))
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is True and a.repeats == 2
+
+
 def test_greening_the_target_while_breaking_a_neighbour_fails(tmp_path, monkeypatch):
     repo = _repo(tmp_path)
     base = Baseline(broken=0, executed=2, seconds=0.1)
@@ -169,6 +188,21 @@ def test_a_stalled_run_is_a_real_model_failure_not_an_exclusion(tmp_path, monkey
     a = R.attempt_repair(_record(), repo, client=object(), seed=0,
                          codec="search_replace", base=base)
     assert a.passed is False and a.excluded is None
+
+
+def test_a_stalled_runs_repeats_is_also_preserved(tmp_path, monkeypatch):
+    """The not-`passed` `Attempt(...)` construction (`result.outcome !=
+    "pass"`) is a SEPARATE call site from the passing one covered above --
+    it must independently thread `result.repeats` through rather than
+    keep the old hardcoded `0`."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="stalled", turns=8, exit_code=1, branch=None,
+        detail="turn cap 8 reached", repeats=5))
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is False and a.excluded is None and a.repeats == 5
 
 
 # --------------------------------------------------------------------------

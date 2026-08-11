@@ -76,6 +76,26 @@ class RunResult:
     both are 0 -- nothing was ever rendered. Plan 03's profiler is this
     field's only consumer, and can derive the last, the worst, or the
     shape of the degradation from the sequence itself."""
+    repeats: int = 0
+    """How many turns re-emitted an (action, reply) pair this run had
+    already tried -- a TOTAL, not the consecutive streak `stall_cap`
+    watches. `stalls` resets to 0 on any non-repeat, so a run cycling
+    A, B, A, C, A never trips the stall cap (its longest consecutive
+    repeat streak is a single turn: turn 3 following turn 1, and turn 5
+    following either) even though it re-emits an already-tried pair
+    TWICE across the whole run -- turn 3 repeats turn 1's pair, and turn
+    5 repeats it again. A `stalls`-only view reports neither of those;
+    it only ever reports "0 consecutive", identical to a run that never
+    repeated at all. `repeats` is the total Stage 5's identical-
+    failing-patch metric (`repeat_rate` in `robigo.profile.discipline`)
+    needs -- Task 6 verified this exact sequence directly
+    (`test_repeats_counts_every_repeat_not_just_consecutive_ones`) rather
+    than trusting the count by inspection: it is easy to conflate "the
+    same reply appeared 3 times" with "3 repeats" when only 2 of those 3
+    appearances followed a prior one. The stall cap is a different
+    question -- "has progress visibly stopped right now" -- and keeps its
+    own, separate counter; this field never feeds back into that
+    decision."""
 
 
 def _result(
@@ -85,8 +105,11 @@ def _result(
     detail: str,
     undo: UndoInfo | None = None,
     rungs: tuple[int, ...] = (),
+    repeats: int = 0,
 ) -> RunResult:
-    return RunResult(outcome, turns, OUTCOMES[outcome], branch, detail, undo, rungs)
+    return RunResult(
+        outcome, turns, OUTCOMES[outcome], branch, detail, undo, rungs, repeats
+    )
 
 
 def run(
@@ -193,6 +216,7 @@ def _execute(
     history: tuple[Turn, ...] = ()
     seen: set[str] = set()
     stalls = 0
+    repeats = 0
     rungs: tuple[int, ...] = ()
     for turn in range(1, turn_cap + 1):
         try:
@@ -210,7 +234,9 @@ def _execute(
             # finding 2, ruled 2026-08-09). `rungs` is passed as
             # accumulated so far, unextended, for the same reason.
             outcome = "budget_exhausted" if turn > 1 else "refused"
-            return _result(outcome, turn - 1, branch, str(exc), undo, rungs=rungs)
+            return _result(
+                outcome, turn - 1, branch, str(exc), undo, rungs=rungs, repeats=repeats
+            )
         rungs = rungs + (rung,)
         try:
             gen = client.generate(prompt, seed=turn)
@@ -224,10 +250,15 @@ def _execute(
             # `turn - 1`.
             recorder.turn(prompt, f"<no reply: {exc}>", diag.raw)
             outcome = "budget_exhausted" if turn > 1 else "refused"
-            return _result(outcome, turn, branch, str(exc), undo, rungs=rungs)
+            return _result(
+                outcome, turn, branch, str(exc), undo, rungs=rungs, repeats=repeats
+            )
         except ModelError as exc:
             recorder.turn(prompt, f"<no reply: {exc}>", diag.raw)
-            return _result("infrastructure", turn, branch, str(exc), undo, rungs=rungs)
+            return _result(
+                "infrastructure", turn, branch, str(exc), undo, rungs=rungs,
+                repeats=repeats,
+            )
 
         action_text, result_text, applied, target = _take_turn(
             gen, root, scope, adapter, codec, allow_test_edits
@@ -247,14 +278,20 @@ def _execute(
             except AdapterError as exc:
                 # Not git's fault. Blaming git for a vanished pytest sent
                 # every reader of the record looking in the wrong place.
-                return _result("infrastructure", turn, branch, str(exc), undo, rungs=rungs)
+                return _result(
+                    "infrastructure", turn, branch, str(exc), undo, rungs=rungs,
+                    repeats=repeats,
+                )
             except (subprocess.CalledProcessError, FileNotFoundError) as exc:
                 return _result(
                     "infrastructure", turn, branch, f"git failed: {exc}", undo,
-                    rungs=rungs,
+                    rungs=rungs, repeats=repeats,
                 )
             if diag.passed:
-                return _result("pass", turn, branch, "tests pass", undo, rungs=rungs)
+                return _result(
+                    "pass", turn, branch, "tests pass", undo, rungs=rungs,
+                    repeats=repeats,
+                )
             # Mid-loop re-resolution can fail where the first one could not:
             # a timed-out or unanchorable run returns file=None, and resolve
             # refuses that. Keep the scope we already have and let the model
@@ -274,18 +311,34 @@ def _execute(
             except ScopeError:
                 pass
             except RefusedError as exc:
-                return _result("refused", turn, branch, str(exc), undo, rungs=rungs)
+                return _result(
+                    "refused", turn, branch, str(exc), undo, rungs=rungs,
+                    repeats=repeats,
+                )
 
         key = f"{action_text}\n{gen.text}"
+        # `repeats` is a TOTAL across the whole run, deliberately tracked
+        # separately from `stalls`: `stalls` resets to 0 on any non-repeat
+        # turn (see `RunResult.repeats`'s docstring for why that makes it
+        # blind to a run that cycles through several distinct dead ends,
+        # re-trying each one). `seen` already accumulates every key this
+        # run has ever produced, so `key in seen` here answers "has THIS
+        # exact (action, reply) pair been tried before, at any point, not
+        # just last turn" -- exactly what `repeats` needs and `stalls`
+        # cannot answer.
+        if key in seen:
+            repeats += 1
         stalls = stalls + 1 if key in seen else 0
         seen.add(key)
         if stalls >= stall_cap - 1:
             return _result(
-                "stalled", turn, branch, "no progress; repeating", undo, rungs=rungs
+                "stalled", turn, branch, "no progress; repeating", undo, rungs=rungs,
+                repeats=repeats,
             )
 
     return _result(
-        "stalled", turn_cap, branch, f"turn cap {turn_cap} reached", undo, rungs=rungs
+        "stalled", turn_cap, branch, f"turn cap {turn_cap} reached", undo, rungs=rungs,
+        repeats=repeats,
     )
 
 

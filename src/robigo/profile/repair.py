@@ -27,7 +27,21 @@ tool on the subset of tasks it already handles."""
 class Attempt:
     """One (record, seed) repair attempt. `excluded` non-None means this
     attempt never gave the model a fair chance (spec 4.3.4) and belongs in
-    NEITHER the numerator nor the denominator of any rate."""
+    NEITHER the numerator nor the denominator of any rate.
+
+    `repeats` is `result.repeats` (`robigo.loop.RunResult.repeats`) carried
+    through verbatim -- how many turns of THIS attempt re-emitted an
+    (action, reply) pair the attempt had already tried, a TOTAL rather
+    than a consecutive streak (see that field's own docstring for why the
+    distinction matters). It stays `0` for an attempt that never reached
+    `robigo.loop.run` at all -- a staging failure (a missing anchor file,
+    a corrupted clone) or the loop itself raising -- for the same reason
+    `turns` stays `0` there: no turn ever happened, so there is nothing
+    to have repeated. Task 6's `robigo.profile.discipline.stage5_discipline`
+    is this field's consumer; an `excluded` attempt's `repeats` (like its
+    `turns`) is kept for the record but contributes to neither of that
+    stage's metrics, exactly as `excluded is not None` already excludes it
+    from `Stage4.rate`."""
 
     record: str
     seed: int
@@ -449,8 +463,10 @@ def _judge(
     outcome/turns preserved, rather than falling through to the outer net
     and reporting `outcome=""` for an attempt that, in truth, DID run and
     DID have a known outcome."""
-    def excluded(why: str, outcome: str = "", turns: int = 0) -> Attempt:
-        return Attempt(record.name, seed, False, outcome, turns, 0, why)
+    def excluded(
+        why: str, outcome: str = "", turns: int = 0, repeats: int = 0
+    ) -> Attempt:
+        return Attempt(record.name, seed, False, outcome, turns, repeats, why)
 
     try:
         reset_clone(repo)
@@ -478,7 +494,7 @@ def _judge(
     try:
         if result.outcome in _INFRA_OUTCOMES:
             return excluded(f"loop infrastructure: {result.detail}",
-                            result.outcome, result.turns)
+                            result.outcome, result.turns, result.repeats)
 
         if result.outcome != "pass":
             # A definitive, unrescuable model failure (Critical 1, fix
@@ -487,26 +503,27 @@ def _judge(
             # below, which exist only to catch a "pass" that was actually
             # a false positive.
             return Attempt(record.name, seed, False, result.outcome,
-                           result.turns, 0, None)
+                           result.turns, result.repeats, None)
 
         try:
             state: SuiteState = suite_state(repo, runner, _package_name(record.path))
         except Exception as exc:
-            return excluded(f"suite did not run: {exc}", result.outcome, result.turns)
+            return excluded(f"suite did not run: {exc}", result.outcome,
+                            result.turns, result.repeats)
 
         if state.incomplete is not None:
             return excluded(f"suite run incomplete: {state.incomplete}",
-                            result.outcome, result.turns)
+                            result.outcome, result.turns, result.repeats)
         if state.executed != base.executed:
             return excluded(
                 f"executed total {state.executed} != baseline {base.executed}",
-                result.outcome, result.turns)
+                result.outcome, result.turns, result.repeats)
 
         try:
             anchor_intact = _sha(anchor) == before
         except OSError as exc:
             return excluded(f"could not verify the anchor after the run: {exc}",
-                            result.outcome, result.turns)
+                            result.outcome, result.turns, result.repeats)
 
         passed = (
             state.broken == 0
@@ -527,14 +544,14 @@ def _judge(
             and anchor_intact
         )
         return Attempt(record.name, seed, passed, result.outcome, result.turns,
-                       0, None)
+                       result.repeats, None)
     except Exception as exc:
         # A backstop for the post-run section specifically (Minor, fix
         # round 2) -- see this function's own docstring for why this
         # differs from attempt_repair's outer net: `result` is in scope
         # here, so outcome/turns are preserved rather than lost.
         return excluded(f"unexpected error after the loop ran: {exc!r}",
-                        result.outcome, result.turns)
+                        result.outcome, result.turns, result.repeats)
 
 
 @dataclass(frozen=True)
