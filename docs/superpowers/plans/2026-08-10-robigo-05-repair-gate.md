@@ -1362,8 +1362,8 @@ Implement: read `git rev-parse HEAD` in `--repo`, compare against the records' `
 Project law — the worst user-facing defect so far was invisible to 300 passing tests and appeared on the *second* consecutive run.
 
 ```bash
-.venv/bin/robigo profile --model qwen2.5-coder:7b --window 8192 --seeds 1
-.venv/bin/robigo profile --model qwen2.5-coder:7b --window 8192 --seeds 1
+.venv/bin/robigo profile --model qwen2.5-coder:7b-instruct-q8_0 --window 8192 --seeds 1
+.venv/bin/robigo profile --model qwen2.5-coder:7b-instruct-q8_0 --window 8192 --seeds 1
 ```
 
 Both must complete and print a coherent table. Record both outputs in the task report. A `window 0`, a `not measured` where something was measured, or a message naming a flag that was passed is a defect to fix now, not to report.
@@ -1435,7 +1435,7 @@ Spec §10: ~12 h of unattended GPU time should run once, correctly.
 - [ ] **Step 1: Run the full pipeline at N=5 records, 2 seeds**
 
 ```bash
-.venv/bin/robigo profile --model qwen2.5-coder:7b --window 8192 \
+.venv/bin/robigo profile --model qwen2.5-coder:7b-instruct-q8_0 --window 8192 \
     --corpus docs/corpus/<name>.json --repo /path/to/clone --seeds 2
 ```
 
@@ -1462,7 +1462,7 @@ Do not proceed to Task 11 with a known defect. The dry run exists precisely so t
 - [ ] **Step 1: Run the publishable profile**
 
 ```bash
-.venv/bin/robigo profile --model qwen2.5-coder:7b --window 8192 \
+.venv/bin/robigo profile --model qwen2.5-coder:7b-instruct-q8_0 --window 8192 \
     --corpus docs/corpus/<name>.json --repo /path/to/clone --full \
     --record docs/transcripts/qwen7b-stage4.jsonl
 ```
