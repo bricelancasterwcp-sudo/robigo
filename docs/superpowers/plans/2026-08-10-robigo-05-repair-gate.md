@@ -1065,9 +1065,11 @@ def test_no_turns_at_all_means_none():
 def test_repeats_counts_every_repeat_not_just_consecutive_ones():
     """`stalls` resets on any non-repeat, so it cannot answer 'how often did
     this run re-emit something it already tried'. A run emitting A, B, A, C, A
-    has one consecutive-stall streak of zero and THREE repeats."""
+    has one consecutive-stall streak of zero and TWO repeats (three
+    occurrences of A, but only the 2nd and 3rd follow a prior identical
+    emission -- verified against the real loop, task 6)."""
     # Drive _execute with a client replying A, B, A, C, A and a never-green
-    # adapter; assert result.repeats == 3 and result.turns == 5.
+    # adapter; assert result.repeats == 2 and result.turns == 5.
     # Follow the construction used by the existing loop tests in this file --
     # reuse their fake client/adapter helpers rather than inventing new ones.
 ```
@@ -1086,8 +1088,7 @@ Add the field last, with a default, so no existing constructor call breaks:
     """How many turns re-emitted an (action, reply) pair this run had
     already tried -- a TOTAL, not the consecutive streak `stall_cap`
     watches. `stalls` resets to 0 on any non-repeat, so a run cycling
-    A, B, A, C, A never trips the stall cap yet repeated itself three
-    times. Stage 5's identical-failing-patch metric is that total; the
+    A, B, A, C, A never trips the stall cap yet repeated itself twice. Stage 5's identical-failing-patch metric is that total; the
     stall cap is a different question and keeps its own counter."""
 ```
 
@@ -1171,7 +1172,7 @@ git commit -m "feat: stage 5 loop discipline, and a total repeat counter
 
 The loop's existing `stalls` is a CONSECUTIVE counter that resets on any
 non-repeat, so A,B,A,C,A never trips the stall cap despite repeating
-three times. RunResult.repeats is the total stage 5 needs. Stage 5 takes
+twice. RunResult.repeats is the total stage 5 needs. Stage 5 takes
 no client at all -- invariant 7.1 by construction, not by assertion."
 ```
 
