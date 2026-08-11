@@ -14,7 +14,7 @@ from robigo.loop import RunResult, run
 from robigo.profile.corpus_io import CorpusRecord
 from robigo.profile.verify import (
     Baseline, Runner, SuiteState, _package_name, _resolve_in_clone,
-    pytest_runner, suite_state,
+    baseline as measure_baseline, pytest_runner, suite_state,
 )
 
 _INFRA_OUTCOMES = frozenset({"infrastructure"})
@@ -110,6 +110,46 @@ class CorruptedCloneError(RuntimeError):
     repeat the identical exclusion ~940 times, silently burning the whole
     run for nothing instead of failing loudly, immediately, and once, the
     way a `repo` set up wrong deserves to fail."""
+
+
+class InterpreterMismatchError(RuntimeError):
+    """Raised by `stage4_repair`, ONCE, before the `(record, seed)` grid
+    starts (fix round 2, 2026-08-10 review) -- when `python` does not
+    reproduce the corpus's own recorded `Baseline.executed` against a
+    fresh, pristine run of `repo`'s suite.
+
+    Fix round 1 gave the loop and the judge ONE shared interpreter instead
+    of two independently-defaulted ones, but that alone does not stop a
+    caller from naming a WRONG one explicitly: measured live, `--python
+    /usr/bin/python3` (a real interpreter, genuinely importable, but with
+    no `pytest` installed) reproduces the EXACT failure shape fix round 1
+    removed -- every attempt excluded, `repair_rate: None`, the whole
+    grid's ~12h burned for nothing -- just under a different message
+    (`"... cannot import pytest"` from `PythonAdapter._preflight`, on
+    attempt 1 of ~940, discovered no sooner than a working interpreter's
+    OWN first attempt would have discovered it).
+
+    Checking "can this interpreter import pytest at all" is necessary but
+    not sufficient (fix round 2's review, verbatim): a `--python` that HAS
+    `pytest` but a DIFFERENT dependency set than whatever measured `base`
+    can still diverge on `state.executed` for reasons that have nothing to
+    do with the model (different package versions changing collection,
+    skipped tests, etc.) -- exactly the property `_judge`'s own
+    `state.executed != base.executed` exclusion rule depends on, and the
+    one this check reproduces directly, once, up front, via the SAME
+    `verify.baseline` call `robigo corpus` used to measure `base` in the
+    first place (never a second, independently-written comparison that
+    could drift from `_judge`'s own).
+
+    Deliberately NOT caught by `attempt_repair`'s own last-resort safety
+    net -- it never reaches `attempt_repair` at all, by construction (it
+    is raised by `stage4_repair` before the loop that calls
+    `attempt_repair` even starts) -- and deliberately not swallowed by any
+    broad `except Exception` in `run_profile`/`cli.profile_main` either,
+    for the identical reason `CorruptedCloneError` is not: this is a
+    property of `python` itself, identical for every attempt the grid
+    would otherwise run, and failing loudly once, before spending 12h
+    discovering it 940 times, is the whole point."""
 
 
 @dataclass(frozen=True)
@@ -348,6 +388,18 @@ def break_it(record: CorpusRecord, repo: Path) -> None:
     target.write_text("".join(lines), encoding="utf-8")
 
 
+def _effective_runner(runner: Runner | None, python: str) -> Runner:
+    """The one interpreter-binding rule `attempt_repair` and
+    `stage4_repair` both need, shared so it is written -- and can drift --
+    in exactly one place: a caller-supplied `runner` (a test's canned,
+    `python`-unaware fake -- the only shape any test in this project uses
+    via that parameter) is used AS GIVEN, and `python` is bound only onto
+    the DEFAULT (`pytest_runner` itself, via `functools.partial`), never
+    forced as an unexpected keyword onto a replacement that never declared
+    it (see `attempt_repair`'s own docstring for the full reasoning)."""
+    return runner if runner is not None else functools.partial(pytest_runner, python=python)
+
+
 def attempt_repair(
     record: CorpusRecord,
     repo: Path,
@@ -472,10 +524,7 @@ def attempt_repair(
     already chosen to replace `pytest_runner` entirely keeps full control
     of what it does and is not asked to also accept a `python=` keyword it
     may not even declare."""
-    effective_runner = (
-        runner if runner is not None
-        else functools.partial(pytest_runner, python=python)
-    )
+    effective_runner = _effective_runner(runner, python)
     try:
         return _judge(record, repo, client, seed=seed, codec=codec, base=base,
                       turn_cap=turn_cap, python=python, runner=effective_runner)
@@ -743,7 +792,38 @@ def stage4_repair(
     caller (`report.run_profile`) made, so every attempt in this ~940-call
     loop resolves the identical interpreter, not just the identical
     default. See `attempt_repair`'s own docstring for why that agreement
-    -- LOOP side and JUDGE side alike -- is load-bearing, not cosmetic."""
+    -- LOOP side and JUDGE side alike -- is load-bearing, not cosmetic.
+
+    **`python` is validated ONCE, before the grid, when `records` is
+    non-empty** (fix round 2, 2026-08-10 review): `reset_clone(repo)` (the
+    SAME reset every attempt already runs -- also where `CorruptedCloneError`
+    would fire, surfaced here before ~940 calls instead of on the first
+    one) followed by one `measure_baseline(repo, effective_runner)` call
+    against the now-pristine tree, compared against `base.executed`.
+    Raises `InterpreterMismatchError` on any disagreement -- see that
+    exception's own docstring for why "can `python` import pytest at all"
+    is necessary but not sufficient, and why this specific comparison is
+    the one `_judge`'s own exclusion rule actually depends on. Skipped
+    entirely when `records` is empty: there is no grid to protect, and
+    nothing here would ever be a fair thing to validate `python` against."""
+    if records:
+        effective_runner = _effective_runner(runner, python)
+        reset_clone(repo)
+        check = measure_baseline(repo, effective_runner)
+        if check.executed != base.executed:
+            raise InterpreterMismatchError(
+                f"--python {python} does not reproduce this corpus's own "
+                f"baseline: a suite run against the pristine clone just "
+                f"now executed {check.executed} test(s), but the corpus "
+                f"was mined with executed={base.executed} -- refusing to "
+                f"spend up to {len(records) * seeds} attempts that would "
+                f"all be excluded the same way, one at a time, ~12h later. "
+                f"Check that --python has the same test dependencies "
+                f"installed as whatever measured this corpus (it need not "
+                f"even lack pytest entirely -- a different dependency set "
+                f"changing which tests collect is enough)."
+            )
+
     per_record: dict[str, tuple[int, int]] = {}
     dropped: list[str] = []
     attempts: list[Attempt] = []

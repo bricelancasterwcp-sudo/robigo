@@ -49,6 +49,33 @@ def _repo(tmp_path):
     return tmp_path
 
 
+def _repo_with_init(tmp_path):
+    """A real, IMPORTABLE package version of `_repo`, above -- `_repo`
+    deliberately has no `pkg/__init__.py` (a namespace package with
+    `__file__ is None`, a property `test_a_loop_infrastructure_outcome_
+    is_excluded_not_failed`'s own docstring explicitly relies on to make
+    the REAL `pytest_runner` fail its import check for an unrelated
+    reason), so it cannot double as a fixture for a test that needs the
+    real, unmocked runner to actually SUCCEED. Otherwise identical to
+    `_repo` -- same tiny one-test suite, same real git init."""
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "src" / "pkg" / "mod.py").write_text(
+        "def n(items):\n    return len(items)\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_mod.py").write_text(
+        "from pkg.mod import n\ndef test_len():\n    assert n([1]) == 1\n",
+        encoding="utf-8")
+    run = lambda *argv: subprocess.run(
+        ["git", *argv], cwd=tmp_path, check=True, capture_output=True)
+    run("init", "-q")
+    run("config", "user.email", "test@example.com")
+    run("config", "user.name", "Test")
+    run("add", "-A")
+    run("commit", "-q", "-m", "initial")
+    return tmp_path
+
+
 def test_the_loop_and_the_judge_resolve_the_same_interpreter(tmp_path, monkeypatch):
     """Fix round 1 (2026-08-10), the property the review flagged as needing
     a TEST rather than a convention: cross-module agreement cannot be seen
@@ -645,6 +672,21 @@ def test_sha_exists_true_for_head_false_for_garbage(tmp_path):
 # --------------------------------------------------------------------------
 
 
+def _stub_preflight(monkeypatch, base: Baseline) -> None:
+    """Fix round 2 gave `stage4_repair` its own pre-flight interpreter
+    check, run BEFORE the (record, seed) grid: a real `reset_clone` (needs
+    a real git repo -- `tmp_path` alone is not one) followed by a real
+    `measure_baseline` call (a real subprocess pytest run). Every test in
+    this section below is about the GRID's own reduction logic, not about
+    the pre-flight check itself (that has its own dedicated tests further
+    down) -- this stubs both seams so `tmp_path` (a bare directory) keeps
+    working as `repo`, and the check trivially agrees with whatever `base`
+    the test itself is using, exactly as `_run`/`suite_state` are already
+    stubbed everywhere else in this file for the identical reason."""
+    monkeypatch.setattr(R, "reset_clone", lambda repo: None)
+    monkeypatch.setattr(R, "measure_baseline", lambda repo, runner: base)
+
+
 def test_rate_is_attempt_level_and_per_record_is_kept(monkeypatch, tmp_path):
     calls = []
 
@@ -656,10 +698,11 @@ def test_rate_is_attempt_level_and_per_record_is_kept(monkeypatch, tmp_path):
                          1, 0, None)
 
     monkeypatch.setattr(R, "attempt_repair", fake_attempt)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    _stub_preflight(monkeypatch, base)
     recs = [_record(name="a"), _record(name="b")]
     s = R.stage4_repair(recs, tmp_path, object(), seeds=4,
-                        codec="search_replace",
-                        base=Baseline(broken=0, executed=1, seconds=0.1))
+                        codec="search_replace", base=base)
     assert len(calls) == 8
     assert s.attempts == 8 and s.records == 2
     assert s.rate == pytest.approx(2 / 8)
@@ -678,9 +721,10 @@ def test_excluded_attempts_leave_both_sides_of_the_rate(monkeypatch, tmp_path):
         return R.Attempt(record.name, seed, True, "pass", 1, 0, None)
 
     monkeypatch.setattr(R, "attempt_repair", fake_attempt)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    _stub_preflight(monkeypatch, base)
     s = R.stage4_repair([_record(name="a")], tmp_path, object(), seeds=3,
-                        codec="search_replace",
-                        base=Baseline(broken=0, executed=1, seconds=0.1))
+                        codec="search_replace", base=base)
     assert s.attempts == 2            # not 3
     assert s.rate == pytest.approx(1.0)   # 2/2, NOT 2/3
     assert any("daemon died" in d for d in s.dropped)
@@ -691,9 +735,10 @@ def test_excluded_attempts_leave_both_sides_of_the_rate(monkeypatch, tmp_path):
 def test_a_record_with_every_attempt_excluded_is_not_counted(monkeypatch, tmp_path):
     monkeypatch.setattr(R, "attempt_repair", lambda record, repo, client, *, seed, **kw:
                         R.Attempt(record.name, seed, False, "", 0, 0, "clone broken"))
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    _stub_preflight(monkeypatch, base)
     s = R.stage4_repair([_record(name="a")], tmp_path, object(), seeds=2,
-                        codec="search_replace",
-                        base=Baseline(broken=0, executed=1, seconds=0.1))
+                        codec="search_replace", base=base)
     assert s.attempts == 0 and s.records == 0
     assert s.rate is None       # not 0.0 -- nothing was measured
     assert len(s.dropped) == 2
@@ -734,10 +779,12 @@ def test_stage4_repair_threads_python_and_runner_to_every_attempt(
         return R.Attempt(record.name, seed, True, "pass", 1, 0, None)
 
     monkeypatch.setattr(R, "attempt_repair", fake_attempt)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    _stub_preflight(monkeypatch, base)
     sentinel_runner = object()
     s = R.stage4_repair(
         [_record(name="a"), _record(name="b")], tmp_path, object(), seeds=2,
-        codec="search_replace", base=Baseline(broken=0, executed=1, seconds=0.1),
+        codec="search_replace", base=base,
         python="/pinned/python", runner=sentinel_runner,
     )
     assert s.attempts == 4   # 2 records x 2 seeds, all scored
@@ -775,11 +822,136 @@ def test_corrupted_clone_error_propagates_through_the_driver_loop(
             f"{repo} is already checked out on 'robigo/leftover-3'")
 
     monkeypatch.setattr(R, "attempt_repair", fake_attempt)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    _stub_preflight(monkeypatch, base)
     with pytest.raises(R.CorruptedCloneError, match="robigo/leftover-3"):
         R.stage4_repair([_record(name="a")], tmp_path, object(), seeds=3,
-                        codec="search_replace",
-                        base=Baseline(broken=0, executed=1, seconds=0.1))
+                        codec="search_replace", base=base)
     assert calls == [0]   # aborted on the FIRST attempt, never swallowed
+
+
+# --------------------------------------------------------------------------
+# Fix round 2 -- the pre-flight interpreter check. IMPORTANT 1: a wrong
+# --python used to reproduce fix round 1's exact bug (every attempt
+# excluded, repair_rate: None) after burning the whole ~940-attempt grid
+# discovering it one attempt at a time. `stage4_repair` now validates
+# `python` ONCE, before the grid, by re-measuring the corpus's own
+# Baseline against a pristine `repo` and comparing `.executed`.
+# --------------------------------------------------------------------------
+
+
+def test_preflight_refuses_before_the_grid_when_executed_disagrees(
+    monkeypatch, tmp_path
+):
+    """The core of IMPORTANT 1: a `python` whose suite run against the
+    pristine clone executes a DIFFERENT number of tests than the corpus's
+    own recorded `Baseline.executed` must be refused -- via
+    `InterpreterMismatchError` -- before `attempt_repair` is ever called,
+    not discovered by watching every attempt fail the same way. Asserts
+    the spy never fires at all (not "fires and then stops", which a
+    per-attempt check could also produce), and that the message names
+    BOTH numbers (the review's own requirement)."""
+    calls = []
+    monkeypatch.setattr(R, "attempt_repair",
+                        lambda *a, **k: calls.append(1))
+    monkeypatch.setattr(R, "reset_clone", lambda repo: None)
+    monkeypatch.setattr(R, "measure_baseline",
+                        lambda repo, runner: Baseline(broken=0, executed=7,
+                                                      seconds=0.05))
+    base = Baseline(broken=0, executed=468, seconds=1.7)   # the real
+    # frozen boltons-gate-v1.json baseline's own executed count, reused
+    # here so the numbers in the assertion below are not coincidentally
+    # easy to satisfy with a substring match on something else.
+
+    with pytest.raises(R.InterpreterMismatchError) as exc_info:
+        R.stage4_repair([_record(name="a")], tmp_path, object(), seeds=10,
+                        codec="search_replace", base=base,
+                        python="/usr/bin/python3")
+
+    assert calls == []   # the grid never started
+    message = str(exc_info.value)
+    assert "7" in message and "468" in message   # both numbers, named
+    assert "/usr/bin/python3" in message         # and which interpreter
+
+
+def test_preflight_passes_silently_and_the_grid_runs_when_executed_agrees(
+    monkeypatch, tmp_path
+):
+    """The other direction: when `python` DOES reproduce the baseline, the
+    pre-flight check is invisible -- no exception, and the grid runs
+    exactly as it would have without the check at all. Guards against an
+    overzealous implementation that refuses (or silently skips real
+    attempts) even on agreement."""
+    calls = []
+    monkeypatch.setattr(R, "attempt_repair", lambda record, repo, client,
+                        *, seed, **kw: (calls.append(seed) or
+                        R.Attempt(record.name, seed, True, "pass", 1, 0, None)))
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "reset_clone", lambda repo: None)
+    monkeypatch.setattr(R, "measure_baseline",
+                        lambda repo, runner: base)   # agrees exactly
+
+    s = R.stage4_repair([_record(name="a")], tmp_path, object(), seeds=3,
+                        codec="search_replace", base=base)
+
+    assert calls == [0, 1, 2]   # the grid ran, uninterrupted
+    assert s.attempts == 3 and s.rate == pytest.approx(1.0)
+
+
+def test_preflight_check_uses_the_real_runner_against_a_real_repo(tmp_path):
+    """No mocking of `measure_baseline`/`pytest_runner`/`reset_clone` at
+    all here -- the REAL `verify.baseline` call, against `_repo_with_init`'s
+    own real, tiny, IMPORTABLE suite (one real test, via a real
+    `sys.executable -m pytest` subprocess), genuinely executes 1 test. A
+    corpus baseline claiming a wildly different `executed` count (999 -- a
+    number this two-line fixture repo could never produce) must still be
+    refused, proving the check is wired to the REAL runner in production,
+    not only provably correct against a mock of it."""
+    repo = _repo_with_init(tmp_path)
+    wrong_base = Baseline(broken=0, executed=999, seconds=0.1)
+
+    with pytest.raises(R.InterpreterMismatchError) as exc_info:
+        R.stage4_repair([_record(name="a")], repo, object(), seeds=1,
+                        codec="search_replace", base=wrong_base)
+
+    message = str(exc_info.value)
+    assert "999" in message   # the corpus's claimed (wrong) baseline
+    assert "1" in message     # this fixture's real, single passing test
+
+
+def test_preflight_check_calls_the_real_reset_clone_before_measuring(
+    monkeypatch, tmp_path
+):
+    """The pre-flight check's own docstring claims it uses the SAME
+    `reset_clone` every attempt already runs, and therefore inherits
+    `CorruptedCloneError` for free if `repo` starts corrupted -- surfaced
+    here, before the grid, rather than on attempt 1. Proven directly: a
+    real repo already checked out on a `robigo/*` branch before this
+    process has touched it (the exact scenario `_pristine` raises for)
+    must raise `CorruptedCloneError` from `stage4_repair` itself, and
+    `attempt_repair` must never be reached at all -- if `reset_clone`
+    were dropped from the pre-flight (or called after, not before,
+    `measure_baseline`), this would instead reach `measure_baseline`
+    against the dirty tree, or reach the grid outright."""
+    repo = _repo_with_init(tmp_path)
+    run = lambda *argv: subprocess.run(
+        ["git", *argv], cwd=repo, check=True, capture_output=True)
+    run("checkout", "-q", "-b", "robigo/leftover-9")
+
+    calls = []
+    monkeypatch.setattr(R, "attempt_repair", lambda *a, **k: calls.append(1))
+    R.clear_pristine_cache()
+    try:
+        with pytest.raises(R.CorruptedCloneError, match="robigo/leftover-9"):
+            R.stage4_repair(
+                [_record(name="a")], repo,
+                object(), seeds=1, codec="search_replace",
+                base=Baseline(broken=0, executed=1, seconds=0.1),
+            )
+    finally:
+        R.clear_pristine_cache()   # do not leak this repo's identity into
+        # `_PRISTINE_CACHE` for any later test that might reuse the path.
+    assert calls == []   # the grid never started; the pre-flight itself aborted
 
 
 def test_pristine_recaptures_if_the_cached_sha_no_longer_resolves(tmp_path):

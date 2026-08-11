@@ -371,7 +371,8 @@ def run_profile(
         # question from "did it clear the 33.3% repair-rate gate". A
         # future verdict tweak must not be able to silently move that gate.
         verdict=verdict_for(fidelity, codecs, window),
-        seeds=seeds, mode=mode, corpus=corpus, dropped=tuple(dropped),
+        seeds=seeds, mode=mode, corpus=corpus, python=python,
+        dropped=tuple(dropped),
     )
 
 
@@ -427,7 +428,7 @@ def render_table(profile: Profile) -> str:
         lines.append(f"  dropped       {note}")
     lines.append(
         f"  measured      {profile.seeds} seeds, {profile.mode} mode, "
-        f"corpus {profile.corpus}"
+        f"corpus {profile.corpus}, python {profile.python}"
     )
     if profile.mode != "full":
         lines.append("  NOTE          quick mode -- not publishable")

@@ -24,7 +24,8 @@ def _profile(**kw) -> Profile:
         repair_rate=None, repair_attempts=0, repair_records=0,
         turns_to_green_median=None,
         verdict="READY",
-        seeds=3, mode="quick", corpus="fixtures-v1", dropped=(),
+        seeds=3, mode="quick", corpus="fixtures-v1",
+        python="/usr/bin/python3", dropped=(),
     )
     return Profile(**{**defaults, **kw})
 
@@ -93,6 +94,30 @@ def test_seeds_and_mode_are_always_present_in_the_json():
     payload = json.loads(_profile().to_json())
     assert payload["measured"]["seeds"] == 3
     assert payload["measured"]["mode"] == "quick"
+
+
+def test_python_is_recorded_alongside_seeds_mode_and_corpus():
+    # Fix round 2, IMPORTANT 2: `--python` is a knob that can change or
+    # void `repair_rate`, and it was invisible in the published artifact
+    # (grep -c python schema.py -> 0 before this fix). Recorded in the
+    # SAME "measured" provenance group as seeds/mode/corpus, for the
+    # identical reason: a Profile is what the kill criterion is read
+    # from, and a reader must be able to see which interpreter produced
+    # it.
+    payload = json.loads(_profile(python="/custom/python3.11").to_json())
+    assert payload["measured"]["python"] == "/custom/python3.11"
+
+
+def test_python_round_trips_through_json():
+    # The dedicated round-trip the review asked for by name, isolated
+    # from the whole-object equality check above (test_round_trips_
+    # through_json) so a regression specifically in `python`'s own
+    # to_json/from_json wiring fails legibly rather than as an opaque
+    # "the whole Profile differs" assertion.
+    original = _profile(python="/opt/pyenv/shims/python3.12")
+    reloaded = Profile.from_json(json.loads(original.to_json()))
+    assert reloaded.python == "/opt/pyenv/shims/python3.12"
+    assert reloaded == original
 
 
 def test_both_quantization_covariates_are_recorded():

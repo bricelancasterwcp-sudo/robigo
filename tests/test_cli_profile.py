@@ -28,7 +28,7 @@ from robigo.model.client import Generation
 from robigo.model.geometry import Geometry, WindowPlan, usable_window
 from robigo.profile.corpus_io import CorpusRecord, write_corpus
 from robigo.profile.fixtures import FIXTURES, fixtures_from_corpus
-from robigo.profile.repair import CorruptedCloneError
+from robigo.profile.repair import CorruptedCloneError, InterpreterMismatchError
 from robigo.profile.verify import Baseline
 
 
@@ -354,7 +354,27 @@ def test_records_with_disagreeing_source_shas_are_refused_not_staged(
     and `other` (a genuinely different `source_sha`) would be silently
     staged at line numbers pinned to a commit that was never checked
     against `--repo` at all. Checking the full set closes that gap; this
-    test fails if the guard reads only `records[0]`."""
+    test fails if the guard reads only `records[0]`.
+
+    Fix round 2 (MINOR, review's own finding): deleting the multi-sha
+    check entirely (`if False and len(source_shas) > 1:`) still made this
+    test PASS about 60% of the time in the original version -- with the
+    check gone, `corpus_sha = next(iter(source_shas))` picks
+    nondeterministically (`PYTHONHASHSEED`-dependent set iteration order)
+    from `{repo_sha, "deadbeef"}`, and when it happens to pick
+    `"deadbeef"` the OTHER, single-sha mismatch check refuses too --
+    satisfying every assertion that only checked substrings ("2" is a
+    substring of any string containing a digit 2 somewhere in a hex sha;
+    `"deadbeef"`/`repo_sha` both appear in THAT message too) by the WRONG
+    check, for the wrong reason. Fixed by asserting the message's own
+    SHAPE, not just its content: the multi-sha check's message contains
+    the phrase "different source_sha values", which the single-sha
+    check's message (`"--repo ... is checked out at ..."`) can never
+    produce, and vice versa -- these two assertions are unsatisfiable by
+    the wrong check regardless of which element a nondeterministic
+    `next(iter(...))` happens to pick, so deleting the real check now
+    fails deterministically (verified directly across
+    `PYTHONHASHSEED=0..9`, ten separate runs, not sampled once)."""
     path = tmp_path / "corpus.json"
     repo, repo_sha = _git_repo(tmp_path)
     good = _record("good", "    return a - b\n", "    return a + b\n",
@@ -373,8 +393,17 @@ def test_records_with_disagreeing_source_shas_are_refused_not_staged(
     )
 
     out = capsys.readouterr().out
-    assert "2" in out          # names how many distinct source_shas
-    assert "deadbeef" in out   # both disagreeing values named
+    # The decisive pair: only the multi-sha check can produce the first
+    # phrase, and it never produces the second (the single-sha check's
+    # own, different, message shape) -- together they rule out the
+    # fallback satisfying this test by accident, regardless of which
+    # element a broken multi-sha check's `next(iter(...))` might pick.
+    assert "different source_sha values" in out
+    assert "is checked out at" not in out
+    # Real content, not just shape: both disagreeing values named, and
+    # how many.
+    assert "2" in out
+    assert "deadbeef" in out
     assert repo_sha in out
     assert code == OUTCOMES["refused"]
 
@@ -459,3 +488,36 @@ def test_a_corrupted_clone_error_exits_a_code_that_does_not_alias_stalled(
     assert code != cli._EX_USAGE           # and is distinct from _EX_USAGE too
     assert "CorruptedCloneError" in err    # still loud: the traceback printed
     assert "robigo/* branch" in err
+
+
+def test_an_interpreter_mismatch_error_is_infrastructure_not_a_traceback(
+    monkeypatch, capsys
+):
+    """Fix round 2's IMPORTANT 1, wired at the CLI: `InterpreterMismatchError`
+    is a genuine, anticipated infrastructure refusal (a `--python`
+    misconfiguration caught BEFORE stage 4's grid starts), not a defect in
+    `--repo` itself -- unlike `CorruptedCloneError`, it must land on
+    `OUTCOMES["infrastructure"]`, the same code this function already
+    returns for "cannot determine the usable window" and "could not read
+    --repo's current commit", not a new dedicated code: nothing here risks
+    being misread as a MODEL outcome the way exit 1 aliasing "stalled"
+    did."""
+    monkeypatch.setattr(cli, "plan_window", lambda *a, **k: WindowPlan(
+        window=4096, limited_by="training_ctx", free_vram=None,
+        kv_per_token=57344, weights_bytes=0, overhead_bytes=0, training_ctx=4096))
+    monkeypatch.setattr(cli, "build_client", lambda a: object())
+
+    def fake_run_profile(client, plan, **kw):
+        raise InterpreterMismatchError(
+            "--python /usr/bin/python3 does not reproduce this corpus's "
+            "own baseline: executed 7, corpus was mined with executed=468"
+        )
+
+    monkeypatch.setattr(cli, "run_profile", fake_run_profile)
+
+    code = cli.profile_main(["--model", "m"])
+
+    out = capsys.readouterr().out
+    assert code == OUTCOMES["infrastructure"]
+    assert code != cli._EX_CORRUPTED_CLONE   # distinct refusal, not that one
+    assert "468" in out and "7" in out       # the message reached the user

@@ -16,7 +16,7 @@ from robigo.model.geometry import GeometryError
 from robigo.profile.corpus_io import read_corpus, read_corpus_baseline, write_corpus
 from robigo.profile.fixtures import CORPUS_NAME, FIXTURES, fixtures_from_corpus
 from robigo.profile.generate import GenerationResult, generate_corpus, render_report
-from robigo.profile.repair import CorruptedCloneError
+from robigo.profile.repair import CorruptedCloneError, InterpreterMismatchError
 from robigo.profile.report import profile_path, render_table, run_profile
 from robigo.profile.transcript import CallRecorder, CallReplayer
 from robigo.profile.verify import (
@@ -454,6 +454,21 @@ def profile_main(argv: list[str]) -> int:
         # different, specific kind.
         traceback.print_exc()
         return _EX_CORRUPTED_CLONE
+    except InterpreterMismatchError as exc:
+        # Fix round 2's own finding: without this pre-flight check,
+        # `stage4_repair` would spend the WHOLE ~940-attempt grid
+        # discovering `python` was wrong one attempt at a time, landing
+        # on `repair_rate: None` -- the identical shape as fix round 1's
+        # bug, under a different message. `InterpreterMismatchError` is
+        # raised BEFORE that grid ever starts (see its own docstring), so
+        # this is a genuine infrastructure/configuration refusal, not a
+        # model result -- OUTCOMES["infrastructure"], the same code this
+        # function already returns for "cannot determine the usable
+        # window" and "could not read --repo's current commit" above; no
+        # new dedicated code needed, unlike CorruptedCloneError, because
+        # nothing here risks being misread as a MODEL outcome.
+        print(exc)
+        return OUTCOMES["infrastructure"]
     print(render_table(profile))
     path = profile_path(family)
     path.parent.mkdir(parents=True, exist_ok=True)

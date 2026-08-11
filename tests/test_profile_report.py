@@ -446,6 +446,18 @@ def test_the_table_names_the_window_limit_and_the_mode():
     assert "not publishable" in table
 
 
+def test_the_table_names_which_interpreter_produced_it():
+    # Fix round 2, IMPORTANT 2: a Profile is the artifact the project's
+    # kill criterion is read from, and --python is a knob that can change
+    # or void repair_rate -- invisible in the published table before this
+    # fix (`measured 3 seeds, quick mode, corpus ...` never named it).
+    # Uses a deliberately distinctive path so a render_table that prints
+    # SOME interpreter string (e.g. always sys.executable, ignoring the
+    # actual profile) cannot pass this test by accident.
+    table = render_table(_run(_Good(), python="/opt/distinctive/python3.99"))
+    assert "/opt/distinctive/python3.99" in table
+
+
 def test_a_full_run_is_not_marked_unpublishable():
     # The other direction of the assertion above: fails if "not
     # publishable" is unconditional (present regardless of mode) rather
@@ -675,6 +687,16 @@ def test_a_full_run_profile_call_drives_a_real_stage_4_and_stage_5(
     # wires `records`/`repo`/`client`/`seeds`/`codec`/`corpus_baseline`/
     # `turn_cap` all the way through to a real Stage4/Stage5 computation,
     # not merely to a function named the right thing.
+    #
+    # Fix round 2 added a SECOND innermost seam: `stage4_repair`'s own
+    # pre-flight interpreter check now calls `measure_baseline` for real
+    # before the grid starts. Mocked here too, returning `base` itself so
+    # the check trivially agrees with what this test's own suite_state
+    # mock reports -- real coverage of the check's OWN behaviour (a
+    # genuine disagreement) lives in test_repair.py, not here. `reset_
+    # clone` is left UNMOCKED: `_stage4_repo` is a real git repo, and
+    # exercising the real reset (not just the real Stage4 reduction) is
+    # exactly the "genuine end-to-end path" this test's own name promises.
     repo = _stage4_repo(tmp_path)
     record = _record(source_repo=str(repo))
     base = _baseline()
@@ -684,6 +706,8 @@ def test_a_full_run_profile_call_drives_a_real_stage_4_and_stage_5(
         detail="tests pass", repeats=1))
     monkeypatch.setattr(repair_module, "suite_state", lambda *a, **k: SuiteState(
         broken=0, executed=1, broken_ids=(), incomplete=None))
+    monkeypatch.setattr(repair_module, "measure_baseline",
+                        lambda repo_arg, runner: base)
 
     profile = _run(_Good(), repo=repo, records=(record,),
                    corpus_baseline=base, seeds=1)

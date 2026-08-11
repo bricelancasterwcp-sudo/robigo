@@ -140,6 +140,24 @@ class Profile:
     seeds: int
     mode: str
     corpus: str
+    python: str
+    """The interpreter stage 4 ran the loop and judge under
+    (`robigo.profile.repair.stage4_repair`'s own `python` parameter,
+    default `sys.executable`), recorded here for the identical reason
+    `seeds`/`mode`/`corpus` already are (fix round 2, 2026-08-10 review):
+    a `Profile` is the artifact the project's kill criterion is read from,
+    and `--python` is a knob that can change OR VOID `repair_rate` --
+    `InterpreterMismatchError` refuses outright on a real mismatch, but a
+    `--python` that merely resolves DIFFERENT test collection than
+    whatever measured the corpus (skips, version-dependent behaviour)
+    while still agreeing on `executed` would not trip that guard, and a
+    reader comparing this profile's `repair_rate` against another
+    family's has no way to know it unless the interpreter that produced
+    it travels with the number. Always a real, concrete string -- never
+    `None` -- because `report.run_profile`'s own `python` parameter
+    always resolves to one (`sys.executable` by default) whether or not
+    stage 4 actually ran; recorded unconditionally, exactly as `mode`
+    is recorded even for a family that never reached stage 2."""
     dropped: tuple[str, ...]
 
     def best_codec(self) -> str | None:
@@ -179,7 +197,7 @@ class Profile:
                 "turns_to_green_median": self.turns_to_green_median,
                 "verdict": self.verdict,
                 "measured": {"seeds": self.seeds, "mode": self.mode,
-                             "corpus": self.corpus},
+                             "corpus": self.corpus, "python": self.python},
                 "dropped": list(self.dropped),
             },
             indent=2,
@@ -210,7 +228,8 @@ class Profile:
             turns_to_green_median=payload["turns_to_green_median"],
             verdict=payload["verdict"],
             seeds=measured["seeds"], mode=measured["mode"],
-            corpus=measured["corpus"], dropped=tuple(payload["dropped"]),
+            corpus=measured["corpus"], python=measured["python"],
+            dropped=tuple(payload["dropped"]),
         )
 
 
