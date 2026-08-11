@@ -16,14 +16,17 @@ above the training context changes nothing -- it is a ceiling, never a
 floor)."""
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from robigo import cli
+from robigo.loop import OUTCOMES
+from robigo.model.client import Generation
 from robigo.model.geometry import Geometry, WindowPlan, usable_window
 from robigo.profile.corpus_io import CorpusRecord, write_corpus
-from robigo.profile.fixtures import fixtures_from_corpus
+from robigo.profile.fixtures import FIXTURES, fixtures_from_corpus
 from robigo.profile.verify import Baseline
 
 
@@ -181,3 +184,140 @@ def test_corpus_flag_routes_records_and_carries_dropped(tmp_path, monkeypatch):
     assert len(seen["fixtures"]) == 1                  # bad one excluded
     assert any("bad" in n for n in seen["corpus_dropped"])
     assert any("abandoned" in n for n in seen["corpus_dropped"])  # generator's too
+    # Task 8: the same call must also carry --repo's default (None, since
+    # this test passes no --repo), the corpus's own RAW records (both
+    # good and bad -- stage4_repair, unlike fixtures_from_corpus, has no
+    # reason to drop the unwrappable one; it repairs against `record.line`
+    # in a real working tree, never against the wrapped Python body
+    # fixtures_from_corpus could not build), and the file's own recorded
+    # Baseline, read back via read_corpus_baseline rather than guessed.
+    assert seen["repo"] is None
+    assert {r.name for r in seen["records"]} == {"good", "bad"}
+    assert seen["corpus_baseline"] == Baseline(broken=0, executed=120, seconds=0.4)
+
+
+class _Landing:
+    """The one working `ModelClient` this file needs, trimmed to just the
+    three prompt shapes `robigo profile`'s DEFAULT (no `--corpus`) run
+    sends: stage 0's plain filler probe (the catch-all branch), stage 1's
+    fixed envelope probe (`"read src/target.py"`, `stages.py` line 232),
+    and stage 2's per-fixture SEARCH/REPLACE prompt (one per bundled
+    `FIXTURES` entry). Mirrors `tests/test_profile_report.py::_Good`
+    exactly (that class is already exercised by ~20 tests there) rather
+    than inventing new prompt-matching logic -- this is a second, minimal
+    COPY of already-proven behaviour, not a new implementation of it,
+    kept local so this file does not depend on another test module's
+    private helpers staying named or shaped the way they are today."""
+
+    model = "m"
+    window = 8192
+    num_predict = 512
+
+    def generate(self, prompt: str, *, seed: int) -> Generation:
+        if "read src/target.py" in prompt:
+            return Generation("read src/target.py", 5, 2, False)
+        fixture = next((f for f in FIXTURES if f.filename in prompt), None)
+        if fixture:
+            return Generation(
+                f"patch {fixture.filename}\n```python\n<<<<<<< SEARCH\n"
+                f"{fixture.original}=======\n{fixture.expect}>>>>>>> REPLACE\n```\n",
+                20, 10, False,
+            )
+        return Generation("ok", self.window, 1, False)
+
+
+def test_repo_flag_is_required_for_stage_4_and_says_so_when_missing(
+    tmp_path, monkeypatch, capsys
+):
+    """Spec: a message must never advise a flag the user just passed, and
+    must always name the one they need. Plan 01 shipped two that did the
+    opposite. Here `--repo` genuinely IS missing (the SHA-mismatch test
+    below covers the opposite case, where it is present but wrong), so
+    together the two tests cover both directions of that rule.
+
+    `_Landing` clears stage 0/1/2 for real (a genuine `run_profile` call,
+    not a stubbed one) so the printed table carries report.py's REAL
+    "stage 4: not run, no --repo given" line -- not a line this test
+    invented and could therefore get wrong in the same way the code under
+    test might. A client that could not land a codec would instead
+    produce report.py's OTHER stage-4 line ("no codec ever landed a
+    single edit"), which does not name --repo at all -- so a weaker fake
+    would make this test pass for the wrong reason.
+    """
+    plan = WindowPlan(window=8192, limited_by="vram", free_vram=None,
+                      kv_per_token=56 * 1024, weights_bytes=0,
+                      overhead_bytes=0, training_ctx=32768)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))  # never touch the real ~/.config
+    monkeypatch.setattr(cli, "plan_window", lambda *a, **k: plan)
+    monkeypatch.setattr(cli, "build_client", lambda a: _Landing())
+
+    code = cli.profile_main(["--model", "m", "--seeds", "1"])
+
+    out = capsys.readouterr().out
+    assert code == 0                    # a real, successful profile -- not
+                                         # _EX_USAGE(64), not any OUTCOMES
+                                         # value; missing --repo is not a
+                                         # usage error, it is the ordinary,
+                                         # expected, fully-supported case
+                                         # of not having wired stage 4 up.
+    assert any(
+        "stage 4" in line and "--repo" in line for line in out.splitlines()
+    )
+
+
+def _git_repo(tmp_path: Path) -> tuple[Path, str]:
+    """A real, minimal git repo with one commit, returning `(repo, sha)`.
+    `cli._source_sha` (reused here, unchanged, for the --repo guard) shells
+    out to real `git rev-parse HEAD` -- a bare directory with no `.git` at
+    all would fail before the guard's own SHA comparison is ever reached,
+    which is not what this test is checking."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def run(*argv: str) -> str:
+        result = subprocess.run(
+            ["git", *argv], cwd=repo, check=True, capture_output=True, text=True,
+        )
+        return result.stdout.strip()
+
+    run("init", "-q")
+    run("config", "user.email", "test@example.com")
+    run("config", "user.name", "Test")
+    (repo / "f.txt").write_text("x\n", encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-q", "-m", "initial")
+    return repo, run("rev-parse", "HEAD")
+
+
+def _unreachable(*_args, **_kwargs):
+    """A stub that fails loudly, not quietly, if it is ever called -- used
+    below for `plan_window`/`run_profile`, neither of which the SHA guard
+    may reach: a wrong --repo must be refused before this command dials a
+    model daemon at all, not discovered partway through a run that was
+    always going to be thrown away and re-scored as a harness artifact."""
+    raise AssertionError("must not be called: the SHA guard must refuse first")
+
+
+def test_a_repo_at_the_wrong_sha_is_refused_not_measured(tmp_path, monkeypatch, capsys):
+    """Line numbers are only meaningful at the recorded commit. A mismatched
+    repo produces failures that are harness artifacts, exactly the class
+    P1.2 exists to keep out of the number."""
+    path = tmp_path / "corpus.json"
+    good = _record("good", "    return a - b\n", "    return a + b\n")
+    write_corpus([good], path, name="corpus-under-test", dropped=(),
+                 baseline=Baseline(broken=0, executed=1, seconds=0.1))
+    # good's own source_sha ("deadbeef", see _record) can never collide
+    # with a real repo's real 40-hex-char HEAD.
+    repo, repo_sha = _git_repo(tmp_path)
+
+    monkeypatch.setattr(cli, "plan_window", _unreachable)
+    monkeypatch.setattr(cli, "run_profile", _unreachable)
+
+    code = cli.profile_main(
+        ["--model", "m", "--corpus", str(path), "--repo", str(repo)]
+    )
+
+    out = capsys.readouterr().out
+    assert "deadbeef" in out   # the corpus's own recorded source_sha
+    assert repo_sha in out     # --repo's actual, real HEAD
+    assert code == OUTCOMES["refused"]

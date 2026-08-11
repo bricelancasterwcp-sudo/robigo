@@ -12,7 +12,7 @@ from robigo.loop import OUTCOMES, run
 from robigo.model.client import LlamaCppClient, ModelClient, OllamaClient
 from robigo.model.detect import plan_window
 from robigo.model.geometry import GeometryError
-from robigo.profile.corpus_io import read_corpus, write_corpus
+from robigo.profile.corpus_io import read_corpus, read_corpus_baseline, write_corpus
 from robigo.profile.fixtures import CORPUS_NAME, FIXTURES, fixtures_from_corpus
 from robigo.profile.generate import GenerationResult, generate_corpus, render_report
 from robigo.profile.report import profile_path, render_table, run_profile
@@ -247,6 +247,12 @@ def profile_main(argv: list[str]) -> int:
         help="a corpus file from `robigo corpus`; without it the bundled "
              "fixtures-v1 is measured, which is not a publishable result",
     )
+    parser.add_argument(
+        "--repo", type=Path, default=None,
+        help="a git clone of the corpus's source repo, checked out at the "
+             "corpus's source_sha. Stage 4 needs a real working tree; "
+             "without it stages 4 and 5 are dropped, not failed.",
+    )
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
@@ -261,6 +267,81 @@ def profile_main(argv: list[str]) -> int:
     # DIFFERENT provenance, not a "full" flag that gets ignored downstream.
     seeds = 10 if args.full else args.seeds
     mode = "full" if args.full else "quick"
+
+    family = args.model.replace(":", "-").replace("/", "-")
+    if args.corpus:
+        # P1.2 (plan 05 design, spec §3): a real, mined corpus replaces the
+        # bundled fixtures-v1 default -- `corpus_name` is the FILE's own
+        # identity (`write_corpus`'s `name=`), never the literal
+        # "fixtures-v1", the exact mislabelling plan 03's old kwarg default
+        # risked (see `report.run_profile`'s own docstring).
+        corpus_name, records, gen_dropped = read_corpus(args.corpus)
+        converted = fixtures_from_corpus(records)
+        fixtures = converted.fixtures
+        # Both sources of loss travel together: what the GENERATOR dropped
+        # while mining (`read_corpus`'s third return value -- a target
+        # abandoned as barren, a candidate a time budget cut short) and
+        # what CONVERSION dropped as unwrappable (`FixturesFromCorpus.
+        # dropped`, I4 -- a mutant whose wrapped body is not valid Python
+        # at any indent, ~9.2% of real records, measured 91 of 986 from
+        # src/robigo). Neither is a model failure and neither may be
+        # silently absent from the profile that decides whether this
+        # project ships (P1.2) -- both are concatenated into one tuple so
+        # `run_profile` cannot thread one through `dropped` and forget the
+        # other.
+        corpus_dropped = tuple(gen_dropped) + converted.dropped
+        # Task 8: the same file's own recorded `Baseline` (`write_corpus`'s
+        # `baseline=` keyword, I1) -- `stage4_repair`'s judgement compares
+        # a repair attempt's executed-test total against it, and there is
+        # no safe baseline `run_profile` could assume on this caller's
+        # behalf (see `report.run_profile`'s own docstring, gate 4).
+        corpus_baseline = read_corpus_baseline(args.corpus)
+    else:
+        corpus_name, fixtures, corpus_dropped = CORPUS_NAME, FIXTURES, ()
+        records = ()
+        corpus_baseline = None
+
+    if args.repo is not None and records:
+        # The guard task 8 exists to add (a real trap, not a formality):
+        # every `CorpusRecord` carries the exact commit its `line` was
+        # read from (`corpus_io.py` invariant 9). A `--repo` sitting at a
+        # DIFFERENT commit still LOOKS like a valid working tree -- it
+        # clones, it has tests, `attempt_repair` will happily break and
+        # patch a line at the recorded `record.line` -- but that line no
+        # longer means what the corpus recorded, so every failure that
+        # produces is a harness artifact, not a model failure, and would
+        # silently corrupt the repair-rate number this whole plan exists
+        # to produce. Checked HERE, before `plan_window` or `build_client`
+        # ever run, so a wrong `--repo` is refused before this command
+        # dials a model daemon at all -- not after burning a real window
+        # probe or a real generation call on a run that was always going
+        # to be thrown away. `records[0]` speaks for the whole corpus: one
+        # `robigo corpus` run mines one repo at one commit, so every
+        # record in a single corpus file shares one `source_sha` (verified
+        # against the frozen `docs/corpus/boltons-gate-v1.json`, all 94
+        # records share one value).
+        try:
+            repo_sha = _source_sha(args.repo)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            print(f"could not read --repo {args.repo}'s current commit: {exc}")
+            return OUTCOMES["infrastructure"]
+        corpus_sha = records[0].source_sha
+        if repo_sha != corpus_sha:
+            # Names BOTH shas, explicitly, and never tells the user to
+            # pass a flag they already passed (Plan 01 shipped two
+            # messages that did exactly that) -- the fix here is to check
+            # out the SHA the corpus already names, not to add --repo
+            # again.
+            print(
+                f"--repo {args.repo} is checked out at {repo_sha}, but "
+                f"{args.corpus} was mined at {corpus_sha} -- refusing "
+                f"rather than staging stage 4's defects at line numbers "
+                f"the corpus never recorded. Check out {corpus_sha} in "
+                f"--repo (git -C {args.repo} checkout {corpus_sha}), or "
+                f"mine a fresh corpus against --repo's current commit."
+            )
+            return OUTCOMES["refused"]
+
     try:
         # P2 (2026-08-10 design, spec §9 invariant P2.1): without a user
         # cap, qwen2.5-coder:7b -- the best-measured family -- resolves to
@@ -288,34 +369,22 @@ def profile_main(argv: list[str]) -> int:
     if args.record:
         client = CallRecorder(client, args.record)
 
-    family = args.model.replace(":", "-").replace("/", "-")
-    if args.corpus:
-        # P1.2 (plan 05 design, spec §3): a real, mined corpus replaces the
-        # bundled fixtures-v1 default -- `corpus_name` is the FILE's own
-        # identity (`write_corpus`'s `name=`), never the literal
-        # "fixtures-v1", the exact mislabelling plan 03's old kwarg default
-        # risked (see `report.run_profile`'s own docstring).
-        corpus_name, records, gen_dropped = read_corpus(args.corpus)
-        converted = fixtures_from_corpus(records)
-        fixtures = converted.fixtures
-        # Both sources of loss travel together: what the GENERATOR dropped
-        # while mining (`read_corpus`'s third return value -- a target
-        # abandoned as barren, a candidate a time budget cut short) and
-        # what CONVERSION dropped as unwrappable (`FixturesFromCorpus.
-        # dropped`, I4 -- a mutant whose wrapped body is not valid Python
-        # at any indent, ~9.2% of real records, measured 91 of 986 from
-        # src/robigo). Neither is a model failure and neither may be
-        # silently absent from the profile that decides whether this
-        # project ships (P1.2) -- both are concatenated into one tuple so
-        # `run_profile` cannot thread one through `dropped` and forget the
-        # other.
-        corpus_dropped = tuple(gen_dropped) + converted.dropped
-    else:
-        corpus_name, fixtures, corpus_dropped = CORPUS_NAME, FIXTURES, ()
+    # `repo`/`records`/`corpus_baseline` are NOT wrapped in any
+    # `try`/`except` here (task 8's own constraint): `run_profile` ->
+    # `stage4_repair` can raise `CorruptedCloneError` when `repo` starts
+    # this process already checked out on a `robigo/*` branch, and that
+    # exception is deliberately meant to propagate all the way out (see
+    # `report.run_profile`'s own docstring) -- a broad `except Exception`
+    # here would silently convert one loud, immediate abort into ~940
+    # individually swallowed attempts, scoring nothing and reporting a
+    # corpus-shaped `dropped` list instead of failing where the actual
+    # problem is: `repo`.
     profile = run_profile(client, plan, model=args.model, quant=_quant(args.model),
                           family=family, seeds=seeds, mode=mode,
                           corpus=corpus_name, fixtures=fixtures,
-                          corpus_dropped=corpus_dropped, kv_bits=args.kv_bits)
+                          corpus_dropped=corpus_dropped, kv_bits=args.kv_bits,
+                          repo=args.repo, records=records,
+                          corpus_baseline=corpus_baseline)
     print(render_table(profile))
     path = profile_path(family)
     path.parent.mkdir(parents=True, exist_ok=True)

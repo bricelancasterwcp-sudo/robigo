@@ -14,6 +14,7 @@ from robigo.model.client import (
     ModelError,
     OllamaClient,
     ServerContextOverflowError,
+    UnmeasuredGenerationError,
     parse_http_error,
 )
 
@@ -133,6 +134,17 @@ def test_a_response_missing_the_token_counts_is_infrastructure_not_a_zero(
         _client(monkeypatch, _FakeHTTP(body)).generate("hi", seed=1)
     assert "prompt_eval_count" in str(e.value)
     assert "eval_count" in str(e.value)
+    # Task 8 (2026-08-10): this specific failure must raise the DISTINCT
+    # UnmeasuredGenerationError subclass, not a bare ModelError -- a real,
+    # warm Ollama daemon was found to answer stage 0's full-window probe
+    # exactly this way (this test's own body is that live response,
+    # trimmed), and `stage0_window`'s `try_probe` now catches this
+    # subclass narrowly, by name, so it can treat "no room left to
+    # generate" as a search signal without also silently swallowing a
+    # genuine transport failure (a bare ModelError from exhausted
+    # retries). A regression back to raising plain ModelError here would
+    # make stage 0's catch a no-op and reintroduce the crash.
+    assert isinstance(e.value, UnmeasuredGenerationError)
 
 
 def test_a_response_with_an_explicit_null_token_count_is_also_infrastructure(

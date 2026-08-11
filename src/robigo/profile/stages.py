@@ -8,7 +8,12 @@ from typing import Callable
 from robigo.action.codec import CODECS, PatchError
 from robigo.action.verbs import ActionParseError, parse
 from robigo.context.budget import CHARS_PER_TOKEN, estimate_tokens
-from robigo.model.client import ContextOverflowError, Generation, ModelClient
+from robigo.model.client import (
+    ContextOverflowError,
+    Generation,
+    ModelClient,
+    UnmeasuredGenerationError,
+)
 from robigo.model.geometry import WindowPlan
 from robigo.profile.fixtures import FIXTURES, Fixture
 from robigo.profile.schema import CodecResult
@@ -164,7 +169,28 @@ def stage0_window(
     def try_probe(target: int) -> Generation | None:
         try:
             gen = client.generate(build(target), seed=_PROBE_SEED)
-        except ContextOverflowError:
+        except (ContextOverflowError, UnmeasuredGenerationError):
+            # Task 8's live "run it twice" exercise (2026-08-10) reproduced
+            # `UnmeasuredGenerationError` deterministically against a real,
+            # WARM Ollama daemon, at this exact call: this function's own
+            # docstring (point 1) deliberately sends the FIRST probe sized
+            # to fill the window entirely, reserving no headroom for
+            # `num_predict`, because rejection is meant to be decided on
+            # the prompt alone. On a cold model load, this daemon build
+            # rejects that cleanly (`ContextOverflowError`, already
+            # handled below). On a warm one -- the state a SECOND
+            # consecutive run leaves it in, invisible to every test here
+            # because none talks to a real daemon -- the identical prompt
+            # instead comes back garbled with no token counts at all
+            # (`UnmeasuredGenerationError`, client.py). Both are the same
+            # signal for THIS search: "this size does not work here,
+            # bisect down" -- not a reason to crash the whole profiling
+            # run. `UnmeasuredGenerationError` is caught narrowly, by
+            # name, specifically so a genuine transport failure (a bare
+            # `ModelError` from exhausted retries, or the daemon simply
+            # being down) is NOT swallowed the same way -- that would
+            # fabricate a verified window number out of an infrastructure
+            # outage instead of reporting one.
             return None
         if gen.tokens_in <= 0:
             # A call the client accepted (it did not raise) but that
