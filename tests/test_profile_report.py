@@ -591,7 +591,10 @@ def test_stage_4_and_5_results_are_wired_into_the_profile(monkeypatch):
     # this task adds (repair_rate, repair_attempts, repair_records,
     # turns_to_green_median) must come from the real Stage4/Stage5 the
     # gate produced, not be dropped, swapped, or hardcoded on the way in.
-    fake_stage4 = Stage4(rate=0.31, attempts=940, records=94, per_record={},
+    # per_record joined this list on 2026-08-12: the Task 10 dry run found
+    # it dropped at exactly this wiring point, which no other test caught.
+    fake_stage4 = Stage4(rate=0.31, attempts=940, records=94,
+                         per_record={"rec-a": (3, 10), "rec-b": (0, 10)},
                          dropped=("r seed 3: excluded",), all_attempts=())
     fake_stage5 = Stage5(turns_to_green_median=4.5, repeat_rate=0.12)
     monkeypatch.setattr(report_module, "stage4_repair",
@@ -605,6 +608,7 @@ def test_stage_4_and_5_results_are_wired_into_the_profile(monkeypatch):
     assert profile.repair_rate == 0.31
     assert profile.repair_attempts == 940
     assert profile.repair_records == 94
+    assert profile.repair_per_record == {"rec-a": (3, 10), "rec-b": (0, 10)}
     assert profile.turns_to_green_median == 4.5
     assert profile.repeat_rate == 0.12
     assert "r seed 3: excluded" in profile.dropped

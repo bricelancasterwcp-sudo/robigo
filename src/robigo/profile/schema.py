@@ -124,6 +124,24 @@ class Profile:
     both together ("31% of 940 attempts over 94 records") because a bare
     rate alone cannot tell a reader whether it was measured against a
     handful of records or the whole corpus."""
+    repair_per_record: dict[str, tuple[int, int]] | None
+    """Stage 4's `Stage4.per_record` -- `record name -> (passes, scored)`
+    for every record with at least one scored attempt -- carried through
+    unchanged, because this profile is the ONLY artifact that survives
+    the ~12h run and the record-level 95% confidence interval (spec 4.5,
+    spec 6.1; plan 05 Task 11 step 2) is computed FROM this breakdown:
+    seeds within one record share the same defect, file, and starting
+    tree, so an attempt-level interval over `repair_attempts` would claim
+    roughly sqrt(seeds) more precision than the design has. Discovered
+    missing by the 2026-08-12 Task 10 dry run: `Stage4.per_record`
+    existed in memory with exactly this rationale in its docstring, but
+    was dropped at serialization -- after a real Task 11 run there would
+    have been no way to compute the interval the gate's write-up
+    requires. `None` means stage 4 never ran (same NOT-MEASURED rule as
+    `repair_rate`); `{}` means it ran and every attempt was excluded
+    before scoring. JSON stores the pairs as 2-element lists;
+    `from_json` restores tuples so a round-tripped `Profile` compares
+    equal to the one that was written."""
     turns_to_green_median: float | None
     """Stage 5's `Stage5.turns_to_green_median` (`robigo.profile.
     discipline.stage5_discipline`), carried through unchanged -- the
@@ -194,6 +212,11 @@ class Profile:
                 "repair_rate": self.repair_rate,
                 "repair_attempts": self.repair_attempts,
                 "repair_records": self.repair_records,
+                "repair_per_record": (
+                    None if self.repair_per_record is None
+                    else {name: list(pair)
+                          for name, pair in self.repair_per_record.items()}
+                ),
                 "turns_to_green_median": self.turns_to_green_median,
                 "verdict": self.verdict,
                 "measured": {"seeds": self.seeds, "mode": self.mode,
@@ -225,6 +248,11 @@ class Profile:
             repair_rate=payload["repair_rate"],
             repair_attempts=payload["repair_attempts"],
             repair_records=payload["repair_records"],
+            repair_per_record=(
+                None if payload["repair_per_record"] is None
+                else {name: (pair[0], pair[1])
+                      for name, pair in payload["repair_per_record"].items()}
+            ),
             turns_to_green_median=payload["turns_to_green_median"],
             verdict=payload["verdict"],
             seeds=measured["seeds"], mode=measured["mode"],

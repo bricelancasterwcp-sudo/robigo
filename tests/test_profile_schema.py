@@ -22,6 +22,7 @@ def _profile(**kw) -> Profile:
                 "whole_file": CodecResult(0.55, 30, 1400)},
         payload_corruption=None, repeat_rate=None,
         repair_rate=None, repair_attempts=0, repair_records=0,
+        repair_per_record=None,
         turns_to_green_median=None,
         verdict="READY",
         seeds=3, mode="quick", corpus="fixtures-v1",
@@ -186,6 +187,29 @@ def test_every_new_repair_and_discipline_field_round_trips():
     p = _profile(repair_rate=0.31, repair_attempts=1000, repair_records=100,
                  turns_to_green_median=2.0, repeat_rate=0.18)
     assert Profile.from_json(json.loads(p.to_json())) == p
+
+
+def test_per_record_round_trips_through_json_with_tuple_values():
+    # Task 11 step 2 computes the record-level confidence interval FROM
+    # per_record, after the ~12h run has exited -- if this breakdown does
+    # not survive serialization, the interval cannot be computed at all
+    # (the 2026-08-12 dry run measured exactly that: a profile on disk
+    # with repair_rate but no per-record view). Equality pins the VALUE
+    # SHAPE too: json turns tuples into lists, so a from_json that skips
+    # re-tupling fails here, not in Task 11.
+    p = _profile(repair_rate=0.05, repair_attempts=20, repair_records=2,
+                 repair_per_record={"rec-a": (1, 10), "rec-b": (0, 10)})
+    assert Profile.from_json(json.loads(p.to_json())) == p
+
+
+def test_none_and_empty_per_record_are_distinguishable_in_json():
+    # None = stage 4 never ran; {} = it ran and every attempt was
+    # excluded before scoring. Same NOT-MEASURED-vs-measured-zero rule
+    # repair_rate already obeys (spec 4.4).
+    never = json.loads(_profile(repair_per_record=None).to_json())
+    empty = json.loads(_profile(repair_per_record={}).to_json())
+    assert never["repair_per_record"] is None
+    assert empty["repair_per_record"] == {}
 
 
 # --- Boundary coverage for verdict_for's thresholds ------------------------

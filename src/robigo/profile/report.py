@@ -364,6 +364,7 @@ def run_profile(
         repair_rate=repair.rate if repair else None,
         repair_attempts=repair.attempts if repair else 0,
         repair_records=repair.records if repair else 0,
+        repair_per_record=repair.per_record if repair else None,
         turns_to_green_median=discipline.turns_to_green_median if discipline else None,
         # verdict_for is UNCHANGED (honesty rule 3, task 7 brief): READY/
         # LIMITED/UNUSABLE describe instrument fitness -- can this family's
