@@ -153,11 +153,16 @@ on one machine; a 7B model repairing a real bug inside an 1100-token window at a
 degraded rung, changing one line in the source and leaving the failing test
 alone.
 
-What is not built: the measurement harness. The open question this project exists
-to answer is whether a local model under these constraints resolves enough real
-tasks to be worth using, and that has a number attached — if it cannot reach 40%
-on a fixed corpus, the honest outcome is to say so publicly rather than keep
-polishing. Nothing here should be read as a claim that it does yet.
+**The question this project existed to answer now has a number.** The
+pre-registered gate (spec §0.2: below 33.3% strict repair on a fixed corpus,
+robigo becomes a benchmark-and-findings repo) was read on 2026-08-12:
+**qwen2.5-coder:7b-instruct-q8_0 repaired 1.06% strictly** — 10 of 940
+attempts (94 boltons mutants × 10 seeds), record-level 95% CI [0%, 3.2%],
+every attempt scored, all ten passes from a single record. The gate applies:
+**this is a benchmark-and-findings repository, and the agent is not shipped
+as a tool.** The full protocol, diagnostics, biases, and artifacts are in
+[`docs/superpowers/evidence/2026-08-12-stage4-gate.md`](docs/superpowers/evidence/2026-08-12-stage4-gate.md);
+the run is replayable from `docs/transcripts/qwen7b-stage4.jsonl`.
 
 Only a Python adapter exists. Only `search_replace` and `whole_file` codecs are
 implemented.

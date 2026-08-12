@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 .superpowers/
 .robigo/
+docs/transcripts/*.partial.jsonl
