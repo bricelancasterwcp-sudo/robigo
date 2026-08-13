@@ -162,7 +162,11 @@ every attempt scored, all ten passes from a single record. The gate applies:
 **this is a benchmark-and-findings repository, and the agent is not shipped
 as a tool.** The full protocol, diagnostics, biases, and artifacts are in
 [`docs/superpowers/evidence/2026-08-12-stage4-gate.md`](docs/superpowers/evidence/2026-08-12-stage4-gate.md);
-the run is replayable from `docs/transcripts/qwen7b-stage4.jsonl`.
+the run is replayable from `docs/transcripts/qwen7b-stage4.jsonl`. The
+systems-side findings this project produced — the KV geometry spread,
+the transient serving-path ceiling, instrument-defined edit landing, and
+what the null was made of — are written up as a standalone document:
+[`docs/findings/2026-08-12-the-instrument-fails-first.md`](docs/findings/2026-08-12-the-instrument-fails-first.md).
 
 Only a Python adapter exists. Only `search_replace` and `whole_file` codecs are
 implemented.
