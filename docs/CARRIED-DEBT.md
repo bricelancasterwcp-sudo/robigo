@@ -554,3 +554,75 @@ feasible rather than a convenience.
    distinct content. Generated records break every one of those assumptions —
    which surfaced a 21% harness artifact and an ambiguous matching heuristic that
    I then reproduced myself, minutes after reading the report describing it.
+
+---
+
+# Plan 05 — the repair gate (stages 4–5, and the number)
+
+## What this slice settled
+
+- Stage 4 (repair) and stage 5 (discipline) built, wired, and run for real:
+  `robigo profile --full` over the frozen `boltons-gate-v1` corpus, 94
+  records × 10 seeds, all 940 attempts scored, zero attempt-level
+  exclusions.
+- **The gate was read and applied: 1.06% strict (record-level 95% CI
+  [0%, 3.2%]) against the 33.3% floor.** robigo is a benchmark-and-findings
+  repository; the agent is not shipped as a tool. Protocol, biases, and
+  artifacts: `docs/superpowers/evidence/2026-08-12-stage4-gate.md`.
+- The Task 10 dry run earned its place: it surfaced that `Stage4.per_record`
+  — the only input the record-level confidence interval can be computed from
+  — was never serialized. Fixed (`72f3210`, `Profile.repair_per_record`,
+  mutation-tested in three directions) BEFORE the 12-hour run; without the
+  dry run, the gate number would have arrived with an uncomputable interval.
+- Spec §0.2 amended non-silently: quick→full wording, 40%→33.3% with the
+  derivation inline and the prior value footnoted.
+
+## Deferred, with rulings
+
+- **Plan 06 (stage 3, payload corruption) will not run.** It was gated on
+  passing; the gate failed. The stage-3 `dropped` line in profiles remains
+  correct as written.
+- **Record names are not unique keys.** `boltons-gate-v1` contains two
+  distinct mutants both named `jsonutils-flipped_comparison-104` (same
+  file/operator/line); `per_record` fuses them into one `[0, 20]` entry and
+  `repair_records` reads 93 for 94 attempted. Rate and interval unaffected
+  (both fused records passed nothing). Ruling: fix only if a corpus is ever
+  regenerated — key records by content identity (e.g. mutant source hash),
+  never by description. Recorded here rather than patched because the
+  frozen corpus must not change post-hoc (spec §6.2).
+- **The killed first launch.** Task 11's first run died at 2h55m (~79%) —
+  the orchestrating session's background-task lifetime, not robigo. No
+  numbers were read from it; the partial transcript stays local-only
+  (`qwen7b-stage4.killed-20260812-1615.partial.jsonl`, uncommitted).
+- **Clone hygiene between profile runs.** Every stage-4 run leaves the
+  `--repo` clone parked on its last `robigo/*` snapshot branch, and the next
+  run refuses loudly (`CorruptedCloneError`) rather than capture a mutated
+  tree as pristine. Reset by hand between runs:
+  `git checkout <branch> && git branch -D $(git branch --list 'robigo/*')`.
+  Ruling: the loud refusal is the designed behavior; an auto-restore at exit
+  would hide crashes that leave the tree mid-attempt.
+
+## Process lessons
+
+1. **The dry run's checklist must include the artifacts, not just the
+   numbers.** `per_record` existed in memory with its rationale in a
+   docstring and died at serialization; 300+ tests and two reviews missed
+   it because every consumer in-process saw the in-memory value. "Is the
+   value in the FILE a later step reads?" is the question that caught it.
+2. **A name that describes is not a key that identifies.** file+operator+line
+   reads unique and is not — two mutants can differ only in payload. The
+   duplicate survived corpus freeze, gate verification, and 940 attempts
+   before a divisibility check (940/93 not integer) exposed it.
+3. **Session-tracked background work has a lifetime.** A ~3h GPU run was
+   killed at 79% by the orchestrating harness, not by anything measurable
+   from inside. Long unattended runs get OS-level detachment (setsid,
+   init-parented), a completion marker file, and an out-of-band watcher.
+4. **Deterministic seeds made the kill cheap.** With (model, prompt, seed)
+   determinism there was no temptation to salvage the partial: rerun from
+   zero, identical protocol, no spliced data. Strict replay (TranscriptMiss,
+   no live fall-through) is what made splicing impossible rather than
+   merely discouraged.
+5. **Pre-registration did its job at the moment it existed for.** The number
+   came in at 1/31st of the threshold with the write-up path already fixed:
+   no extension, no "one more corpus", no re-run. The temptation the
+   protocol was written against showed up on schedule and had nowhere to go.

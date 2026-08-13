@@ -27,6 +27,37 @@ class ServerContextOverflowError(ContextOverflowError):
     say which check caught it."""
 
 
+class UnmeasuredGenerationError(ModelError):
+    """A 200 response whose `content` looks like real model output, but
+    that carries neither `prompt_eval_count` nor `eval_count` (Ollama's
+    own `"done": false` shape for this) -- there is no token count here a
+    caller could trust as a measurement (see the raise site in
+    `OllamaClient.generate`, and `test_client.py`'s
+    `test_a_response_missing_the_token_counts_is_infrastructure_not_a_
+    zero`, which already pins that this must raise rather than default to
+    zero).
+
+    Given its OWN name, not just a bare `ModelError`, because task 8's
+    live "run it twice" exercise (2026-08-10) reproduced it deterministically
+    against a real, warm Ollama daemon: `stage0_window`'s very first probe
+    intentionally sends a prompt sized to fill the window EXACTLY (that
+    function's own docstring, point 1 -- `num_predict` is deliberately not
+    reserved, since rejection is meant to be decided on the prompt alone).
+    On a COLD model load this specific daemon build/version cleanly
+    rejects that request (`ServerContextOverflowError`, handled already);
+    on a WARM one -- the model already resident, exactly the state a
+    SECOND consecutive `robigo profile` run puts it in -- the SAME prompt
+    against the SAME `num_ctx` instead returns a garbled, repetitive
+    completion and `"done": false`, invisible to every test in this suite
+    because none of them talk to a real, warm daemon. A bare `ModelError`
+    here is indistinguishable, at the `except` clause in `stage0_window`,
+    from a genuine transport failure (retries exhausted, daemon down) --
+    which must NOT be silently read as "this probe size doesn't fit" (that
+    would fabricate a verified window number out of an infrastructure
+    outage). This subclass lets `stage0_window` catch exactly the "no
+    room left to generate" case, and nothing broader."""
+
+
 @dataclass(frozen=True)
 class Generation:
     text: str
@@ -189,7 +220,7 @@ class OllamaClient(_HTTPClient):
                 )
                 if value is None
             ]
-            raise ModelError(
+            raise UnmeasuredGenerationError(
                 f"{self.model}: response carries no {' or '.join(missing)} "
                 f"(done={body.get('done')!r}) -- the call produced no "
                 f"measurement of its own token counts: {body!r}"

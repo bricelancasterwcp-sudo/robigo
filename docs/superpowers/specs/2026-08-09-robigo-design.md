@@ -50,13 +50,22 @@ The counter-evidence is strong and comes from this project's own sibling: a
 gap was concluded to be pretraining exposure, not language design. Multi-turn
 tool use is out-of-distribution in the same way.
 
-**Decision, taken while neutral:** if quick-profile stage 4 (§5) lands below
-**40% strict** on the best available family, `robigo` becomes a
+**Decision, taken while neutral:** if full-profile stage 4 (§5) lands below
+**33.3% strict** on the best available family, `robigo` becomes a
 benchmark-and-findings repo and the agent is not shipped as a usable tool.
-Rationale: below 40%, a fix needs more than three attempts on average, which
-is not a tool anyone should be handed. *This number is the one figure in this
-document chosen by the author rather than derived; it wants a sanity check
-before implementation starts.*
+Rationale: expected attempts per success is `1/p`; at 33.3% that is 3.0, so
+below 33.3% a fix needs more than three attempts on average, which is not a
+tool anyone should be handed.¹
+
+¹ Corrected 2026-08-10 from the originally written **40%**: the
+attempts-to-success reasoning was the commitment and the number a
+mis-transcription of it — `1/p` gives 2.5 attempts at 40%, not 3. The
+reasoning, recorded here before any instrument existed, is what binds; the
+prior value stays visible in history and in `docs/CARRIED-DEBT.md`. The
+original marginal note — *"this number is the one figure in this document
+chosen by the author rather than derived; it wants a sanity check before
+implementation starts"* — is retained in this footnote as the sanity check
+that was in fact performed.
 
 A null result here is publishable and would be the most valuable artifact in
 the niche. It is not, however, the product — and the point of fixing the
@@ -679,7 +688,11 @@ Adopted rather than re-derived. Each was paid for.
 
 ## 10. Open questions
 
-- The 40% kill threshold in §0.2 — the one number chosen rather than derived.
+- ~~The 40% kill threshold in §0.2 — the one number chosen rather than
+  derived.~~ Resolved 2026-08-10: re-derived to 33.3% from the
+  attempts-to-success commitment (§0.2 footnote); and answered 2026-08-12 —
+  the gate read **1.06%** and §0.2's consequence applies (see
+  `docs/superpowers/evidence/2026-08-12-stage4-gate.md`).
 - Whether stage-4 tasks should be drawn from the user's own repo by default
   (more relevant, less comparable) or from a fixed corpus (comparable, less
   relevant). Current lean: fixed corpus for published numbers, user repo for

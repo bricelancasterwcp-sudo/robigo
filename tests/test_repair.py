@@ -1,0 +1,973 @@
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+import pytest
+from robigo.loop import RunResult
+from robigo.profile.corpus_io import CorpusRecord
+from robigo.profile.verify import Baseline, SuiteState
+from robigo.profile import repair as R
+
+
+def _record(**over):
+    base = dict(
+        name="off_by_one", path=Path("src/pkg/mod.py"), line=2,
+        broken="    return len(items) - 1\n", fixed="    return len(items)\n",
+        test_id="tests/test_mod.py::test_len", diagnostic="exactly one",
+        operator="arith", source_repo="/tmp/src", source_sha="deadbeef",
+    )
+    base.update(over)
+    return CorpusRecord(**base)
+
+
+def _repo(tmp_path):
+    """A real git repo, not just a directory tree. `attempt_repair`'s
+    `reset_clone` shells out to real `git checkout -- .` / `git clean -fdq`
+    unconditionally (spec 4.3.3: it runs before EVERY attempt, and Task 5's
+    actual caller always hands it a real clone) -- verified directly: with
+    no `git init` here, `git checkout -- .` exits 128 ("not a git
+    repository"), which `attempt_repair` catches as `excluded("could not
+    stage the defect: ...")`, and every test asserting `excluded is None`
+    or checking a SPECIFIC exclusion reason failed for the wrong reason,
+    never reaching the behaviour it claimed to test. The brief's fixture
+    omitted this; committing a clean initial tree is required for
+    `reset_clone`'s no-op case (nothing to discard yet) to succeed."""
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "pkg" / "mod.py").write_text(
+        "def n(items):\n    return len(items)\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_mod.py").write_text(
+        "from pkg.mod import n\ndef test_len():\n    assert n([1]) == 1\n",
+        encoding="utf-8")
+    run = lambda *argv: subprocess.run(
+        ["git", *argv], cwd=tmp_path, check=True, capture_output=True)
+    run("init", "-q")
+    run("config", "user.email", "test@example.com")
+    run("config", "user.name", "Test")
+    run("add", "-A")
+    run("commit", "-q", "-m", "initial")
+    return tmp_path
+
+
+def _repo_with_init(tmp_path):
+    """A real, IMPORTABLE package version of `_repo`, above -- `_repo`
+    deliberately has no `pkg/__init__.py` (a namespace package with
+    `__file__ is None`, a property `test_a_loop_infrastructure_outcome_
+    is_excluded_not_failed`'s own docstring explicitly relies on to make
+    the REAL `pytest_runner` fail its import check for an unrelated
+    reason), so it cannot double as a fixture for a test that needs the
+    real, unmocked runner to actually SUCCEED. Otherwise identical to
+    `_repo` -- same tiny one-test suite, same real git init."""
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "src" / "pkg" / "mod.py").write_text(
+        "def n(items):\n    return len(items)\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_mod.py").write_text(
+        "from pkg.mod import n\ndef test_len():\n    assert n([1]) == 1\n",
+        encoding="utf-8")
+    run = lambda *argv: subprocess.run(
+        ["git", *argv], cwd=tmp_path, check=True, capture_output=True)
+    run("init", "-q")
+    run("config", "user.email", "test@example.com")
+    run("config", "user.name", "Test")
+    run("add", "-A")
+    run("commit", "-q", "-m", "initial")
+    return tmp_path
+
+
+def test_the_loop_and_the_judge_resolve_the_same_interpreter(tmp_path, monkeypatch):
+    """Fix round 1 (2026-08-10), the property the review flagged as needing
+    a TEST rather than a convention: cross-module agreement cannot be seen
+    by reviewing either module in isolation (`docs/CARRIED-DEBT.md` lesson
+    2, "per-task review cannot see cross-module inconsistency" -- five
+    path resolvers, three copies of a codec list, and now this). Before
+    this fix, `PythonAdapter` (the LOOP side, `adapters/python_.py`)
+    resolved its own interpreter independently
+    of `pytest_runner` (the JUDGE side, `verify.py`, which hardcoded
+    `sys.executable`) -- confirmed live against a real, fresh `boltons`
+    clone with no venv of its own: `PythonAdapter`'s bare `"python"` PATH
+    fallback found no `pytest` at all, and `AdapterError` excluded every
+    single attempt before the model client was ever touched.
+
+    Unlike every OTHER test in this file, `suite_state` is deliberately
+    NOT mocked away here -- letting the REAL `suite_state` call the
+    (spied) `pytest_runner` is the whole point: it proves the interpreter
+    `attempt_repair` bound into `runner` via `functools.partial` actually
+    reaches the real call the judge makes, not merely that the right
+    string sits in some local variable that nothing downstream reads.
+    `run` (the loop) IS mocked, the same way every other test here mocks
+    it -- this test is about interpreter AGREEMENT between the two halves
+    of one attempt, not about re-proving the loop itself works."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    seen: dict[str, object] = {}
+
+    def fake_run(task, root, client, adapter, **kw):
+        # Exactly what attempt_repair constructed PythonAdapter with --
+        # the LOOP side's own resolved interpreter.
+        seen["adapter_python"] = adapter._python
+        return RunResult(outcome="pass", turns=1, exit_code=0, branch=None,
+                         detail="tests pass")
+
+    def fake_pytest_runner(repo_arg, package, *, python=sys.executable):
+        # The JUDGE side's own resolved interpreter, captured from the
+        # real `pytest_runner`'s own keyword-only `python` parameter --
+        # this fake stands in for the real subprocess-shelling body, not
+        # for the signature `attempt_repair` binds `python` onto.
+        seen["runner_python"] = python
+        module_path = repo_arg / "src" / "pkg" / "mod.py"
+        return f"MODULE_UNDER_TEST={module_path}\nEXIT_CODE=0\n1 passed in 0.01s\n"
+
+    monkeypatch.setattr(R, "run", fake_run)
+    monkeypatch.setattr(R, "pytest_runner", fake_pytest_runner)
+
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base,
+                         python="/custom/python")
+
+    assert a.passed is True and a.excluded is None
+    assert seen["adapter_python"] == "/custom/python"
+    assert seen["runner_python"] == "/custom/python"
+    assert seen["adapter_python"] == seen["runner_python"]
+
+
+def test_an_overridden_runner_is_not_forced_to_accept_python(tmp_path, monkeypatch):
+    """The other half of the same design: a caller who explicitly
+    overrides `runner` (a test's canned, `python`-unaware fake -- the
+    ONLY shape any test in this project actually uses via that parameter)
+    must be used AS GIVEN, never wrapped in a `functools.partial(runner,
+    python=...)` that would raise `TypeError` against a plain 2-arg
+    callable. `python` is bound only onto the DEFAULT (`pytest_runner`
+    itself); an explicit `runner=` opts out of that binding entirely."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="pass", turns=1, exit_code=0, branch=None, detail="tests pass"))
+
+    def two_arg_runner(repo_arg, package):
+        # Deliberately the bare Runner shape -- Callable[[Path, str], str],
+        # no `python` keyword at all. Would raise TypeError if
+        # attempt_repair ever partial-bound `python=` onto it.
+        return "MODULE_UNDER_TEST=" + str(repo_arg / "src" / "pkg" / "mod.py") + \
+               "\nEXIT_CODE=0\n1 passed in 0.01s\n"
+
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base,
+                         python="/should-be-ignored/for-runner",
+                         runner=two_arg_runner)
+
+    assert a.passed is True and a.excluded is None
+
+
+def test_the_task_string_never_leaks_the_defect_location():
+    """Falsification test for spec 4.2. One token away from silently
+    inflating the headline figure."""
+    r = _record()
+    task = R.task_for(r)
+    assert r.test_id in task
+    assert str(r.path) not in task
+    assert "2" not in task.replace(r.test_id, "")   # no line number
+    assert r.fixed.strip() not in task
+    assert r.broken.strip() not in task
+
+
+def test_a_clean_repair_passes(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="pass", turns=2, exit_code=0, branch=None, detail="tests pass"))
+    monkeypatch.setattr(R, "suite_state", lambda *a, **k: SuiteState(
+        broken=0, executed=1, broken_ids=(), incomplete=None))
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is True and a.excluded is None and a.turns == 2
+
+
+def test_a_clean_repairs_repeats_comes_from_the_run_result(tmp_path, monkeypatch):
+    """`Attempt.repeats` was hardcoded to `0` at every construction site
+    until Task 6 wired it to `result.repeats` -- Stage 5's repeat-rate
+    would silently read zero for every attempt regardless of how many
+    times the model actually repeated itself. Threaded through the
+    `passed` path here; the not-`passed` path is covered separately
+    below, since that is a different `Attempt(...)` construction."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="pass", turns=3, exit_code=0, branch=None, detail="tests pass",
+        repeats=2))
+    monkeypatch.setattr(R, "suite_state", lambda *a, **k: SuiteState(
+        broken=0, executed=1, broken_ids=(), incomplete=None))
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is True and a.repeats == 2
+
+
+def test_greening_the_target_while_breaking_a_neighbour_fails(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=2, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="pass", turns=1, exit_code=0, branch=None, detail="tests pass"))
+    monkeypatch.setattr(R, "suite_state", lambda *a, **k: SuiteState(
+        broken=1, executed=2, broken_ids=("tests/test_other.py::test_y",),
+        incomplete=None))
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is False and a.excluded is None
+
+
+def test_editing_the_anchor_test_file_fails_even_if_the_suite_is_green(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+
+    def sneaky(*a, **k):
+        (repo / "tests" / "test_mod.py").write_text(
+            "def test_len():\n    assert True\n", encoding="utf-8")
+        return RunResult(outcome="pass", turns=1, exit_code=0,
+                         branch=None, detail="tests pass")
+
+    monkeypatch.setattr(R, "run", sneaky)
+    monkeypatch.setattr(R, "suite_state", lambda *a, **k: SuiteState(
+        broken=0, executed=1, broken_ids=(), incomplete=None))
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is False
+
+
+def test_an_incomplete_suite_run_is_excluded_not_failed(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="pass", turns=1, exit_code=0, branch=None, detail="tests pass"))
+    monkeypatch.setattr(R, "suite_state", lambda *a, **k: SuiteState(
+        broken=1, executed=0, broken_ids=(), incomplete="Interrupted: collection error"))
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is False
+    assert a.excluded is not None and "Interrupted" in a.excluded
+
+
+def test_an_executed_total_mismatch_is_excluded_not_failed(tmp_path, monkeypatch):
+    """A mutant that breaks a module's import makes pytest report `1 error`
+    while three tests never ran. Plan 04 lesson 2."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=120, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="pass", turns=1, exit_code=0, branch=None, detail="tests pass"))
+    monkeypatch.setattr(R, "suite_state", lambda *a, **k: SuiteState(
+        broken=0, executed=117, broken_ids=(), incomplete=None))
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.excluded is not None
+
+
+def test_a_loop_infrastructure_outcome_is_excluded_not_failed(tmp_path, monkeypatch):
+    """`suite_state` is deliberately mocked GREEN here, not left unmocked.
+    Left unmocked, the real `suite_state`/`pytest_runner` runs against
+    `_repo`'s bare fixture tree, whose `pkg` directory has no `__init__.py`
+    and resolves as a namespace package with `__file__ is None` -- the
+    `MODULE_UNDER_TEST=None` marker that produces makes `_assert_in_clone`
+    raise `WrongTreeError` for an UNRELATED reason, which `attempt_repair`'s
+    broad `except Exception` around `suite_state` also turns into an
+    exclusion. That accidentally satisfies `excluded is not None` even with
+    `_INFRA_OUTCOMES` mutated empty (verified directly), so it proves
+    nothing about whether the infrastructure short-circuit itself ran --
+    exactly the "breaks something incidental" trap. Mocking a clean, green
+    `SuiteState` removes that confound: if `_INFRA_OUTCOMES` is mutated
+    away, execution falls through to this green state, `excluded` stays
+    `None`, and the assertion below correctly catches it."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="infrastructure", turns=0, exit_code=4, branch=None,
+        detail="daemon unreachable"))
+    monkeypatch.setattr(R, "suite_state", lambda *a, **k: SuiteState(
+        broken=0, executed=1, broken_ids=(), incomplete=None))
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is False and a.excluded is not None
+
+
+def test_a_stalled_run_is_a_real_model_failure_not_an_exclusion(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="stalled", turns=8, exit_code=1, branch=None,
+        detail="turn cap 8 reached"))
+    monkeypatch.setattr(R, "suite_state", lambda *a, **k: SuiteState(
+        broken=1, executed=1, broken_ids=("tests/test_mod.py::test_len",),
+        incomplete=None))
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is False and a.excluded is None
+
+
+def test_a_stalled_runs_repeats_is_also_preserved(tmp_path, monkeypatch):
+    """The not-`passed` `Attempt(...)` construction (`result.outcome !=
+    "pass"`) is a SEPARATE call site from the passing one covered above --
+    it must independently thread `result.repeats` through rather than
+    keep the old hardcoded `0`."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="stalled", turns=8, exit_code=1, branch=None,
+        detail="turn cap 8 reached", repeats=5))
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is False and a.excluded is None and a.repeats == 5
+
+
+# --------------------------------------------------------------------------
+# Fix round 1 -- Critical 1: outcome != "pass" must be scored a real
+# failure BEFORE any suite reading, through all three doors the review
+# found. Each test below mocks `suite_state` to return EXACTLY the value
+# that, under the old (wrong) ordering, would have produced `excluded`
+# instead of `passed=False, excluded=None` -- so a regression back to the
+# old ordering fails these specifically, not incidentally.
+# --------------------------------------------------------------------------
+
+
+def test_a_stalled_run_with_an_incomplete_suite_is_a_failure_not_an_exclusion(
+    tmp_path, monkeypatch
+):
+    """Door 1: a model that stalls having also left a syntax error behind
+    (e.g. a half-written patch applied by a bare `run` action) makes the
+    suite read `incomplete`. That must not promote an already-certain
+    `stalled` failure to an exclusion."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="stalled", turns=8, exit_code=1, branch=None,
+        detail="turn cap 8 reached"))
+    monkeypatch.setattr(R, "suite_state", lambda *a, **k: SuiteState(
+        broken=1, executed=0, broken_ids=(),
+        incomplete="pytest did not complete normally (exit code 2)"))
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is False and a.excluded is None and a.outcome == "stalled"
+
+
+def test_a_stalled_run_with_an_executed_mismatch_is_a_failure_not_an_exclusion(
+    tmp_path, monkeypatch
+):
+    """Door 2: a model that stalls having deleted a neighbouring test
+    shrinks `executed` below baseline. Same rule: already a certain
+    failure, must not become an exclusion."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=2, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="stalled", turns=8, exit_code=1, branch=None,
+        detail="turn cap 8 reached"))
+    monkeypatch.setattr(R, "suite_state", lambda *a, **k: SuiteState(
+        broken=0, executed=1, broken_ids=(), incomplete=None))
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is False and a.excluded is None
+
+
+def test_a_stalled_run_never_calls_suite_state_at_all(tmp_path, monkeypatch):
+    """Door 3: a model that stalls having broken the target's own import
+    would make a REAL `suite_state` raise (`WrongTreeError`, via a missing
+    `MODULE_UNDER_TEST=` marker). `suite_state` is stubbed here to raise
+    unconditionally -- the only way this test can pass is if `outcome !=
+    "pass"` short-circuits BEFORE `suite_state` is ever called at all, not
+    merely before its result is trusted."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="stalled", turns=8, exit_code=1, branch=None,
+        detail="turn cap 8 reached"))
+
+    def never(*a, **k):
+        raise AssertionError("suite_state must not run for a non-pass outcome")
+
+    monkeypatch.setattr(R, "suite_state", never)
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is False and a.excluded is None
+
+
+# --------------------------------------------------------------------------
+# Fix round 1 -- Important 3: an exception `attempt_repair` did not
+# anticipate must produce `excluded`, never escape and abort the whole
+# ~940-attempt run.
+# --------------------------------------------------------------------------
+
+
+def test_run_raising_produces_an_exclusion_not_a_crash(tmp_path, monkeypatch):
+    """`robigo.loop.run` deliberately RE-RAISES any exception that escapes
+    its internal `_execute`, on the assumption that `cli.main` is the
+    catcher. `attempt_repair` is a second caller with no handler upstream
+    of it -- an escaping exception here would abort the whole run over one
+    record's surprise."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+
+    def boom(*a, **k):
+        raise RuntimeError("model client blew up")
+
+    monkeypatch.setattr(R, "run", boom)
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is False
+    assert a.excluded is not None and "blew up" in a.excluded
+
+
+def test_a_missing_anchor_file_produces_an_exclusion_not_a_crash(tmp_path, monkeypatch):
+    """A corpus record whose `test_id` names a file absent from this
+    clone (e.g. provenance drift between the corpus and `--repo`) must not
+    raise `FileNotFoundError` out of `attempt_repair`. `run` is stubbed to
+    raise if called at all, proving staging fails BEFORE the loop ever
+    runs."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+
+    def never(*a, **k):
+        raise AssertionError("run() must not be called when the anchor is missing")
+
+    monkeypatch.setattr(R, "run", never)
+    bad_record = _record(test_id="tests/test_missing.py::test_nope")
+    a = R.attempt_repair(bad_record, repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is False
+    assert a.excluded is not None and "could not stage the defect" in a.excluded
+
+
+def test_an_unanticipated_exception_while_staging_still_produces_an_exclusion(
+    tmp_path, monkeypatch
+):
+    """`_judge`'s staging `try` only catches `(OSError, CalledProcessError,
+    IndexError, ValueError)` -- deliberately narrow, so the anticipated
+    failure modes there keep a specific "could not stage the defect"
+    message. Something OUTSIDE that tuple (a bare `RuntimeError`, injected
+    here by replacing `_anchor_path` itself) is NOT caught by that inner
+    handler -- this test only passes because `attempt_repair`'s own outer
+    safety net catches it instead, proving that net is not redundant with
+    the per-step handlers above it."""
+    repo = _repo(tmp_path)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+
+    def boom(*a, **k):
+        raise RuntimeError("unexpected internal error")
+
+    monkeypatch.setattr(R, "_anchor_path", boom)
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is False
+    assert a.excluded is not None and "unexpected error" in a.excluded
+
+
+# --------------------------------------------------------------------------
+# Fix round 1 -- Critical 2: the falsification test spec 4.3.3 named and
+# nobody wrote until this fix round.
+# --------------------------------------------------------------------------
+
+
+def test_reset_clone_restores_the_pristine_tree_and_branch_across_attempts(
+    tmp_path, monkeypatch
+):
+    """Task 5/7's loop reuses ONE `repo` clone across ~940 `attempt_repair`
+    calls in a single process -- `reset_clone` must restore the ORIGINAL
+    branch and HEAD, not just `checkout -- .` / `clean -fdq` against
+    whatever branch/commit `use_git=True`'s own loop left the tree on.
+    Measured directly before this fix: a stray committed defect on a
+    `robigo/*` branch survived the old `reset_clone` entirely, and every
+    later record inherited it (`state.broken == 0` could never hold
+    again). `dirty_run` simulates exactly that: a `robigo/*` branch, a
+    stray unrelated file, and a real commit, all left behind by an attempt
+    that then stalls."""
+    repo = _repo(tmp_path)
+    original_branch = R._git_text(repo, "branch", "--show-current")
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+
+    def dirty_run(*a, **k):
+        subprocess.run(["git", "checkout", "-b", "robigo/the-test-fails-1"],
+                       cwd=repo, check=True, capture_output=True)
+        (repo / "src" / "pkg" / "other.py").write_text(
+            "stray = True\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True,
+                       capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "robigo: stray edit"],
+                       cwd=repo, check=True, capture_output=True)
+        return RunResult(outcome="stalled", turns=8, exit_code=1,
+                         branch="robigo/the-test-fails-1",
+                         detail="turn cap 8 reached")
+
+    observed: dict[str, object] = {}
+
+    def observing_run(*a, **k):
+        observed["branch"] = R._git_text(repo, "branch", "--show-current")
+        observed["stray_exists"] = (repo / "src" / "pkg" / "other.py").exists()
+        observed["mod_py"] = (repo / "src" / "pkg" / "mod.py").read_text(
+            encoding="utf-8")
+        observed["robigo_branches"] = R._git_text(
+            repo, "branch", "--list", "robigo/*", "--format=%(refname:short)")
+        return RunResult(outcome="pass", turns=1, exit_code=0, branch=None,
+                         detail="tests pass")
+
+    monkeypatch.setattr(R, "run", dirty_run)
+    R.attempt_repair(_record(), repo, client=object(), seed=0,
+                     codec="search_replace", base=base)
+
+    monkeypatch.setattr(R, "run", observing_run)
+    monkeypatch.setattr(R, "suite_state", lambda *a, **k: SuiteState(
+        broken=0, executed=1, broken_ids=(), incomplete=None))
+    R.attempt_repair(_record(), repo, client=object(), seed=1,
+                     codec="search_replace", base=base)
+
+    assert observed["branch"] == original_branch
+    assert observed["stray_exists"] is False
+    # break_it re-staged the SAME defect for attempt 2 -- confirms the
+    # tree really was pristine before break_it ran, not merely "a" tree.
+    assert observed["mod_py"] == "def n(items):\n    return len(items) - 1\n"
+    assert observed["robigo_branches"] == ""
+
+
+# --------------------------------------------------------------------------
+# Fix round 2 -- Important A: detached HEAD is what spec 4.1 actually
+# produces ("checked out at its recorded source_sha"), and it must not
+# exclude every attempt.
+# --------------------------------------------------------------------------
+
+
+def test_reset_clone_handles_a_detached_head_pristine_state(tmp_path, monkeypatch):
+    """`git branch --show-current` prints nothing on a detached HEAD, so
+    `_pristine` used to capture `branch=""` and `reset_clone` ran `git
+    checkout -f ''`, exit 128, excluding EVERY attempt. Spec 4.1 says
+    stage 4 runs "against a clone ... checked out at its recorded
+    source_sha" -- a plain `git checkout <sha>` produces exactly this
+    state, so Task 5's driver can trip it on the very first attempt of a
+    real run."""
+    R.clear_pristine_cache()
+    repo = _repo(tmp_path)
+    head_sha = R._git_text(repo, "rev-parse", "HEAD")
+    subprocess.run(["git", "checkout", head_sha], cwd=repo, check=True,
+                   capture_output=True)
+    # Confirm the fixture really is detached before trusting the rest.
+    assert R._git_text(repo, "branch", "--show-current") == ""
+
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "run", lambda *a, **k: RunResult(
+        outcome="pass", turns=1, exit_code=0, branch=None, detail="tests pass"))
+    monkeypatch.setattr(R, "suite_state", lambda *a, **k: SuiteState(
+        broken=0, executed=1, broken_ids=(), incomplete=None))
+    a = R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+    assert a.passed is True and a.excluded is None
+
+
+# --------------------------------------------------------------------------
+# Fix round 2 -- Important B: a clone already sitting on a robigo/* branch
+# before any attempt has run is a corrupted starting state, not an
+# ordinary excluded attempt.
+# --------------------------------------------------------------------------
+
+
+def test_a_repo_already_on_a_robigo_branch_fails_loudly(tmp_path, monkeypatch):
+    """`robigo.loop.run` never checks back out after an attempt -- it
+    only hands back an undo recipe, never applies it -- so a clone left
+    mid-run by an earlier process, or a resumed run against a reused
+    clone directory, can start already on a `robigo/*` branch. Capturing
+    that as "pristine" would silently apply the corruption to every
+    attempt; this must raise `CorruptedCloneError` immediately and must
+    NOT be swallowed by `attempt_repair`'s own last-resort safety net."""
+    R.clear_pristine_cache()
+    repo = _repo(tmp_path)
+    subprocess.run(["git", "checkout", "-b", "robigo/leftover-3"], cwd=repo,
+                   check=True, capture_output=True)
+
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    with pytest.raises(R.CorruptedCloneError, match="robigo/leftover-3"):
+        R.attempt_repair(_record(), repo, client=object(), seed=0,
+                         codec="search_replace", base=base)
+
+
+def test_delete_stray_branches_never_targets_the_current_branch(tmp_path):
+    """Defensive half of Important B: `_delete_stray_branches` re-derives
+    "what's current" itself rather than trusting an upstream guarantee it
+    cannot see. Simulated directly at the unit level: checked out on a
+    `robigo/*` branch (bypassing `_pristine`'s new guard, which is tested
+    separately above), confirm the deletion skips exactly that one and
+    removes every OTHER `robigo/*` branch."""
+    repo = _repo(tmp_path)
+    subprocess.run(["git", "checkout", "-b", "robigo/stray-a"], cwd=repo,
+                   check=True, capture_output=True)
+    subprocess.run(["git", "branch", "robigo/stray-b"], cwd=repo,
+                   check=True, capture_output=True)
+
+    R._delete_stray_branches(repo)
+
+    remaining = R._git_text(
+        repo, "branch", "--list", "robigo/*", "--format=%(refname:short)"
+    ).split()
+    assert remaining == ["robigo/stray-a"]
+    assert R._git_text(repo, "branch", "--show-current") == "robigo/stray-a"
+
+
+# --------------------------------------------------------------------------
+# Fix round 2 -- Important C: the pristine cache must not silently apply
+# to the wrong repository, and must not trust a sha that no longer
+# resolves.
+# --------------------------------------------------------------------------
+
+
+def test_pristine_cache_keys_on_repo_identity_not_path_alone(tmp_path):
+    """Measured directly before this fix: a DIFFERENT repo re-cloned at
+    the SAME filesystem path after an earlier run silently reused the
+    earlier repo's cached `_Pristine` (`passed=True, excluded=None` at a
+    sha the actual clone's history did not even contain). Simulated here
+    with an ORPHAN branch, not a wholesale `.git` replacement -- an orphan
+    commit has a genuinely different ROOT (a different `_repo_identity`
+    key), but git keeps the ORIGINAL branch's commit fully reachable in
+    the SAME object database, so `_sha_exists(repo, first.sha)` stays
+    TRUE throughout. A wholesale `.git` replacement would make the old sha
+    stop resolving too, which would make `_sha_exists` alone -- tested
+    separately below -- already force a re-capture, confounding which of
+    the two Important-C mechanisms actually caught the problem. This
+    construction isolates the compound KEY specifically: only it, not
+    sha-existence, can explain why `second` must differ from `first`
+    here."""
+    R.clear_pristine_cache()
+    repo = _repo(tmp_path)
+    first = R._pristine(repo)
+    assert first.sha == R._git_text(repo, "rev-parse", "HEAD")
+
+    subprocess.run(["git", "checkout", "-q", "--orphan", "unrelated"],
+                   cwd=repo, check=True, capture_output=True)
+    (repo / "unrelated.txt").write_text(
+        "nothing to do with the original repo\n", encoding="utf-8")
+    git = lambda *argv: subprocess.run(
+        ["git", *argv], cwd=repo, check=True, capture_output=True)
+    git("add", "-A")
+    git("commit", "-q", "-m", "unrelated root")
+    second_sha = R._git_text(repo, "rev-parse", "HEAD")
+    assert second_sha != first.sha  # sanity: genuinely different commit
+
+    # The confound this test specifically rules out: the OLD sha is still
+    # a perfectly resolvable object in this same repo (reachable via the
+    # original branch's ref), so `_sha_exists` alone would NOT have forced
+    # a re-capture here.
+    assert R._sha_exists(repo, first.sha) is True
+
+    second = R._pristine(repo)
+    assert second.sha == second_sha
+    assert second.sha != first.sha
+
+
+def test_sha_exists_true_for_head_false_for_garbage(tmp_path):
+    repo = _repo(tmp_path)
+    head = R._git_text(repo, "rev-parse", "HEAD")
+    assert R._sha_exists(repo, head) is True
+    assert R._sha_exists(repo, "0" * 40) is False
+
+
+# --------------------------------------------------------------------------
+# Task 5 -- the stage-4 aggregate. `stage4_repair` reduces every
+# (record, seed) `Attempt` `attempt_repair` produces into the one number
+# the project's 33.3% kill criterion reads. `attempt_repair` itself is
+# stubbed throughout: these tests are about the REDUCTION (exclusion
+# bookkeeping, None-vs-0.0, per-record retention, and the
+# CorruptedCloneError carve-out), not about repair judgement, which
+# `attempt_repair`'s own tests above already cover.
+# --------------------------------------------------------------------------
+
+
+def _stub_preflight(monkeypatch, base: Baseline) -> None:
+    """Fix round 2 gave `stage4_repair` its own pre-flight interpreter
+    check, run BEFORE the (record, seed) grid: a real `reset_clone` (needs
+    a real git repo -- `tmp_path` alone is not one) followed by a real
+    `measure_baseline` call (a real subprocess pytest run). Every test in
+    this section below is about the GRID's own reduction logic, not about
+    the pre-flight check itself (that has its own dedicated tests further
+    down) -- this stubs both seams so `tmp_path` (a bare directory) keeps
+    working as `repo`, and the check trivially agrees with whatever `base`
+    the test itself is using, exactly as `_run`/`suite_state` are already
+    stubbed everywhere else in this file for the identical reason."""
+    monkeypatch.setattr(R, "reset_clone", lambda repo: None)
+    monkeypatch.setattr(R, "measure_baseline", lambda repo, runner: base)
+
+
+def test_rate_is_attempt_level_and_per_record_is_kept(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_attempt(record, repo, client, *, seed, **kw):
+        calls.append((record.name, seed))
+        # record "a" passes on even seeds; record "b" never passes
+        ok = record.name == "a" and seed % 2 == 0
+        return R.Attempt(record.name, seed, ok, "pass" if ok else "stalled",
+                         1, 0, None)
+
+    monkeypatch.setattr(R, "attempt_repair", fake_attempt)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    _stub_preflight(monkeypatch, base)
+    recs = [_record(name="a"), _record(name="b")]
+    s = R.stage4_repair(recs, tmp_path, object(), seeds=4,
+                        codec="search_replace", base=base)
+    assert len(calls) == 8
+    assert s.attempts == 8 and s.records == 2
+    assert s.rate == pytest.approx(2 / 8)
+    assert s.per_record == {"a": (2, 4), "b": (0, 4)}
+    assert s.dropped == ()
+    # all_attempts carries every Attempt produced, scored or not, for
+    # Task 6's stage5_discipline to derive its own metrics from.
+    assert len(s.all_attempts) == 8
+    assert all(isinstance(a, R.Attempt) for a in s.all_attempts)
+
+
+def test_excluded_attempts_leave_both_sides_of_the_rate(monkeypatch, tmp_path):
+    def fake_attempt(record, repo, client, *, seed, **kw):
+        if seed == 0:
+            return R.Attempt(record.name, seed, False, "", 0, 0, "daemon died")
+        return R.Attempt(record.name, seed, True, "pass", 1, 0, None)
+
+    monkeypatch.setattr(R, "attempt_repair", fake_attempt)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    _stub_preflight(monkeypatch, base)
+    s = R.stage4_repair([_record(name="a")], tmp_path, object(), seeds=3,
+                        codec="search_replace", base=base)
+    assert s.attempts == 2            # not 3
+    assert s.rate == pytest.approx(1.0)   # 2/2, NOT 2/3
+    assert any("daemon died" in d for d in s.dropped)
+    assert len(s.dropped) == 1
+    assert len(s.all_attempts) == 3   # the excluded one is still recorded
+
+
+def test_a_record_with_every_attempt_excluded_is_not_counted(monkeypatch, tmp_path):
+    monkeypatch.setattr(R, "attempt_repair", lambda record, repo, client, *, seed, **kw:
+                        R.Attempt(record.name, seed, False, "", 0, 0, "clone broken"))
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    _stub_preflight(monkeypatch, base)
+    s = R.stage4_repair([_record(name="a")], tmp_path, object(), seeds=2,
+                        codec="search_replace", base=base)
+    assert s.attempts == 0 and s.records == 0
+    assert s.rate is None       # not 0.0 -- nothing was measured
+    assert len(s.dropped) == 2
+
+
+def test_no_records_at_all_means_rate_is_none_not_zero(tmp_path):
+    """The empty-corpus edge of the same invariant: nothing to iterate at
+    all must read identically to "everything excluded" -- both are
+    "never measured", not "measured zero"."""
+    s = R.stage4_repair([], tmp_path, object(), seeds=5,
+                        codec="search_replace",
+                        base=Baseline(broken=0, executed=1, seconds=0.1))
+    assert s.rate is None
+    assert s.attempts == 0 and s.records == 0
+    assert s.dropped == () and s.all_attempts == ()
+
+
+def test_stage4_repair_threads_python_and_runner_to_every_attempt(
+    monkeypatch, tmp_path
+):
+    """Fix round 1: `stage4_repair` makes no interpreter decision of its
+    own -- it must relay the ONE `python`/`runner` choice its caller gave
+    it to EVERY `attempt_repair` call in the (record, seed) grid
+    unchanged, not just the first, and not silently fall back to
+    `attempt_repair`'s own default for any of them. None of the other
+    `stage4_repair` tests in this file capture these two kwargs (their
+    fakes use `**kw` and ignore it) -- this is the one that inspects the
+    call itself, the same reason `test_stage_4_receives_the_real_
+    arguments_run_profile_was_given` exists one layer up in
+    test_profile_report.py."""
+    seen_python: list[object] = []
+    seen_runner: list[object] = []
+
+    def fake_attempt(record, repo, client, *, seed, codec, base, turn_cap,
+                     python, runner):
+        seen_python.append(python)
+        seen_runner.append(runner)
+        return R.Attempt(record.name, seed, True, "pass", 1, 0, None)
+
+    monkeypatch.setattr(R, "attempt_repair", fake_attempt)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    _stub_preflight(monkeypatch, base)
+    sentinel_runner = object()
+    s = R.stage4_repair(
+        [_record(name="a"), _record(name="b")], tmp_path, object(), seeds=2,
+        codec="search_replace", base=base,
+        python="/pinned/python", runner=sentinel_runner,
+    )
+    assert s.attempts == 4   # 2 records x 2 seeds, all scored
+    assert len(seen_python) == 4
+    assert all(p == "/pinned/python" for p in seen_python)
+    assert all(r is sentinel_runner for r in seen_runner)
+
+
+def test_corrupted_clone_error_propagates_through_the_driver_loop(
+    monkeypatch, tmp_path
+):
+    """Carry-forward hazard from the task that built `attempt_repair`,
+    flagged independently by both its implementer and its reviewer:
+    `CorruptedCloneError` names a defect in the shared `repo` itself
+    (already checked out on a `robigo/*` branch before this process
+    touched it), not in one record, and `attempt_repair` deliberately
+    lets it escape rather than swallowing it into an `excluded` Attempt.
+    `stage4_repair` must not wrap the call in a broad `except Exception`
+    -- doing so would convert one loud, immediate abort into the
+    identical exclusion manufactured for every remaining attempt in a
+    ~940-attempt run, scoring nothing while looking like it ran.
+
+    Asserts BOTH that the exception reaches the caller of `stage4_repair`
+    AND that the loop stopped at the very first attempt (`calls == [0]`)
+    -- the second assertion is what a broad `except Exception` would
+    break even though the first, alone, would still superficially look
+    like it passed (a `pytest.raises` around a loop that swallowed the
+    error 1 out of 6 times would still fail overall, but for a confusing
+    reason; asserting the call count makes the failure mode legible)."""
+    calls = []
+
+    def fake_attempt(record, repo, client, *, seed, **kw):
+        calls.append(seed)
+        raise R.CorruptedCloneError(
+            f"{repo} is already checked out on 'robigo/leftover-3'")
+
+    monkeypatch.setattr(R, "attempt_repair", fake_attempt)
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    _stub_preflight(monkeypatch, base)
+    with pytest.raises(R.CorruptedCloneError, match="robigo/leftover-3"):
+        R.stage4_repair([_record(name="a")], tmp_path, object(), seeds=3,
+                        codec="search_replace", base=base)
+    assert calls == [0]   # aborted on the FIRST attempt, never swallowed
+
+
+# --------------------------------------------------------------------------
+# Fix round 2 -- the pre-flight interpreter check. IMPORTANT 1: a wrong
+# --python used to reproduce fix round 1's exact bug (every attempt
+# excluded, repair_rate: None) after burning the whole ~940-attempt grid
+# discovering it one attempt at a time. `stage4_repair` now validates
+# `python` ONCE, before the grid, by re-measuring the corpus's own
+# Baseline against a pristine `repo` and comparing `.executed`.
+# --------------------------------------------------------------------------
+
+
+def test_preflight_refuses_before_the_grid_when_executed_disagrees(
+    monkeypatch, tmp_path
+):
+    """The core of IMPORTANT 1: a `python` whose suite run against the
+    pristine clone executes a DIFFERENT number of tests than the corpus's
+    own recorded `Baseline.executed` must be refused -- via
+    `InterpreterMismatchError` -- before `attempt_repair` is ever called,
+    not discovered by watching every attempt fail the same way. Asserts
+    the spy never fires at all (not "fires and then stops", which a
+    per-attempt check could also produce), and that the message names
+    BOTH numbers (the review's own requirement)."""
+    calls = []
+    monkeypatch.setattr(R, "attempt_repair",
+                        lambda *a, **k: calls.append(1))
+    monkeypatch.setattr(R, "reset_clone", lambda repo: None)
+    monkeypatch.setattr(R, "measure_baseline",
+                        lambda repo, runner: Baseline(broken=0, executed=7,
+                                                      seconds=0.05))
+    base = Baseline(broken=0, executed=468, seconds=1.7)   # the real
+    # frozen boltons-gate-v1.json baseline's own executed count, reused
+    # here so the numbers in the assertion below are not coincidentally
+    # easy to satisfy with a substring match on something else.
+
+    with pytest.raises(R.InterpreterMismatchError) as exc_info:
+        R.stage4_repair([_record(name="a")], tmp_path, object(), seeds=10,
+                        codec="search_replace", base=base,
+                        python="/usr/bin/python3")
+
+    assert calls == []   # the grid never started
+    message = str(exc_info.value)
+    assert "7" in message and "468" in message   # both numbers, named
+    assert "/usr/bin/python3" in message         # and which interpreter
+
+
+def test_preflight_passes_silently_and_the_grid_runs_when_executed_agrees(
+    monkeypatch, tmp_path
+):
+    """The other direction: when `python` DOES reproduce the baseline, the
+    pre-flight check is invisible -- no exception, and the grid runs
+    exactly as it would have without the check at all. Guards against an
+    overzealous implementation that refuses (or silently skips real
+    attempts) even on agreement."""
+    calls = []
+    monkeypatch.setattr(R, "attempt_repair", lambda record, repo, client,
+                        *, seed, **kw: (calls.append(seed) or
+                        R.Attempt(record.name, seed, True, "pass", 1, 0, None)))
+    base = Baseline(broken=0, executed=1, seconds=0.1)
+    monkeypatch.setattr(R, "reset_clone", lambda repo: None)
+    monkeypatch.setattr(R, "measure_baseline",
+                        lambda repo, runner: base)   # agrees exactly
+
+    s = R.stage4_repair([_record(name="a")], tmp_path, object(), seeds=3,
+                        codec="search_replace", base=base)
+
+    assert calls == [0, 1, 2]   # the grid ran, uninterrupted
+    assert s.attempts == 3 and s.rate == pytest.approx(1.0)
+
+
+def test_preflight_check_uses_the_real_runner_against_a_real_repo(tmp_path):
+    """No mocking of `measure_baseline`/`pytest_runner`/`reset_clone` at
+    all here -- the REAL `verify.baseline` call, against `_repo_with_init`'s
+    own real, tiny, IMPORTABLE suite (one real test, via a real
+    `sys.executable -m pytest` subprocess), genuinely executes 1 test. A
+    corpus baseline claiming a wildly different `executed` count (999 -- a
+    number this two-line fixture repo could never produce) must still be
+    refused, proving the check is wired to the REAL runner in production,
+    not only provably correct against a mock of it."""
+    repo = _repo_with_init(tmp_path)
+    wrong_base = Baseline(broken=0, executed=999, seconds=0.1)
+
+    with pytest.raises(R.InterpreterMismatchError) as exc_info:
+        R.stage4_repair([_record(name="a")], repo, object(), seeds=1,
+                        codec="search_replace", base=wrong_base)
+
+    message = str(exc_info.value)
+    assert "999" in message   # the corpus's claimed (wrong) baseline
+    assert "1" in message     # this fixture's real, single passing test
+
+
+def test_preflight_check_calls_the_real_reset_clone_before_measuring(
+    monkeypatch, tmp_path
+):
+    """The pre-flight check's own docstring claims it uses the SAME
+    `reset_clone` every attempt already runs, and therefore inherits
+    `CorruptedCloneError` for free if `repo` starts corrupted -- surfaced
+    here, before the grid, rather than on attempt 1. Proven directly: a
+    real repo already checked out on a `robigo/*` branch before this
+    process has touched it (the exact scenario `_pristine` raises for)
+    must raise `CorruptedCloneError` from `stage4_repair` itself, and
+    `attempt_repair` must never be reached at all -- if `reset_clone`
+    were dropped from the pre-flight (or called after, not before,
+    `measure_baseline`), this would instead reach `measure_baseline`
+    against the dirty tree, or reach the grid outright."""
+    repo = _repo_with_init(tmp_path)
+    run = lambda *argv: subprocess.run(
+        ["git", *argv], cwd=repo, check=True, capture_output=True)
+    run("checkout", "-q", "-b", "robigo/leftover-9")
+
+    calls = []
+    monkeypatch.setattr(R, "attempt_repair", lambda *a, **k: calls.append(1))
+    R.clear_pristine_cache()
+    try:
+        with pytest.raises(R.CorruptedCloneError, match="robigo/leftover-9"):
+            R.stage4_repair(
+                [_record(name="a")], repo,
+                object(), seeds=1, codec="search_replace",
+                base=Baseline(broken=0, executed=1, seconds=0.1),
+            )
+    finally:
+        R.clear_pristine_cache()   # do not leak this repo's identity into
+        # `_PRISTINE_CACHE` for any later test that might reuse the path.
+    assert calls == []   # the grid never started; the pre-flight itself aborted
+
+
+def test_pristine_recaptures_if_the_cached_sha_no_longer_resolves(tmp_path):
+    """The second half of Important C: even with the identity-keyed cache
+    fix, a cached sha that no longer resolves (e.g. pruned in a long-lived
+    clone) must not be trusted blindly -- `_pristine` re-derives instead
+    of hand back a sha `git reset --hard` can no longer reach."""
+    R.clear_pristine_cache()
+    repo = _repo(tmp_path)
+    real = R._pristine(repo)
+    key = R._repo_identity(repo)
+    # Corrupt the cache directly: same identity, a sha that cannot
+    # possibly resolve in this repo.
+    R._PRISTINE_CACHE[key] = R._Pristine(real.branch, "f" * 40)
+
+    recaptured = R._pristine(repo)
+
+    assert recaptured.sha == real.sha
+    assert recaptured.sha != "f" * 40

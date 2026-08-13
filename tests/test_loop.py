@@ -133,6 +133,32 @@ def test_the_stall_cap_ends_the_run_on_the_expected_turn(repo: Path):
     assert result.turns == 3
 
 
+def test_repeats_counts_every_repeat_not_just_consecutive_ones(repo: Path):
+    """`stalls` resets to 0 on any non-repeat turn, so it cannot answer
+    "how many times, in total, did this run re-emit something it had
+    already tried". A client replying A, B, A, C, A never trips the stall
+    cap -- its longest CONSECUTIVE repeat streak is a single turn each
+    time (turn 3 follows turn 1's A; turn 5 follows either A) -- but it is
+    not repeat-free either: turn 3 re-emits turn 1's (action, reply) pair,
+    and turn 5 re-emits it again. That is TWO repeats over the whole run,
+    verified directly against the real loop rather than trusted by
+    inspection: it is easy to conflate "the same reply appeared 3 times"
+    with "3 repeats" when only 2 of those 3 appearances actually followed
+    a prior one (occurrence 1 is original, not a repeat of anything).
+    `A`, `B`, and `C` are none of them a parseable action (`parse` raises
+    "no action found" for a bare single letter), so every one of the 5
+    turns falls straight through to the repeat-check with no branch or
+    commit in the way; `turn_cap=5` ends the run exactly there, still
+    failing (this repo's test is never actually fixed), so `turns == 5`
+    is the turn cap, not the stall cap."""
+    result = run("fix", repo, _ScriptedClient("A", "B", "A", "C", "A"),
+                 PythonAdapter(python=sys.executable),
+                 codec="search_replace", turn_cap=5)
+    assert result.outcome == "stalled"
+    assert result.turns == 5
+    assert result.repeats == 2
+
+
 def test_a_mid_loop_scope_failure_keeps_the_previous_scope(repo: Path):
     # An unanchorable diagnostic (a timeout, or a failure the adapter could
     # not place in the repo) makes the mid-loop re-resolve raise. Nothing

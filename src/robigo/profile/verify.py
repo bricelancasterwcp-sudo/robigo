@@ -157,6 +157,59 @@ class Verdict:
     reason: str
 
 
+@dataclass(frozen=True)
+class SuiteState:
+    """One suite run, parsed into the shape stage 4's judging step needs:
+    is this repo green, and did the run that produced these numbers actually
+    finish. `incomplete` is non-None whenever `_run_did_not_complete` sees a
+    collection error or an INTERNALERROR -- an abnormal exit code, an
+    interruption marker in the text, or both -- in which case `broken` and
+    `executed` describe a run that never ran everything, and no caller may
+    compare them against a baseline as though it did (plan 04's process
+    lesson 2, `docs/CARRIED-DEBT.md`: a mutant that broke a module's import
+    made pytest report `1 error`, which scored as exactly one failure while
+    three tests never ran at all -- the runner's own `Interrupted` line and
+    non-zero exit code were both there and both discarded by the code that
+    lesson was written about).
+
+    `incomplete` does NOT catch a silent `PYTEST_ADDOPTS=-x` early exit --
+    verified directly: a truncated run reporting `broken=1`, a shrunk
+    `executed`, exit code 1, and no `Interrupted:`/`INTERNALERROR` text
+    anywhere leaves `incomplete` at `None`. `_run_did_not_complete` only
+    fires on an abnormal exit code or an interruption-marker substring, and
+    an `-x` exit is neither (still exits 1, prints no interruption text) --
+    its own docstring says so explicitly: "`PYTEST_ADDOPTS=-x` does NOT
+    trip this check on its own ... that case is caught downstream by
+    `verify`'s own executed-total comparison against the baseline, not
+    here" (`verify.py:300-304`). `suite_state()` takes no `baseline`
+    parameter and cannot make that comparison itself, so a caller that
+    needs this case caught MUST compare `.executed` against its own
+    baseline before trusting `.broken`, exactly as `verify()` does --
+    skipping that comparison silently reintroduces the exact false
+    positive this project already paid for once (ambient `PYTEST_ADDOPTS=
+    -x` turned a real 2-failure mutant's report into exactly 1, which the
+    OLD `verify()` scored as a clean "exactly one net new failure").
+
+    `broken_ids` names every currently-broken test's node id, in the order
+    the runner reported them -- the same list invariant 6 (`verify`) uses to
+    isolate a single new failure, exposed here unfiltered because stage 4's
+    caller needs to compare a repair run's ids against a captured
+    diagnostic, not just a count.
+
+    Deliberately NOT `Baseline` or `Verdict` reused with optional fields
+    bolted on: `Baseline` has no `incomplete` because `baseline()` already
+    raises `WrongTreeError` and has no other "did not complete" case of its
+    own to represent, and `Verdict` is a judgement against a specific
+    `Mutant` with a `kept`/`reason` shape this caller does not need. A
+    fourth dataclass, not a reused one stretched to cover a shape it was
+    never designed for."""
+
+    broken: int
+    executed: int
+    broken_ids: tuple[str, ...]
+    incomplete: str | None
+
+
 # ---------------------------------------------------------------------------
 # Parsing the runner's report
 # ---------------------------------------------------------------------------
@@ -308,6 +361,45 @@ def _assert_in_clone(text: str, repo: Path) -> None:
             f"this result rather than silently scoring the real repo's "
             f"source as though it were the mutated copy"
         )
+
+
+# ---------------------------------------------------------------------------
+# The public suite-state accessor
+# ---------------------------------------------------------------------------
+
+
+def suite_state(repo: Path, runner: Runner, package: str) -> SuiteState:
+    """`repo`'s current suite state, whatever is on disk right now -- the
+    one public accessor stage 4 needs over this module's existing private
+    parsers, rather than a second module reimplementing the same regexes
+    and drifting from them (plan 01's process lesson 2, `docs/CARRIED-
+    DEBT.md`: per-task review cannot see cross-module inconsistency, and
+    this project has already paid for exactly that class of defect --
+    five path resolvers with one guarded `ValueError`, three copies of a
+    codec list -- more than once). `baseline` and `verify` above answer a
+    narrower question each ("what did an unmodified run cost", "did this
+    ONE mutant net exactly one new failure"); this answers the plain one a
+    caller checking a completed repair actually asks: is the suite green,
+    and did the run that says so actually finish.
+
+    Invariant 7 first, exactly as `baseline`/`verify` already require:
+    `_assert_in_clone` raises `WrongTreeError` before any of the four
+    figures below is trusted, so a caller of `suite_state` gets the same
+    "refuse rather than certify a result it cannot back up" guarantee every
+    other public function in this module gives, not a weaker one just
+    because this one is new. `package` is never derived here (unlike
+    `baseline`'s `_primary_package`) -- stage 4 already knows which package
+    it repaired, the same way `_apply_and_run` already knows which package
+    a specific `Mutant` belongs to, so there is no "no mutant in scope"
+    case for this function to solve."""
+    text = runner(repo, package)
+    _assert_in_clone(text, repo)
+    return SuiteState(
+        broken=_broken_count(text),
+        executed=_executed_total(text),
+        broken_ids=_broken_ids(text),
+        incomplete=_run_did_not_complete(text),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -854,7 +946,7 @@ _IMPORT_CHECK_TIMEOUT = 30
 _PYTEST_TIMEOUT = 300
 
 
-def pytest_runner(repo: Path, package: str) -> str:
+def pytest_runner(repo: Path, package: str, *, python: str = sys.executable) -> str:
     """The one real `Runner`: shells out to pytest inside `repo`. Never
     touches the network, a model daemon, or port 8081 -- this runs pytest
     and one `python -c` import check, both fully local subprocesses.
@@ -912,7 +1004,23 @@ def pytest_runner(repo: Path, package: str) -> str:
     code -- previously computed and thrown away entirely. A collection
     error exits 2 (`"Interrupted: N errors during collection"`), never 0
     or 1; `verify`'s `_run_did_not_complete` rejects on this before ever
-    asking "exactly one" (whole-branch review C1)."""
+    asking "exactly one" (whole-branch review C1).
+
+    `python` (task 8, fix round 1) names the interpreter both subprocesses
+    above run under -- keyword-only, defaulting to `sys.executable` so
+    every existing caller (every test in this file, `stage4_repair`'s own
+    prior hardcoded behaviour) keeps running under the SAME interpreter it
+    always did, with no call site needing to change. It exists at all
+    because this function used to hardcode `sys.executable` unconditionally,
+    which was fine in isolation but became a hazard the moment
+    `repair.attempt_repair` ALSO needed to choose an interpreter for the
+    loop side (`PythonAdapter`) -- two independent hardcoded choices within
+    one attempt is exactly the class of defect `docs/CARRIED-DEBT.md`
+    already tracks (five path resolvers, three codec lists): whichever of
+    the two callers picks the interpreter, this one single parameter is
+    now the only place that choice is made, and `repair.py` is responsible
+    for passing the SAME value to both this function and `PythonAdapter`
+    (see `attempt_repair`'s own docstring)."""
     env = os.environ.copy()
     env.pop("PYTEST_ADDOPTS", None)
     env.pop("PYTEST_PLUGINS", None)
@@ -920,7 +1028,7 @@ def pytest_runner(repo: Path, package: str) -> str:
     env["PYTHONPATH"] = str(repo / "src")
 
     import_check = subprocess.run(
-        [sys.executable, "-c", f"import {package}; print({package}.__file__)"],
+        [python, "-c", f"import {package}; print({package}.__file__)"],
         cwd=repo,
         env=env,
         capture_output=True,
@@ -934,7 +1042,7 @@ def pytest_runner(repo: Path, package: str) -> str:
     )
 
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "--tb=no", "-rfE"],
+        [python, "-m", "pytest", "-q", "--tb=no", "-rfE"],
         cwd=repo,
         env=env,
         capture_output=True,

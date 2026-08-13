@@ -3,15 +3,24 @@ from __future__ import annotations
 
 import inspect
 import json
+import subprocess
 from pathlib import Path
 
-from robigo.loop import OUTCOMES
+import pytest
+
+from robigo.loop import OUTCOMES, RunResult
 from robigo.model.client import ContextOverflowError, Generation
 from robigo.model.geometry import WindowPlan
+from robigo.profile import report as report_module
+from robigo.profile import repair as repair_module
+from robigo.profile.corpus_io import CorpusRecord
+from robigo.profile.discipline import Stage5
 from robigo.profile.fixtures import FIXTURES
+from robigo.profile.repair import Stage4
 from robigo.profile.report import profile_path, render_table, run_profile
 from robigo.profile.schema import SUPPORTED_FLOOR, Profile
 from robigo.profile.transcript import CallRecorder, CallReplayer
+from robigo.profile.verify import Baseline, SuiteState
 
 # weights_bytes/overhead_bytes are required positional fields of the real
 # WindowPlan (src/robigo/model/geometry.py) but are read by nothing this
@@ -181,6 +190,51 @@ def _run(client, **kw):
     return run_profile(client, PLAN, **{**args, **kw})
 
 
+# --- Task 7 (plan 05) fixtures: stage 4/5 wiring ---------------------------
+
+
+def _record(**over) -> CorpusRecord:
+    base = dict(
+        name="off_by_one", path=Path("src/pkg/mod.py"), line=2,
+        broken="    return len(items) - 1\n", fixed="    return len(items)\n",
+        test_id="tests/test_mod.py::test_len", diagnostic="exactly one",
+        operator="arith", source_repo="/tmp/src", source_sha="deadbeef",
+    )
+    base.update(over)
+    return CorpusRecord(**base)
+
+
+def _baseline(**over) -> Baseline:
+    base = dict(broken=0, executed=1, seconds=0.1)
+    base.update(over)
+    return Baseline(**base)
+
+
+def _stage4_repo(tmp_path: Path) -> Path:
+    """A real git repo, not just a directory tree -- the identical fixture
+    `tests/test_repair.py::_repo` uses, and for the identical reason (its
+    own docstring): `attempt_repair`'s `reset_clone` shells out to real
+    `git checkout -f`/`git reset --hard`/`git clean -fdq` unconditionally,
+    every single attempt, so a tree with no `.git` at all fails every one
+    of them before the monkeypatched `run`/`suite_state` below are ever
+    reached."""
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "pkg" / "mod.py").write_text(
+        "def n(items):\n    return len(items)\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_mod.py").write_text(
+        "from pkg.mod import n\ndef test_len():\n    assert n([1]) == 1\n",
+        encoding="utf-8")
+    run = lambda *argv: subprocess.run(
+        ["git", *argv], cwd=tmp_path, check=True, capture_output=True)
+    run("init", "-q")
+    run("config", "user.email", "test@example.com")
+    run("config", "user.name", "Test")
+    run("add", "-A")
+    run("commit", "-q", "-m", "initial")
+    return tmp_path
+
+
 def test_a_good_model_profiles_ready_and_records_provenance():
     # Fails if stage 2 is never reached for a family that clears stage 1
     # (verdict would stay LIMITED/UNUSABLE), if usable_window silently
@@ -247,6 +301,56 @@ def test_identity_and_provenance_arguments_pass_through_unchanged():
     assert profile.corpus == "fixtures-v2"
 
 
+def test_fixtures_and_corpus_dropped_thread_through_a_real_run_profile_call():
+    """Plan 05 task 2, fix round 1 (reviewer finding, 2026-08-10): the
+    CLI-level test (`tests/test_cli_profile.py::
+    test_corpus_flag_routes_records_and_carries_dropped`) monkeypatches
+    `cli.run_profile` itself before calling `cli.profile_main`, so it only
+    proves `cli.py` COMPUTES the right `fixtures=`/`corpus_dropped=`
+    kwargs -- it never calls the real `run_profile` body, which means
+    neither of the two lines task 2 actually added inside `run_profile`
+    (`stage2_codecs(client, seeds, fixtures=fixtures)` and `dropped.
+    extend(corpus_dropped)`) was protected by ANY test: the reviewer
+    confirmed both can be deleted with the full 630-test suite staying
+    green. This test calls `run_profile` directly with a real (non-mocked)
+    `_Good` client and the real module `PLAN`, the same pattern every
+    other test in this file already uses (see `_run`), so both lines
+    actually execute this time.
+
+    `fixtures=(FIXTURES[0],)` -- a ONE-fixture slice of the bundled five,
+    never the full default -- proves the threading two independent ways
+    at once:
+
+    1. `attempts` for `search_replace` must be exactly `seeds` (1), not
+       `len(FIXTURES) * seeds` (5): `stage2_codecs`'s own docstring states
+       `attempts == len(fixtures) * seeds` for whichever `fixtures` it was
+       actually handed, so a revert back to `stage2_codecs(client, seeds)`
+       -- which silently falls back to `stages.FIXTURES`, the bundled
+       default -- reports 5 instead of 1.
+    2. `lands` must be `1.0`, not merely "did not raise": `_Good.generate`
+       recognises a prompt by checking whether ANY bundled `FIXTURES`
+       entry's filename appears in it (`next((f for f in FIXTURES if
+       f.filename in prompt), None)`, matched against the GLOBAL bundled
+       set, not the `fixtures` argument this test passes) and answers
+       correctly when it finds one -- so a genuine stage-2 run against
+       `FIXTURES[0]` really does land, proving the call actually reached
+       the model and got scored, not merely that `attempts` happened to
+       come out right by coincidence.
+
+    `corpus_dropped=("mystery-dropped-marker",)` is a string that cannot
+    plausibly appear in `profile.dropped` any other way -- unlike
+    "stage 2" or "payload_corruption", which `run_profile` itself also
+    writes there for unrelated reasons -- so finding it in `profile.
+    dropped` is unambiguous proof `dropped.extend(corpus_dropped)` ran,
+    not a coincidental match against some other entry.
+    """
+    profile = _run(_Good(), fixtures=(FIXTURES[0],), seeds=1,
+                   corpus_dropped=("mystery-dropped-marker",))
+    assert profile.codecs["search_replace"].attempts == 1
+    assert profile.codecs["search_replace"].lands == 1.0
+    assert "mystery-dropped-marker" in profile.dropped
+
+
 def test_stage_one_fidelity_exactly_at_the_gate_still_opens_it():
     # Fails if the gate uses `>` instead of `>=` -- a family measured at
     # exactly the documented cutoff must still reach stage 2, the same
@@ -300,15 +404,20 @@ def test_training_ctx_is_the_models_real_training_context_not_the_planned_window
 
 
 def test_unmeasured_fields_are_none_and_named_in_dropped():
-    # I4 (whole-branch review, ruled 2026-08-10): payload_corruption and
-    # repeat_rate are hardcoded None -- no stage in this plan measures
-    # either -- and mutating both to 0.0 (which reads as "measured, no
-    # corruption") left every profile test green, because nothing checked
-    # the value OR that "not measured" was ever stated anywhere a reader
-    # could see it. Both properties are pinned here: the value assertions
-    # catch a 0.0 mutation directly; the dropped assertions catch a fix
-    # that nulls the value but never says so, which would still violate
-    # "anything not measured is stated as dropped".
+    # I4 (whole-branch review, ruled 2026-08-10): payload_corruption was
+    # hardcoded None -- no stage this plan builds measures it at all --
+    # and mutating it to 0.0 (which reads as "measured, no corruption")
+    # left every profile test green, because nothing checked the value OR
+    # that "not measured" was ever stated anywhere a reader could see it.
+    # `_run(_Good())` never wires a --repo, so stage 4/5 do not run here
+    # either (task 7), and repeat_rate is None for that separate reason --
+    # see test_repeat_rate_still_states_dropped_when_stage_5_does_not_run
+    # and test_repeat_rates_dropped_line_disappears_once_it_is_measured,
+    # below, for the case where repeat_rate IS measured. Both properties
+    # are pinned here: the value assertions catch a 0.0 mutation directly;
+    # the dropped assertions catch a fix that nulls the value but never
+    # says so, which would still violate "anything not measured is stated
+    # as dropped".
     profile = _run(_Good())
     assert profile.payload_corruption is None
     assert profile.repeat_rate is None
@@ -335,6 +444,18 @@ def test_the_table_names_the_window_limit_and_the_mode():
     assert "quick" in table
     # A quick profile must be visibly unquotable.
     assert "not publishable" in table
+
+
+def test_the_table_names_which_interpreter_produced_it():
+    # Fix round 2, IMPORTANT 2: a Profile is the artifact the project's
+    # kill criterion is read from, and --python is a knob that can change
+    # or void repair_rate -- invisible in the published table before this
+    # fix (`measured 3 seeds, quick mode, corpus ...` never named it).
+    # Uses a deliberately distinctive path so a render_table that prints
+    # SOME interpreter string (e.g. always sys.executable, ignoring the
+    # actual profile) cannot pass this test by accident.
+    table = render_table(_run(_Good(), python="/opt/distinctive/python3.99"))
+    assert "/opt/distinctive/python3.99" in table
 
 
 def test_a_full_run_is_not_marked_unpublishable():
@@ -377,6 +498,256 @@ def test_the_written_profile_round_trips_through_the_filesystem(tmp_path: Path):
 
     reloaded = Profile.from_json(json.loads(target.read_text(encoding="utf-8")))
     assert reloaded == profile
+
+
+# --- Task 7 (plan 05): stage 4/5 wired into run_profile --------------------
+
+
+def test_payload_corruption_stays_dropped_and_names_plan_06():
+    # Honesty rule 2 (task 7 brief): payload_corruption KEEPS its dropped
+    # line, unconditionally -- stage 3 is deferred to plan 06, not
+    # forgotten, and the line must say so explicitly rather than reading
+    # like every other "not measured" note.
+    profile = _run(_Good())
+    line = next(d for d in profile.dropped if "payload_corruption" in d)
+    assert "plan 06" in line
+
+
+def test_stage_4_does_not_run_without_a_best_codec():
+    # Spec 4.4: repair_rate None is "never measured", which is NOT a pass
+    # at the gate. _EnvelopeOkNothingLands clears stage 0 and stage 1 and
+    # genuinely RUNS stage 2 (codecs is non-empty, every entry landing at
+    # 0.0) -- select_best_codec(codecs) is None here for a reason no
+    # earlier "stage 0"/"stage 1"/"stage 2" dropped line already covers,
+    # which is exactly the case this function's own "stage 4" line exists
+    # to name.
+    profile = _run(_EnvelopeOkNothingLands())
+    assert profile.codecs != {}
+    assert profile.repair_rate is None
+    assert any("stage 4" in d for d in profile.dropped)
+
+
+def test_stage_4_does_not_run_without_a_repo():
+    # _Good() clears every upstream gate (best_codec() names a real
+    # codec), but no --repo is given -- the SECOND of the three things
+    # stage 4 needs, checked independently of the first.
+    profile = _run(_Good())
+    assert profile.repair_rate is None
+    assert any("stage 4" in d and "repo" in d for d in profile.dropped)
+
+
+def test_stage_4_does_not_run_without_corpus_records(tmp_path: Path):
+    # Third gate: repo and a baseline are both given, but records defaults
+    # to () -- there is nothing to repair without at least one verified
+    # mutant, and this must be named as its own reason, not silently
+    # folded into "no --repo" (which is not what happened here).
+    profile = _run(_Good(), repo=tmp_path, corpus_baseline=_baseline())
+    assert profile.repair_rate is None
+    assert any("stage 4" in d and "record" in d for d in profile.dropped)
+
+
+def test_stage_4_does_not_run_without_a_corpus_baseline(tmp_path: Path):
+    # Fourth gate: repo and records are both given, but no baseline --
+    # attempt_repair's own judgement needs Baseline.executed to compare
+    # a repair run's suite state against, and there is no safe one to
+    # assume on the caller's behalf.
+    profile = _run(_Good(), repo=tmp_path, records=(_record(),))
+    assert profile.repair_rate is None
+    assert any("stage 4" in d and "baseline" in d for d in profile.dropped)
+
+
+def test_repeat_rate_still_states_dropped_when_stage_5_does_not_run():
+    profile = _run(_Good())
+    assert profile.repeat_rate is None
+    assert any("repeat_rate" in d for d in profile.dropped)
+
+
+def test_repeat_rates_dropped_line_disappears_once_it_is_measured(monkeypatch):
+    # Honesty rule 1 (task 7 brief, spec 8.1): leaving repeat_rate's
+    # dropped line unconditional would have the profile declare a field
+    # unmeasured in the same payload that carries its real value.
+    # stage4_repair/stage5_discipline are monkeypatched at the report
+    # module boundary (report.py's own wiring is what this test protects,
+    # not repair.py's or discipline.py's internals -- those already have
+    # their own dedicated test files) so this is deterministic and does
+    # not need a real git repo or pytest subprocess.
+    fake_stage4 = Stage4(rate=0.5, attempts=10, records=5, per_record={},
+                         dropped=(), all_attempts=())
+    fake_stage5 = Stage5(turns_to_green_median=3.0, repeat_rate=0.2)
+    monkeypatch.setattr(report_module, "stage4_repair",
+                        lambda *a, **k: fake_stage4)
+    monkeypatch.setattr(report_module, "stage5_discipline",
+                        lambda *a, **k: fake_stage5)
+
+    profile = _run(_Good(), repo=Path("/fake-repo"), records=(_record(),),
+                   corpus_baseline=_baseline())
+
+    assert profile.repeat_rate == 0.2
+    assert not any("repeat_rate" in d for d in profile.dropped)
+
+
+def test_stage_4_and_5_results_are_wired_into_the_profile(monkeypatch):
+    # Beyond repeat_rate alone: every one of the four new Profile fields
+    # this task adds (repair_rate, repair_attempts, repair_records,
+    # turns_to_green_median) must come from the real Stage4/Stage5 the
+    # gate produced, not be dropped, swapped, or hardcoded on the way in.
+    # per_record joined this list on 2026-08-12: the Task 10 dry run found
+    # it dropped at exactly this wiring point, which no other test caught.
+    fake_stage4 = Stage4(rate=0.31, attempts=940, records=94,
+                         per_record={"rec-a": (3, 10), "rec-b": (0, 10)},
+                         dropped=("r seed 3: excluded",), all_attempts=())
+    fake_stage5 = Stage5(turns_to_green_median=4.5, repeat_rate=0.12)
+    monkeypatch.setattr(report_module, "stage4_repair",
+                        lambda *a, **k: fake_stage4)
+    monkeypatch.setattr(report_module, "stage5_discipline",
+                        lambda *a, **k: fake_stage5)
+
+    profile = _run(_Good(), repo=Path("/fake-repo"), records=(_record(),),
+                   corpus_baseline=_baseline())
+
+    assert profile.repair_rate == 0.31
+    assert profile.repair_attempts == 940
+    assert profile.repair_records == 94
+    assert profile.repair_per_record == {"rec-a": (3, 10), "rec-b": (0, 10)}
+    assert profile.turns_to_green_median == 4.5
+    assert profile.repeat_rate == 0.12
+    assert "r seed 3: excluded" in profile.dropped
+    assert not any("stage 4" in d for d in profile.dropped)
+
+
+def test_stage_4_receives_the_real_arguments_run_profile_was_given(monkeypatch):
+    # Fails if run_profile hardcodes, drops, or swaps any of records/repo/
+    # client/seeds/codec/base/turn_cap/python on their way into
+    # stage4_repair -- a round-trip comparison against the returned
+    # Profile alone (the test above) cannot catch a wrong argument that
+    # stage4_repair's OWN fake ignores, so this inspects the call itself.
+    captured = {}
+    record = _record()
+    repo = Path("/fake-repo")
+    base = _baseline()
+
+    def fake_stage4_repair(records, repo_arg, client, *, seeds, codec, base,
+                           turn_cap, python):
+        captured.update(records=records, repo=repo_arg, seeds=seeds,
+                        codec=codec, base=base, turn_cap=turn_cap,
+                        python=python)
+        return Stage4(rate=1.0, attempts=1, records=1, per_record={},
+                     dropped=(), all_attempts=())
+
+    monkeypatch.setattr(report_module, "stage4_repair", fake_stage4_repair)
+    monkeypatch.setattr(report_module, "stage5_discipline",
+                        lambda *a, **k: Stage5(None, None))
+
+    _run(_Good(), repo=repo, records=(record,), corpus_baseline=base,
+        seeds=1, turn_cap=3, python="/custom/python")
+
+    assert captured["records"] == (record,)
+    assert captured["repo"] == repo
+    assert captured["seeds"] == 1
+    assert captured["codec"] == "search_replace"
+    assert captured["base"] == base
+    assert captured["turn_cap"] == 3
+    assert captured["python"] == "/custom/python"
+
+
+def test_run_profiles_own_python_default_is_sys_executable(monkeypatch):
+    # The default matters as much as the plumbing (task 8, fix round 1,
+    # bullet 4): `sys.executable` is what `robigo corpus` was itself
+    # running under when it measured the frozen corpus's Baseline, so a
+    # caller of run_profile who never thinks about --python at all must
+    # still get an interpreter that AGREES with that baseline, not
+    # PythonAdapter's own .venv/venv/PATH search (which would resolve
+    # relative to --repo, a completely different tree, and need not have
+    # anything installed at all).
+    import sys as sys_module
+
+    captured = {}
+
+    def fake_stage4_repair(records, repo_arg, client, *, seeds, codec, base,
+                           turn_cap, python):
+        captured["python"] = python
+        return Stage4(rate=1.0, attempts=1, records=1, per_record={},
+                     dropped=(), all_attempts=())
+
+    monkeypatch.setattr(report_module, "stage4_repair", fake_stage4_repair)
+    monkeypatch.setattr(report_module, "stage5_discipline",
+                        lambda *a, **k: Stage5(None, None))
+
+    _run(_Good(), repo=Path("/fake-repo"), records=(_record(),),
+        corpus_baseline=_baseline(), seeds=1)
+
+    assert captured["python"] == sys_module.executable
+
+
+def test_a_full_run_profile_call_drives_a_real_stage_4_and_stage_5(
+    tmp_path: Path, monkeypatch
+):
+    # The genuine end-to-end path, with no report-level monkeypatching at
+    # all: a real git repo (the identical fixture test_repair.py uses),
+    # run through the real stage4_repair/stage5_discipline, monkeypatching
+    # only the INNERMOST seam (robigo.profile.repair.run/suite_state, the
+    # same seam tests/test_repair.py itself patches) so this test needs no
+    # daemon and no real pytest subprocess, while still proving run_profile
+    # wires `records`/`repo`/`client`/`seeds`/`codec`/`corpus_baseline`/
+    # `turn_cap` all the way through to a real Stage4/Stage5 computation,
+    # not merely to a function named the right thing.
+    #
+    # Fix round 2 added a SECOND innermost seam: `stage4_repair`'s own
+    # pre-flight interpreter check now calls `measure_baseline` for real
+    # before the grid starts. Mocked here too, returning `base` itself so
+    # the check trivially agrees with what this test's own suite_state
+    # mock reports -- real coverage of the check's OWN behaviour (a
+    # genuine disagreement) lives in test_repair.py, not here. `reset_
+    # clone` is left UNMOCKED: `_stage4_repo` is a real git repo, and
+    # exercising the real reset (not just the real Stage4 reduction) is
+    # exactly the "genuine end-to-end path" this test's own name promises.
+    repo = _stage4_repo(tmp_path)
+    record = _record(source_repo=str(repo))
+    base = _baseline()
+
+    monkeypatch.setattr(repair_module, "run", lambda *a, **k: RunResult(
+        outcome="pass", turns=2, exit_code=0, branch=None,
+        detail="tests pass", repeats=1))
+    monkeypatch.setattr(repair_module, "suite_state", lambda *a, **k: SuiteState(
+        broken=0, executed=1, broken_ids=(), incomplete=None))
+    monkeypatch.setattr(repair_module, "measure_baseline",
+                        lambda repo_arg, runner: base)
+
+    profile = _run(_Good(), repo=repo, records=(record,),
+                   corpus_baseline=base, seeds=1)
+
+    assert profile.repair_rate == 1.0
+    assert profile.repair_attempts == 1
+    assert profile.repair_records == 1
+    assert profile.turns_to_green_median == 2.0
+    assert profile.repeat_rate == pytest.approx(0.5)  # 1 repeat / 2 turns
+    assert not any("stage 4" in d for d in profile.dropped)
+    assert not any("repeat_rate" in d for d in profile.dropped)
+
+
+def test_the_table_shows_not_measured_for_repair_and_discipline_by_default():
+    # render_table (step 5): a profile whose stage 4/5 never ran must
+    # print "not measured", never a fabricated "0.0% of 0 attempts" that
+    # would read as a real, failing measurement.
+    table = render_table(_run(_Good()))
+    assert "repair        not measured" in table
+    assert "discipline    turns to green not measured, repeat rate not measured" in table
+
+
+def test_the_table_shows_repair_and_discipline_numbers_when_measured(monkeypatch):
+    fake_stage4 = Stage4(rate=0.5, attempts=10, records=5, per_record={},
+                         dropped=(), all_attempts=())
+    fake_stage5 = Stage5(turns_to_green_median=3.0, repeat_rate=0.2)
+    monkeypatch.setattr(report_module, "stage4_repair",
+                        lambda *a, **k: fake_stage4)
+    monkeypatch.setattr(report_module, "stage5_discipline",
+                        lambda *a, **k: fake_stage5)
+
+    table = render_table(_run(_Good(), repo=Path("/fake-repo"),
+                              records=(_record(),), corpus_baseline=_baseline()))
+
+    assert "repair        50.0% of 10 attempts over 5 records" in table
+    assert "discipline    turns to green 3.0 turns, repeat rate 20.0%" in table
 
 
 # --- CLI wiring: `robigo profile`, its --full/--seeds handling, and its --

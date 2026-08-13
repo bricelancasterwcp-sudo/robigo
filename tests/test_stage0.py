@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from robigo.model.client import Generation, ModelError, ServerContextOverflowError
+from robigo.model.client import (
+    Generation,
+    ModelError,
+    ServerContextOverflowError,
+    UnmeasuredGenerationError,
+)
 from robigo.model.geometry import WindowPlan
 from robigo.profile.stages import Stage0, _default_probe, stage0_window
 from robigo.profile.transcript import CallRecorder, CallReplayer
@@ -165,6 +170,57 @@ def test_a_rejected_window_falls_back_and_says_so():
     assert result.window < PLAN.window
     assert result.verified is True
     assert "rejected" in result.note
+    assert client.accepted, "the search must have found something accepted"
+    assert max(len(p) for p in client.accepted) == result.window
+    assert result.window <= 6000
+
+
+class _RejectsWithNoMeasurement(_Accepts):
+    """Reproduces the exact live-daemon shape task 8's live "run it twice"
+    exercise found (2026-08-10, see `UnmeasuredGenerationError`'s own
+    docstring in `client.py`): above `until`, the server does NOT cleanly
+    reject the probe (no `ContextOverflowError`) -- it raises the
+    "accepted, but the response carries no token counts at all" failure
+    instead. That is the shape a real, WARM Ollama daemon actually
+    returned for stage 0's very first probe (sized to fill the window
+    exactly, per this module's own docstring point 1), even though the
+    identical prompt against a COLD-loaded model got a clean rejection.
+    None of this file's other fakes reproduce it -- which is exactly why
+    it was invisible here until a real daemon was run against, twice."""
+
+    def __init__(self, until: int) -> None:
+        super().__init__()
+        self.until = until
+        # Same bookkeeping `_Rejects` uses, for the same reason: lets a
+        # test check the returned window against a probe the fake
+        # actually accepted, not merely one smaller than the plan.
+        self.accepted: list[str] = []
+
+    def generate(self, prompt: str, *, seed: int) -> Generation:
+        self.sizes.append(len(prompt))
+        if len(prompt) > self.until:
+            raise UnmeasuredGenerationError("no room left to generate")
+        self.accepted.append(prompt)
+        return Generation("ok", len(prompt), 1, False)
+
+
+def test_an_unmeasured_generation_is_treated_the_same_as_a_clean_rejection():
+    # The regression task 8's live exercise found: a real, warm Ollama
+    # daemon answered stage 0's full-window probe with a garbled,
+    # unmeasured completion (UnmeasuredGenerationError) instead of a
+    # clean ServerContextOverflowError, crashing the whole `robigo
+    # profile` run with an uncaught exception on the SECOND consecutive
+    # invocation (the first, against a cold-loaded model, worked fine).
+    # Fails if try_probe's except clause does not also catch
+    # UnmeasuredGenerationError -- structurally identical to
+    # test_a_rejected_window_falls_back_and_says_so above, but for the
+    # new exception rather than the pre-existing one, so a future change
+    # that narrows the catch back to ContextOverflowError alone is
+    # caught here specifically.
+    client = _RejectsWithNoMeasurement(until=6000)
+    result = stage0_window(client, PLAN)
+    assert result.window < PLAN.window
+    assert result.verified is True
     assert client.accepted, "the search must have found something accepted"
     assert max(len(p) for p in client.accepted) == result.window
     assert result.window <= 6000
