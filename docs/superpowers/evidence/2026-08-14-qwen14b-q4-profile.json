@@ -1,0 +1,974 @@
+{
+  "codecs": {
+    "search_replace": {
+      "attempts": 900,
+      "lands": 0.2822222222222222,
+      "max_file_tokens": null
+    },
+    "whole_file": {
+      "attempts": 900,
+      "lands": 0.9733333333333334,
+      "max_file_tokens": 41
+    }
+  },
+  "dropped": [
+    "payload_corruption: not measured -- stage 3 (payload-corruption generation) is deferred to plan 06, which runs only once this plan's gate passes; no stage this plan builds measures it",
+    "boltons/cacheutils.py:91 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/cacheutils.py:570 dropped_return: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/cacheutils.py:612 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/cacheutils.py:90 off_by_one: pytest did not complete normally (exit code 2)",
+    "boltons/cacheutils.py:183 dropped_return: broke too many: 12 broken vs baseline 0 (net 12, want exactly 1)",
+    "boltons/cacheutils.py:210 dropped_return: broke too many: 6 broken vs baseline 0 (net 6, want exactly 1)",
+    "boltons/cacheutils.py:395 dropped_return: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/cacheutils.py:398 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/cacheutils.py:469 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/cacheutils.py:524 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/cacheutils.py:569 dropped_return: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/cacheutils.py:611 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/cacheutils.py:734 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "max_records (12) reached; remaining targets and candidates not attempted",
+    "boltons/debugutils.py:109 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/debugutils.py:110 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/debugutils.py:64 inverted_condition: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/debugutils.py:74 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/debugutils.py:78 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/debugutils.py:119 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/debugutils.py:174 swapped_args: broke too many: 6 broken vs baseline 0 (net 6, want exactly 1)",
+    "boltons/debugutils.py:185 swapped_args: broke too many: 6 broken vs baseline 0 (net 6, want exactly 1)",
+    "boltons/debugutils.py:226 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/debugutils.py:234 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/debugutils.py: abandoned as barren after 10 unproductive candidates (kept 0 of 10); 36 candidate(s) not attempted",
+    "boltons/deprutils.py:55 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/deprutils.py:60 inverted_condition: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/deprutils.py:60 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/deprutils.py:54 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/deprutils.py:54 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:1058 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/dictutils.py:80 off_by_one: pytest did not complete normally (exit code 2)",
+    "boltons/dictutils.py:163 dropped_return: broke too many: 79 broken vs baseline 0 (net 79, want exactly 1)",
+    "boltons/dictutils.py:177 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/dictutils.py:189 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/dictutils.py:243 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:275 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/dictutils.py:282 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:340 dropped_return: broke too many: 15 broken vs baseline 0 (net 15, want exactly 1)",
+    "boltons/dictutils.py:374 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:377 dropped_return: broke too many: 5 broken vs baseline 0 (net 5, want exactly 1)",
+    "boltons/dictutils.py:405 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:504 dropped_return: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/dictutils.py:529 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:571 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:598 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:604 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/dictutils.py:610 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/dictutils.py:616 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/dictutils.py:619 dropped_return: broke too many: 18 broken vs baseline 0 (net 18, want exactly 1)",
+    "boltons/dictutils.py:642 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:646 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:650 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:842 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:875 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:880 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:902 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:1010 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/dictutils.py:1016 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "max_records (12) reached; remaining targets and candidates not attempted",
+    "boltons/easterutils.py:43 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/ecoutils.py:180 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/ecoutils.py:181 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/ecoutils.py:287 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/ecoutils.py:354 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/ecoutils.py:360 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/ecoutils.py:370 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/ecoutils.py:414 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/ecoutils.py:456 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/ecoutils.py:463 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/ecoutils.py:180 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/ecoutils.py: abandoned as barren after 10 unproductive candidates (kept 0 of 10); 38 candidate(s) not attempted",
+    "boltons/excutils.py:164 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/excutils.py:167 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/excutils.py:233 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/excutils.py:251 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/excutils.py:262 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/excutils.py:282 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/excutils.py:100 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/excutils.py:114 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/excutils.py:122 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/excutils.py:129 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/excutils.py: abandoned as barren after 10 unproductive candidates (kept 0 of 10); 60 candidate(s) not attempted",
+    "boltons/fileutils.py:50 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/fileutils.py:51 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/fileutils.py:52 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/fileutils.py:215 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/fileutils.py:217 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/fileutils.py:220 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/fileutils.py:261 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/fileutils.py:268 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/fileutils.py:271 flipped_comparison: pytest did not complete normally (exit code 2)",
+    "boltons/fileutils.py:176 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/fileutils.py: abandoned as barren after 10 unproductive candidates (kept 0 of 10); 96 candidate(s) not attempted",
+    "boltons/formatutils.py:96 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:137 dropped_return: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/formatutils.py:89 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:262 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:272 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:275 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:330 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:333 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:339 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:342 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:110 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:125 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:125 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:125 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:233 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:250 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:262 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:348 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:351 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:131 flipped_comparison: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/formatutils.py:131 flipped_comparison: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/formatutils.py:170 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:179 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:187 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:211 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:238 inverted_condition: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:269 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:354 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:180 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:237 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:249 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:347 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/formatutils.py:134 off_by_one: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/formatutils.py:178 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:102 dropped_return: broke too many: 25 broken vs baseline 0 (net 25, want exactly 1)",
+    "boltons/funcutils.py:131 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:142 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:159 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:190 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/funcutils.py:232 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:399 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:450 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:492 dropped_return: broke too many: 15 broken vs baseline 0 (net 15, want exactly 1)",
+    "boltons/funcutils.py:618 dropped_return: broke too many: 18 broken vs baseline 0 (net 18, want exactly 1)",
+    "boltons/funcutils.py:658 dropped_return: broke too many: 18 broken vs baseline 0 (net 18, want exactly 1)",
+    "boltons/funcutils.py:1012 dropped_return: broke too many: 21 broken vs baseline 0 (net 21, want exactly 1)",
+    "boltons/funcutils.py:1035 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:1080 dropped_return: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/funcutils.py:77 dropped_return: broke too many: 25 broken vs baseline 0 (net 25, want exactly 1)",
+    "boltons/funcutils.py:111 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:186 swapped_args: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/funcutils.py:224 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:225 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:226 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:228 inverted_condition: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:229 inverted_condition: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:230 inverted_condition: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:254 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:258 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:278 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:282 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:399 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:447 inverted_condition: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:449 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:576 swapped_args: broke too many: 18 broken vs baseline 0 (net 18, want exactly 1)",
+    "boltons/funcutils.py:584 swapped_args: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/funcutils.py:736 dropped_return: broke too many: 22 broken vs baseline 0 (net 22, want exactly 1)",
+    "boltons/funcutils.py:778 dropped_return: broke too many: 25 broken vs baseline 0 (net 25, want exactly 1)",
+    "boltons/funcutils.py:829 dropped_return: broke too many: 18 broken vs baseline 0 (net 18, want exactly 1)",
+    "boltons/funcutils.py:869 dropped_return: broke too many: 22 broken vs baseline 0 (net 22, want exactly 1)",
+    "boltons/funcutils.py:919 dropped_return: broke too many: 21 broken vs baseline 0 (net 21, want exactly 1)",
+    "boltons/funcutils.py:930 dropped_return: broke too many: 7 broken vs baseline 0 (net 7, want exactly 1)",
+    "boltons/funcutils.py:937 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/funcutils.py:997 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:125 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:127 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:228 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:229 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:230 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:297 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:301 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:393 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/funcutils.py:569 swapped_args: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/funcutils.py:588 swapped_args: broke too many: 17 broken vs baseline 0 (net 17, want exactly 1)",
+    "boltons/funcutils.py:615 inverted_condition: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "max_records (12) reached; remaining targets and candidates not attempted",
+    "boltons/ioutils.py:52 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/ioutils.py:522 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/ioutils.py:132 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/ioutils.py:137 swapped_args: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/ioutils.py:141 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/ioutils.py:144 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/ioutils.py:148 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/ioutils.py:152 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/ioutils.py:156 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/ioutils.py:160 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/ioutils.py: abandoned as barren after 10 unproductive candidates (kept 0 of 10); 115 candidate(s) not attempted",
+    "boltons/iterutils.py:76 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/iterutils.py:92 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/iterutils.py:106 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/iterutils.py:313 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/iterutils.py:469 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/iterutils.py:510 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/iterutils.py:564 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/iterutils.py:580 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/iterutils.py:761 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/iterutils.py:817 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/iterutils.py:831 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/iterutils.py:930 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/iterutils.py:965 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/iterutils.py:994 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/iterutils.py:1020 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/iterutils.py:1047 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/iterutils.py:1052 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/iterutils.py:1095 dropped_return: broke too many: 16 broken vs baseline 0 (net 16, want exactly 1)",
+    "boltons/iterutils.py:1301 dropped_return: broke too many: 16 broken vs baseline 0 (net 16, want exactly 1)",
+    "boltons/iterutils.py:1382 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/iterutils.py:1442 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/iterutils.py:1595 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/iterutils.py:1636 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/iterutils.py:173 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/iterutils.py:306 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "max_records (12) reached; remaining targets and candidates not attempted",
+    "boltons/jsonutils.py:45 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:231 flipped_comparison: pytest did not complete normally (exit code 2)",
+    "boltons/jsonutils.py:96 flipped_comparison: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/jsonutils.py:174 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:209 dropped_return: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/jsonutils.py:96 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:97 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:161 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:195 flipped_comparison: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/jsonutils.py:216 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:226 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/jsonutils.py:93 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:110 off_by_one: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/jsonutils.py:155 inverted_condition: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/jsonutils.py:179 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:196 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:198 swapped_args: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/jsonutils.py:218 inverted_condition: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/jsonutils.py:240 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:240 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:245 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:104 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:108 off_by_one: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/jsonutils.py:196 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:198 off_by_one: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/jsonutils.py:204 swapped_args: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/jsonutils.py:241 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:246 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:248 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:249 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:104 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:108 off_by_one: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/jsonutils.py:223 inverted_condition: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:258 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/jsonutils.py:259 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "max_records (12) reached; remaining targets and candidates not attempted",
+    "boltons/listutils.py:95 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/listutils.py:106 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/listutils.py:119 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/listutils.py:133 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/listutils.py:168 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/listutils.py:230 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/listutils.py:236 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/listutils.py:250 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/listutils.py:286 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/listutils.py:299 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/listutils.py:320 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/listutils.py:109 flipped_comparison: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/listutils.py:117 flipped_comparison: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/listutils.py:118 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/listutils.py:122 flipped_comparison: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/listutils.py:132 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/listutils.py:156 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/listutils.py:285 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/listutils.py:289 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "max_records (12) reached; remaining targets and candidates not attempted",
+    "boltons/mathutils.py:69 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/mathutils.py:94 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/mathutils.py:121 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/mathutils.py:66 flipped_comparison: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/mathutils.py:89 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/mathutils.py:91 swapped_args: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/mathutils.py:92 flipped_comparison: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/mathutils.py:115 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/mathutils.py:118 swapped_args: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/mathutils.py:119 inverted_condition: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/mathutils.py:179 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/mathutils.py:203 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/mathutils.py:209 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "max_records (12) reached; remaining targets and candidates not attempted",
+    "boltons/mboxutils.py:41 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/mboxutils.py:41 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/mboxutils.py:41 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/mboxutils.py:71 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/mboxutils.py:85 inverted_condition: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/mboxutils.py:100 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/mboxutils.py:102 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/mboxutils.py:70 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/mboxutils.py:70 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/mboxutils.py:100 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/mboxutils.py: abandoned as barren after 10 unproductive candidates (kept 0 of 10); 9 candidate(s) not attempted",
+    "boltons/namedutils.py:219 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/namedutils.py:385 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/namedutils.py:148 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/namedutils.py:307 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/namedutils.py:163 inverted_condition: pytest did not complete normally (exit code 2)",
+    "boltons/namedutils.py:186 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/namedutils.py:204 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/namedutils.py:322 inverted_condition: pytest did not complete normally (exit code 2)",
+    "boltons/namedutils.py:345 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/namedutils.py:369 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/namedutils.py:175 inverted_condition: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/namedutils.py:186 off_by_one: pytest did not complete normally (exit code 2)",
+    "boltons/namedutils.py:334 inverted_condition: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/namedutils.py:345 off_by_one: pytest did not complete normally (exit code 2)",
+    "boltons/namedutils.py:149 swapped_args: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/namedutils.py:186 off_by_one: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/namedutils.py:308 swapped_args: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/namedutils.py:313 inverted_condition: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/namedutils.py:315 inverted_condition: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/namedutils.py:345 off_by_one: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/namedutils.py:170 off_by_one: pytest did not complete normally (exit code 2)",
+    "boltons/namedutils.py:329 off_by_one: pytest did not complete normally (exit code 2)",
+    "boltons/namedutils.py:163 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/namedutils.py:322 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/namedutils.py:157 off_by_one: pytest did not complete normally (exit code 2)",
+    "boltons/namedutils.py:316 off_by_one: pytest did not complete normally (exit code 2)",
+    "boltons/namedutils.py:154 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/namedutils.py:313 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/pathutils.py:131 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/pathutils.py:130 swapped_args: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/queueutils.py:170 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/queueutils.py:185 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/queueutils.py:189 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/queueutils.py:112 swapped_args: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/queueutils.py:138 swapped_args: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/queueutils.py:145 off_by_one: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/queueutils.py:150 off_by_one: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/queueutils.py:165 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/queueutils.py:168 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/queueutils.py:183 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/queueutils.py:105 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/setutils.py:123 dropped_return: broke too many: 6 broken vs baseline 0 (net 6, want exactly 1)",
+    "boltons/setutils.py:170 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/setutils.py:207 dropped_return: broke too many: 8 broken vs baseline 0 (net 8, want exactly 1)",
+    "boltons/setutils.py:210 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/setutils.py:213 dropped_return: broke too many: 7 broken vs baseline 0 (net 7, want exactly 1)",
+    "boltons/setutils.py:217 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/setutils.py:220 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/setutils.py:233 dropped_return: broke too many: 5 broken vs baseline 0 (net 5, want exactly 1)",
+    "boltons/setutils.py:271 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/setutils.py:280 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/setutils.py:290 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/setutils.py:311 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/setutils.py:328 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/setutils.py:388 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/setutils.py:392 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/setutils.py:410 dropped_return: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/setutils.py:422 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/setutils.py:438 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/setutils.py:444 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "max_records (12) reached; remaining targets and candidates not attempted",
+    "boltons/socketutils.py:89 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:90 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:90 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:91 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:91 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:235 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:258 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:364 dropped_return: broke too many: 6 broken vs baseline 0 (net 6, want exactly 1)",
+    "boltons/socketutils.py:419 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/socketutils.py:463 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:469 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:507 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:513 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:660 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:670 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:697 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/socketutils.py:190 dropped_return: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/socketutils.py:195 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/socketutils.py:197 off_by_one: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/socketutils.py:421 off_by_one: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/socketutils.py:465 off_by_one: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/socketutils.py:469 swapped_args: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/socketutils.py:513 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:691 flipped_comparison: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/socketutils.py:694 flipped_comparison: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/socketutils.py:701 flipped_comparison: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/socketutils.py:222 flipped_comparison: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/socketutils.py:224 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/socketutils.py:227 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:233 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:254 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:255 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:326 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/socketutils.py:328 inverted_condition: verification timed out (Command '['/home/brice/workspace/robigo/.venv/bin/python', '-m', 'pytest', '-q', '--tb=no', '-rfE']' timed out after 300 seconds), skipped (I6)",
+    "time budget (300s) exceeded; remaining targets and candidates not attempted",
+    "boltons/statsutils.py:745 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:752 dropped_return: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:190 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:193 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:208 dropped_return: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/statsutils.py:235 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:236 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:249 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:260 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:261 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:273 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:289 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:302 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:303 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:320 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:321 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:333 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:343 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:356 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:357 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:374 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:398 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:422 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:452 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:461 dropped_return: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/statsutils.py:477 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/statsutils.py:492 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:553 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/statsutils.py:603 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/statsutils.py:723 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:756 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/statsutils.py:786 inverted_condition: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:799 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:801 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:146 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:147 inverted_condition: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/statsutils.py:148 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:150 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/statsutils.py:187 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:204 inverted_condition: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:205 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:259 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/statsutils.py:271 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "max_records (12) reached; remaining targets and candidates not attempted",
+    "boltons/strutils.py:76 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:86 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:112 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:123 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:142 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:198 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:277 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:338 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:357 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:473 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:620 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:801 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:880 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:1095 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:1130 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:1252 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/strutils.py:1283 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:1326 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/strutils.py:139 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:141 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:181 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:183 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:196 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:197 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/strutils.py:217 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "max_records (12) reached; remaining targets and candidates not attempted",
+    "boltons/tableutils.py:95 dropped_return: broke too many: 4 broken vs baseline 0 (net 4, want exactly 1)",
+    "boltons/tableutils.py:118 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:123 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:137 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:169 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:172 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:175 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:178 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:183 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:186 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:189 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:192 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:197 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:200 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:203 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:206 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:321 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:412 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/tableutils.py:415 dropped_return: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/tableutils.py:418 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:588 dropped_return: broke too many: 5 broken vs baseline 0 (net 5, want exactly 1)",
+    "boltons/tableutils.py:92 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:123 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:169 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:183 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:271 off_by_one: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/tableutils.py:279 inverted_condition: broke too many: 6 broken vs baseline 0 (net 6, want exactly 1)",
+    "boltons/tableutils.py:306 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:316 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:326 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:337 off_by_one: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:360 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:361 swapped_args: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/tableutils.py:363 flipped_comparison: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/tableutils.py:365 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:366 swapped_args: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/tableutils.py:386 inverted_condition: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tableutils.py:400 flipped_comparison: survived: 0 broken vs baseline 0 (net 0)",
+    "max_records (12) reached; remaining targets and candidates not attempted",
+    "boltons/tbutils.py:614 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tbutils.py:623 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tbutils.py:143 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/tbutils.py:165 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/tbutils.py:195 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tbutils.py:198 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tbutils.py:215 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/tbutils.py:221 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/tbutils.py:278 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tbutils.py:311 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/tbutils.py:317 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tbutils.py:323 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tbutils.py:326 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tbutils.py:329 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tbutils.py:339 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tbutils.py:352 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/tbutils.py:415 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tbutils.py:428 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tbutils.py:440 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tbutils.py:543 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/tbutils.py:587 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "max_records (12) reached; remaining targets and candidates not attempted",
+    "boltons/timeutils.py:91 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/timeutils.py:130 dropped_return: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/timeutils.py:188 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/timeutils.py:199 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/timeutils.py:245 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/timeutils.py:277 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/timeutils.py:304 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/timeutils.py:460 swapped_args: pytest did not complete normally (exit code 2)",
+    "boltons/timeutils.py:513 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/timeutils.py:526 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/timeutils.py: abandoned as barren after 10 unproductive candidates (kept 0 of 10); 135 candidate(s) not attempted",
+    "boltons/typeutils.py:105 dropped_return: broke too many: 24 broken vs baseline 0 (net 24, want exactly 1)",
+    "boltons/typeutils.py:167 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/typeutils.py:128 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/typeutils.py:180 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/typeutils.py:82 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/typeutils.py:128 swapped_args: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/typeutils.py:130 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/typeutils.py:81 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/typeutils.py:100 inverted_condition: pytest did not complete normally (exit code 2)",
+    "boltons/urlutils.py:209 dropped_return: broke too many: 2 broken vs baseline 0 (net 2, want exactly 1)",
+    "boltons/urlutils.py:222 dropped_return: broke too many: 44 broken vs baseline 0 (net 44, want exactly 1)",
+    "boltons/urlutils.py:238 dropped_return: broke too many: 24 broken vs baseline 0 (net 24, want exactly 1)",
+    "boltons/urlutils.py:249 dropped_return: broke too many: 7 broken vs baseline 0 (net 7, want exactly 1)",
+    "boltons/urlutils.py:260 dropped_return: broke too many: 3 broken vs baseline 0 (net 3, want exactly 1)",
+    "boltons/urlutils.py:273 dropped_return: survived: 0 broken vs baseline 0 (net 0)",
+    "boltons/urlutils.py:301 dropped_return: broke too many: 16 broken vs baseline 0 (net 16, want exactly 1)",
+    "boltons/urlutils.py:328 dropped_return: broke too many: 18 broken vs baseline 0 (net 18, want exactly 1)",
+    "boltons/urlutils.py:390 dropped_return: broke too many: 10 broken vs baseline 0 (net 10, want exactly 1)",
+    "boltons/urlutils.py:882 dropped_return: broke too many: 74 broken vs baseline 0 (net 74, want exactly 1)",
+    "boltons/urlutils.py: abandoned as barren after 10 unproductive candidates (kept 0 of 10); 253 candidate(s) not attempted",
+    "namedutils-inverted_condition-154 (boltons/namedutils.py:154): wrapped body does not parse as Python ('(' was never closed (<unknown>, line 2)), dropped at conversion time (I4)",
+    "namedutils-inverted_condition-156 (boltons/namedutils.py:156): wrapped body does not parse as Python (invalid syntax (<unknown>, line 2)), dropped at conversion time (I4)",
+    "pathutils-flipped_comparison-160 (boltons/pathutils.py:160): wrapped body does not parse as Python (invalid syntax (<unknown>, line 2)), dropped at conversion time (I4)",
+    "tbutils-dropped_return-126 (boltons/tbutils.py:126): wrapped body does not parse as Python ('(' was never closed (<unknown>, line 2)), dropped at conversion time (I4)"
+  ],
+  "envelope_fidelity": 1.0,
+  "envelope_level": 0,
+  "family": "qwen2.5-coder-14b-instruct-q4_K_M",
+  "kv_bits": 16,
+  "kv_kib_per_token": 192,
+  "measured": {
+    "corpus": "boltons-gate-v1",
+    "mode": "full",
+    "python": "/home/brice/workspace/robigo/.venv/bin/python",
+    "seeds": 10
+  },
+  "model": "qwen2.5-coder:14b-instruct-q4_K_M",
+  "payload_corruption": null,
+  "quant": "q4_K_M",
+  "repair_attempts": 940,
+  "repair_per_record": {
+    "cacheutils-dropped_return-165": [
+      0,
+      10
+    ],
+    "cacheutils-dropped_return-285": [
+      0,
+      10
+    ],
+    "cacheutils-dropped_return-435": [
+      0,
+      10
+    ],
+    "cacheutils-dropped_return-476": [
+      0,
+      10
+    ],
+    "cacheutils-dropped_return-634": [
+      0,
+      10
+    ],
+    "dictutils-dropped_return-1013": [
+      0,
+      10
+    ],
+    "dictutils-dropped_return-271": [
+      0,
+      10
+    ],
+    "dictutils-dropped_return-381": [
+      0,
+      10
+    ],
+    "dictutils-dropped_return-393": [
+      0,
+      10
+    ],
+    "dictutils-dropped_return-431": [
+      0,
+      10
+    ],
+    "formatutils-dropped_return-112": [
+      0,
+      10
+    ],
+    "formatutils-dropped_return-327": [
+      0,
+      10
+    ],
+    "formatutils-flipped_comparison-128": [
+      0,
+      10
+    ],
+    "formatutils-flipped_comparison-180": [
+      0,
+      10
+    ],
+    "formatutils-off_by_one-235": [
+      0,
+      10
+    ],
+    "funcutils-swapped_args-261": [
+      0,
+      10
+    ],
+    "funcutils-swapped_args-322": [
+      0,
+      10
+    ],
+    "funcutils-swapped_args-582": [
+      0,
+      10
+    ],
+    "funcutils-swapped_args-583": [
+      0,
+      10
+    ],
+    "funcutils-swapped_args-602": [
+      0,
+      10
+    ],
+    "gcutils-dropped_return-116": [
+      0,
+      10
+    ],
+    "gcutils-inverted_condition-101": [
+      0,
+      10
+    ],
+    "gcutils-swapped_args-101": [
+      0,
+      10
+    ],
+    "gcutils-swapped_args-113": [
+      0,
+      10
+    ],
+    "iterutils-dropped_return-202": [
+      0,
+      10
+    ],
+    "iterutils-dropped_return-232": [
+      0,
+      10
+    ],
+    "iterutils-inverted_condition-155": [
+      0,
+      10
+    ],
+    "iterutils-inverted_condition-330": [
+      0,
+      10
+    ],
+    "iterutils-swapped_args-283": [
+      0,
+      10
+    ],
+    "jsonutils-flipped_comparison-104": [
+      0,
+      20
+    ],
+    "jsonutils-flipped_comparison-106": [
+      0,
+      10
+    ],
+    "jsonutils-inverted_condition-183": [
+      0,
+      10
+    ],
+    "jsonutils-off_by_one-186": [
+      0,
+      10
+    ],
+    "listutils-flipped_comparison-126": [
+      0,
+      10
+    ],
+    "listutils-flipped_comparison-136": [
+      0,
+      10
+    ],
+    "listutils-flipped_comparison-181": [
+      0,
+      10
+    ],
+    "listutils-flipped_comparison-184": [
+      0,
+      10
+    ],
+    "listutils-flipped_comparison-207": [
+      0,
+      10
+    ],
+    "mathutils-dropped_return-184": [
+      0,
+      10
+    ],
+    "mathutils-dropped_return-189": [
+      0,
+      10
+    ],
+    "mathutils-dropped_return-194": [
+      0,
+      10
+    ],
+    "mathutils-dropped_return-197": [
+      0,
+      10
+    ],
+    "mathutils-swapped_args-69": [
+      0,
+      10
+    ],
+    "namedutils-dropped_return-358": [
+      0,
+      10
+    ],
+    "namedutils-inverted_condition-154": [
+      0,
+      10
+    ],
+    "namedutils-inverted_condition-156": [
+      0,
+      10
+    ],
+    "namedutils-off_by_one-214": [
+      0,
+      10
+    ],
+    "namedutils-off_by_one-380": [
+      0,
+      10
+    ],
+    "pathutils-dropped_return-183": [
+      0,
+      10
+    ],
+    "pathutils-flipped_comparison-117": [
+      0,
+      10
+    ],
+    "pathutils-flipped_comparison-158": [
+      0,
+      10
+    ],
+    "pathutils-flipped_comparison-160": [
+      0,
+      10
+    ],
+    "pathutils-off_by_one-115": [
+      0,
+      10
+    ],
+    "queueutils-dropped_return-200": [
+      0,
+      10
+    ],
+    "queueutils-dropped_return-216": [
+      0,
+      10
+    ],
+    "queueutils-off_by_one-216": [
+      0,
+      10
+    ],
+    "queueutils-swapped_args-204": [
+      0,
+      10
+    ],
+    "queueutils-swapped_args-220": [
+      0,
+      10
+    ],
+    "setutils-dropped_return-182": [
+      0,
+      10
+    ],
+    "setutils-dropped_return-294": [
+      0,
+      10
+    ],
+    "setutils-dropped_return-342": [
+      0,
+      10
+    ],
+    "setutils-dropped_return-554": [
+      0,
+      10
+    ],
+    "setutils-off_by_one-58": [
+      0,
+      10
+    ],
+    "socketutils-dropped_return-176": [
+      0,
+      10
+    ],
+    "socketutils-dropped_return-282": [
+      0,
+      10
+    ],
+    "socketutils-dropped_return-491": [
+      0,
+      10
+    ],
+    "socketutils-dropped_return-520": [
+      0,
+      10
+    ],
+    "socketutils-dropped_return-557": [
+      0,
+      10
+    ],
+    "statsutils-dropped_return-248": [
+      0,
+      10
+    ],
+    "statsutils-dropped_return-272": [
+      0,
+      10
+    ],
+    "statsutils-inverted_condition-784": [
+      0,
+      10
+    ],
+    "statsutils-swapped_args-288": [
+      0,
+      10
+    ],
+    "statsutils-swapped_args-804": [
+      0,
+      10
+    ],
+    "strutils-dropped_return-1007": [
+      0,
+      10
+    ],
+    "strutils-dropped_return-1297": [
+      0,
+      10
+    ],
+    "strutils-dropped_return-265": [
+      0,
+      10
+    ],
+    "strutils-dropped_return-413": [
+      0,
+      10
+    ],
+    "strutils-swapped_args-239": [
+      0,
+      10
+    ],
+    "tableutils-dropped_return-100": [
+      0,
+      10
+    ],
+    "tableutils-dropped_return-126": [
+      0,
+      10
+    ],
+    "tableutils-dropped_return-152": [
+      0,
+      10
+    ],
+    "tableutils-dropped_return-423": [
+      0,
+      10
+    ],
+    "tableutils-inverted_condition-297": [
+      0,
+      10
+    ],
+    "tbutils-dropped_return-109": [
+      0,
+      10
+    ],
+    "tbutils-dropped_return-115": [
+      0,
+      10
+    ],
+    "tbutils-dropped_return-126": [
+      0,
+      10
+    ],
+    "tbutils-dropped_return-218": [
+      0,
+      10
+    ],
+    "tbutils-inverted_condition-594": [
+      0,
+      10
+    ],
+    "typeutils-dropped_return-86": [
+      0,
+      10
+    ],
+    "typeutils-dropped_return-89": [
+      0,
+      10
+    ],
+    "typeutils-dropped_return-92": [
+      0,
+      10
+    ],
+    "typeutils-dropped_return-95": [
+      0,
+      10
+    ],
+    "typeutils-off_by_one-98": [
+      0,
+      10
+    ]
+  },
+  "repair_rate": 0.0,
+  "repair_records": 93,
+  "repeat_rate": 0.39067968318290663,
+  "training_ctx": 32768,
+  "turns_to_green_median": null,
+  "usable_window": 1783,
+  "verdict": "LIMITED",
+  "window_limited_by": "user_cap"
+}
