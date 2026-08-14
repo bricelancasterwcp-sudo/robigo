@@ -1,6 +1,23 @@
 # tests/test_committed_transcripts_replay.py
 from __future__ import annotations
 
+import pytest
+
+from robigo.profile import stages as _stages
+
+
+@pytest.fixture(autouse=True)
+def _v1_filler_era(monkeypatch):
+    """The committed transcripts in this file were recorded under the v1
+    stage-0 filler ("token " repeated). The 2026-08-14 amendment replaced
+    it (the degeneracy triggered a stats-free-200 daemon bug on 14B chat
+    prompts >~1.8k tokens, collapsing a subject row's verified window),
+    which changes stage-0 prompts and would TranscriptMiss every v1-era
+    recording. Replaying history under history's own instrument is the
+    honest fix; new recordings use v2."""
+    monkeypatch.setattr(_stages, "_FILLER_WORDS", "token ")
+
+
 import json
 from pathlib import Path
 

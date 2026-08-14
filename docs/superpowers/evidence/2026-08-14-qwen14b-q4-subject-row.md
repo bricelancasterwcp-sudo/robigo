@@ -74,3 +74,29 @@ run detached 17:55–01:25 (7h30m), wrapper
 `~/workspace/robigo-14b-run.sh`, exit 0. Profile preserved beside this
 document as
 [`2026-08-14-qwen14b-q4-profile.json`](2026-08-14-qwen14b-q4-profile.json).
+
+## Erratum, 2026-08-14 (same day): the mechanism was narrower than claimed
+
+This document attributed the window collapse to "the request shape" —
+fixed `num_ctx=8192`. Preparing the third run falsified that: with the
+identical options (`num_ctx=8192`, `num_predict=1024`, `/api/chat`),
+this daemon serves normal-density 3.2k-token prompts to this model
+cleanly, cold or warm. The failing prompts were **stage 0's own
+filler** — the single word "token " repeated thousands of times — and
+the failure reproduces on demand with that degenerate content (a
+stats-free 200: content present, `prompt_eval_count` absent,
+`done: false`) while word-list filler of the same size passes.
+
+So the corrected chain: **probe content × a daemon bug on degenerate
+repeated-token chat prompts**, tripping reliably above ~1.8k tokens
+for this model. The row's numbers stand unchanged — stage 0 verified
+1,783 tokens and the run was context-starved exactly as described —
+but the cause was the instrument's own probe text, not the request
+shape in general. Both halves of this hazard were already on the books
+(this project's probe-density debt; assay's "one repeated token
+tokenizes unrepresentatively" design note), and assay's shape matrix
+passed the same daemon because its filler is non-degenerate.
+
+The stage-0 filler is amended to a word list (non-silent; v1-era
+committed transcripts replay under their own filler, declared in the
+replay tests). The third run proceeds under filler v2.
