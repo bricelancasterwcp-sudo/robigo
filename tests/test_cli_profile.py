@@ -43,7 +43,7 @@ def test_window_flag_is_passed_to_plan_window_as_the_user_cap(monkeypatch):
     `plan_window`, nothing downstream of it."""
     seen = {}
 
-    def fake_plan_window(backend, model, host, user_cap, *, kv_bits=16, gguf_path=None):
+    def fake_plan_window(backend, model, host, user_cap, *, kv_bits=16, profile_num_predict=1024, gguf_path=None):
         seen["user_cap"] = user_cap
         return WindowPlan(window=4096, limited_by="user_cap", free_vram=None,
                           kv_per_token=57344, weights_bytes=0, overhead_bytes=0,
@@ -64,7 +64,7 @@ def test_no_window_flag_still_passes_none(monkeypatch):
     above; it pins the default's identity, not just its truthiness."""
     seen = {}
 
-    def fake_plan_window(backend, model, host, user_cap, *, kv_bits=16, gguf_path=None):
+    def fake_plan_window(backend, model, host, user_cap, *, kv_bits=16, profile_num_predict=1024, gguf_path=None):
         seen["user_cap"] = user_cap
         raise SystemExit(99)
 

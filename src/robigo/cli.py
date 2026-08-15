@@ -249,6 +249,13 @@ def profile_main(argv: list[str]) -> int:
     parser.add_argument("--kv-bits", dest="kv_bits", type=int,
                         choices=(16, 8), default=16)
     parser.add_argument(
+        "--profile-num-predict", dest="profile_num_predict", type=int,
+        default=1024,
+        help="generation cap per model call in stages 1-5. Default 1024 is "
+             "the published-row instrument; a different value is a LABELED "
+             "VARIANT (the 2026-08-14 verbosity-x-truncation-veto finding "
+             "motivates 2048) and must be reported as such.")
+    parser.add_argument(
         "--window", type=int, default=None,
         help="cap the window at N tokens; a CEILING only -- it can never "
              "raise the window above what geometry allows (spec 9 law 1). "
@@ -412,7 +419,7 @@ def profile_main(argv: list[str]) -> int:
         CallReplayer(args.replay) if args.replay else build_client(
             argparse.Namespace(backend=args.backend, model=args.model,
                                window=plan.window, host=args.host,
-                               num_predict=1024)
+                               num_predict=args.profile_num_predict)
         )
     )
     if args.record:
