@@ -26,7 +26,20 @@ run and a replay run would change the key on every call, and every
 replayed call would raise `TranscriptMiss` instead of reproducing the
 profile."""
 
-_FILLER_WORD = "token "
+# Filler v2 (2026-08-14, non-silent instrument amendment). v1 was one
+# word repeated ("token "), and that degeneracy was measured to TRIGGER
+# a daemon bug: on this box's Ollama chat path, qwen14b-q4 prompts of
+# repeated single words above ~1.8k tokens return stats-free 200s
+# (prompt_eval_count absent, done:false) while normal-density text of
+# the SAME size passes clean - so stage 0 verified 1783 of an 8192
+# window and the 2026-08-14 subject row ran context-starved. The word
+# LIST below keeps the exact-length slicing contract (strictly
+# increasing target -> len) while making the filler non-degenerate;
+# both hazards this closes were already on the books (probe-density
+# debt here; "one repeated token tokenizes unrepresentatively" in
+# assay's filler). The 7B row's stage 0 was re-checked unaffected.
+_FILLER_WORDS = ("measure window ladder probe budget signal repair "
+                 "corpus verify honest serving context margin verdict ")
 
 
 @dataclass(frozen=True)
@@ -73,7 +86,7 @@ def _default_probe(target: int) -> str:
     -- never rounded down to a whole number of words. That precision is
     load-bearing, not cosmetic (amendment to Task 3, ruled 2026-08-10): an
     earlier version floored to whole words (`target * CHARS_PER_TOKEN //
-    len(_FILLER_WORD)` words), which made length a step function of
+    len(filler unit)` words), which made length a step function of
     `target` -- every `target` and `target + 1` sharing one floor value
     aliased onto the SAME prompt. Bisection could then land on the larger
     of an aliased pair and report it as "verified", even though its probe
@@ -83,8 +96,8 @@ def _default_probe(target: int) -> str:
     share a probe.
     """
     length = max(int(target * CHARS_PER_TOKEN), 1)
-    repeats = length // len(_FILLER_WORD) + 1
-    return (_FILLER_WORD * repeats)[:length]
+    repeats = length // len(_FILLER_WORDS) + 1
+    return (_FILLER_WORDS * repeats)[:length]
 
 
 def stage0_window(
