@@ -1,4 +1,4 @@
-# robigo — design
+# robigo: design
 
 A coding agent for local models, designed against a VRAM budget rather than
 adapted to one.
@@ -15,7 +15,7 @@ itself to what the model measurably does rather than what a spec sheet
 claims.
 
 The pitch is deliberately narrow: **your local model is more capable than a
-generic harness lets it be — here is how much, per family, and here is where
+generic harness lets it be: here is how much, per family, and here is where
 the wall actually is.**
 
 Latin *robigo*: the rust on iron. Robigalia was the Roman festival invoked to
@@ -29,9 +29,9 @@ budget as a design constraint or ships measurement of its own effect:
 
 | project | ★ | relevance |
 |---|---|---|
-| `SWE-agent/mini-swe-agent` | 6.3k | closest shape — one bash tool, radically simple. Small-model-friendly by accident |
+| `SWE-agent/mini-swe-agent` | 6.3k | closest shape: one bash tool, radically simple. Small-model-friendly by accident |
 | `Aider-AI/aider` | 48k | the only project measuring **edit formats**; independently corroborates the ergonomics finding below |
-| `Nano-Collective/nanocoder` | 2.3k | "local-first, bring your own model" — zero measurement, `llama3.1` as its example |
+| `Nano-Collective/nanocoder` | 2.3k | "local-first, bring your own model": zero measurement, `llama3.1` as its example |
 | `cline`, `Roo-Code`, `OpenHands`, `goose` | 24k–83k | system prompt + tool schemas alone exceed a small model's usable window |
 
 Searches for VRAM-budgeted agents returned a 4GB hobby repo and two 0★ field
@@ -59,16 +59,16 @@ tool anyone should be handed.¹
 
 ¹ Corrected 2026-08-10 from the originally written **40%**: the
 attempts-to-success reasoning was the commitment and the number a
-mis-transcription of it — `1/p` gives 2.5 attempts at 40%, not 3. The
+mis-transcription of it: `1/p` gives 2.5 attempts at 40%, not 3. The
 reasoning, recorded here before any instrument existed, is what binds; the
 prior value stays visible in history and in `docs/CARRIED-DEBT.md`. The
-original marginal note — *"this number is the one figure in this document
+original marginal note (*"this number is the one figure in this document
 chosen by the author rather than derived; it wants a sanity check before
-implementation starts"* — is retained in this footnote as the sanity check
+implementation starts"*) is retained in this footnote as the sanity check
 that was in fact performed.
 
 A null result here is publishable and would be the most valuable artifact in
-the niche. It is not, however, the product — and the point of fixing the
+the niche. It is not, however, the product, and the point of fixing the
 threshold now is that after three weeks of work nobody wants to reach it.
 
 ---
@@ -160,7 +160,7 @@ done <one-line summary>
 `run` is **not** arbitrary shell. A model that can write `rm -rf` eventually
 does, and an agent that cannot be trusted unattended is not worth shipping.
 `find` lets the model reach outside scope without the repo entering the
-window — locations are ~20 tokens, bodies are not.
+window: locations are ~20 tokens, bodies are not.
 
 **Escape hatch:** an `--allow-run` allowlist (regex, empty by default) for the
 legitimate "let me run my linter" request, which splits it cleanly from "let
@@ -179,7 +179,7 @@ patch src/fog.ts
 ```
 ````
 
-The format is **borrowed, not invented** — it is aider's, and aider's 48k
+The format is **borrowed, not invented**: it is aider's, and aider's 48k
 stars mean the format is throughout the training data. Same law as the
 method-syntax finding in black-oxide: do not design an elegant surface, adopt
 the one the model has already read a million times. Inventing an XML dialect
@@ -190,7 +190,7 @@ a card.
 
 | codec | output cost | fails when |
 |---|---|---|
-| `search_replace` | changed region only | copying fidelity is weak — one wrong semicolon and SEARCH misses |
+| `search_replace` | changed region only | copying fidelity is weak: one wrong semicolon and SEARCH misses |
 | `whole_file` | = file size | long emissions drift; capped by remaining budget |
 | `udiff` | smallest | line numbers and hunk headers must be right |
 
@@ -199,7 +199,7 @@ Python gets a real `ast` check; TypeScript gets brace balance plus the test
 run, and that limitation is stated in the README rather than papered over.
 
 Selection is **`codec(family, file_tokens, remaining_budget)`**, not
-`codec(family)` — see §3.3 for why.
+`codec(family)`. See §3.3 for why.
 
 `udiff` ships mainly so the profiler can demonstrate cheaply that it is bad,
 and because a family heavily trained on diffs may surprise us.
@@ -220,7 +220,7 @@ Inherited law: **constrain the envelope, never the payload.**
 
 Rationale is the `mut acc` → `mutacc` finding (black-oxide SPEC §54): a
 grammar cannot reject a token, it steers to the nearest legal string. Escaping
-a code payload into JSON under a grammar is that failure geometry exactly —
+a code payload into JSON under a grammar is that failure geometry exactly:
 the nearest legal string to a raw newline inside a JSON string is something
 else, silently. Every project in §0.1 ships this unexamined.
 
@@ -230,7 +230,7 @@ diffing byte-for-byte.
 
 ### 2.4 Parse failures are prompt surface
 
-They name **both ends**, per the `OX0403` lesson — a diagnostic that points at
+They name **both ends**, per the `OX0403` lesson: a diagnostic that points at
 one location and shrugs is how confident wrong repairs happen.
 
 ```
@@ -261,7 +261,7 @@ history      = last-K full, older turns elided to one line each
 scope_budget = window − reserve_out − system − diagnostic − history
 ```
 
-When scope does not fit, it degrades in a **fixed, deterministic order** — a
+When scope does not fit, it degrades in a **fixed, deterministic order**: a
 pure function over fixtures, testable with no model:
 
 1. hop-2 → signatures only *(the default)*
@@ -282,10 +282,10 @@ models of similar size:
 | model | max ctx | KiB/token | KV at 8k | KV at 32k |
 |---|---|---|---|---|
 | qwen2.5-coder:7b-q8 | 32768 | **56** | 0.44 GiB | 1.75 GiB |
-| granite-code:8b-q8 | 4096 | 144 | — | — |
+| granite-code:8b-q8 | 4096 | 144 | n/a | n/a |
 | qwen3:14b | 40960 | 160 | 1.25 GiB | 5.00 GiB |
-| phi4:14b | 16384 | 200 | 1.56 GiB | — |
-| gemma2:9b | 8192 | 336 | 2.62 GiB | — |
+| phi4:14b | 16384 | 200 | 1.56 GiB | n/a |
+| gemma2:9b | 8192 | 336 | 2.62 GiB | n/a |
 | **codegemma:7b-q8** | 8192 | **448** | 3.50 GiB | 14.00 GiB |
 
 `KiB/token = 2 · layers · kv_heads · head_dim · 2 bytes / 1024`
@@ -305,20 +305,20 @@ usable_window = min(
 **Recommended model tiers** follow from this arithmetic at ~15 GiB usable:
 
 - **Supported floor: 8192.** `granite-code:8b` (4096) is a *test case*, not a
-  target — a design that works at 4096 works everywhere, but its profile
+  target: a design that works at 4096 works everywhere, but its profile
   reads `LIMITED` permanently and it should never be recommended for agentic
   work.
 - **Recommended band: 9–14B in the 8–9 GB weight band.** A 14B at Q4_K_M
   leaves ~5.3 GB for KV, giving ~28k usable tokens. A 7B at Q8_0 reaches its
   full 32k with ~4.5 GB spare.
-- **Not recommended: `gemma2:9b`** — strictly dominated. Hard 8192 ceiling,
+- **Not recommended: `gemma2:9b`**, strictly dominated. Hard 8192 ceiling,
   and 336 KiB/token means 8k costs 6× what qwen-7B pays for the same window.
 - The README's recommended-models table is **generated from profile output**,
   never asserted.
 
 ### 3.2 Quantization is a covariate, and an experiment
 
-At a fixed ~9 GB weight budget one may buy 7B-Q8 **or** 14B-Q4 — total bits
+At a fixed ~9 GB weight budget one may buy 7B-Q8 **or** 14B-Q4: total bits
 are near-identical (7×8.5 ≈ 60 Gbit vs 14×4.5 ≈ 63 Gbit). The VRAM ceiling
 therefore makes quantization a first-class experimental axis: **at a fixed
 memory budget, more parameters or more precision?** Unanswered for agentic
@@ -332,7 +332,7 @@ being confounded with precision." Accordingly:
 - `qwen2.5-coder:14b-q4_K_M` and `:7b-q8_0` are **different subjects**, never
   reported as "14B vs 7B"
 - KV-cache quantization (`-ctk q8_0`) is a second such lever: it halves the
-  cache and buys real window, and it is **not free** — it goes in the manifest
+  cache and buys real window, and it is **not free**: it goes in the manifest
 
 ### 3.3 The whole_file / budget tension
 
@@ -349,9 +349,9 @@ granite-code-8b   whole_file      lands 71%   but only for files ≤ ~55 lines
 
 Token counting uses the backend's real tokenizer where exposed, and otherwise
 a calibrated estimate of ≈3.3–3.6 chars per token for typical code. The
-server always outranks the estimate: any estimate has a pathological case —
+server always outranks the estimate: any estimate has a pathological case:
 law 5 in §9 records punctuation-dense input where a 4-chars-per-token
-estimate under-counted by **3.6×** — so the estimate is a cheap early guard,
+estimate under-counted by **3.6×**, so the estimate is a cheap early guard,
 never an authority. (The two figures share a digit string by coincidence: one
 is a chars-per-token ratio for ordinary code, the other an under-count factor
 in a worst case.)
@@ -369,7 +369,7 @@ a 4096-token family           4k recall /  4k window   = 100% of the window
 ```
 
 Hindsight also requires PostgreSQL, Docker, and its own LLM provider for
-`retain`/`reflect` — a second model in VRAM or an API bill, breaking the
+`retain`/`reflect`: a second model in VRAM or an API bill, breaking the
 premise twice more. Same goals, inverted mechanism:
 
 **Memory acts on the harness, not on the prompt.** Tiers are ordered by
@@ -386,7 +386,7 @@ Tier 1 is where a small-window agent gets its leverage: it *replaces* content
 rather than adding it. Knowing the tracer misses your path aliases does not
 cost 200 tokens, it saves 400 by pulling the right file.
 
-**Tier 2 ships disabled.** Only two things could earn it — repo conventions
+**Tier 2 ships disabled.** Only two things could earn it: repo conventions
 (semicolons, indent, quote style, because they determine whether a SEARCH
 block matches) and anti-loop notes. Both are hypotheses. It is enabled
 per-family only when the profiler's stage-5 repeat rate shows that family
@@ -417,7 +417,7 @@ model. Semantic search solves a problem this domain does not have.
 
 ### 4.3 Writes are mechanical only
 
-Every fact cites the observation that produced it — run id, turn, `file:line`.
+Every fact cites the observation that produced it: run id, turn, `file:line`.
 The model does not write memory: a small model authoring memory notes poisons
 the vault, and poisoned memory is strictly worse than none because it costs
 window *and* misleads.
@@ -460,17 +460,17 @@ emit a parseable action.
 |---|---|---|
 | 0 · geometry | KiB/token, and the largest window that **actually loads** | seconds |
 | 1 · envelope | can it emit `verb path` at all? no code involved | seconds |
-| 2 · codec landing | parses **and** applies **and** file still parses — per codec, per size bucket | minutes |
+| 2 · codec landing | parses **and** applies **and** file still parses, per codec, per size bucket | minutes |
 | 3 · payload corruption | same task, constrained vs unconstrained, byte-diff | minutes |
-| 4 · repair | full loop on a single-defect task — does the test go green? | slow |
+| 4 · repair | full loop on a single-defect task: does the test go green? | slow |
 | 5 · loop discipline | turns-to-green, identical-failing-patch repeat rate | slow |
 
 Stage 0 **probes** rather than trusts: load at successively larger windows
 until it fails, and record the real ceiling. Stage 1 gates the rest.
 
 **Two budgets, one instrument.** `robigo profile` runs stages 0–2, 3 seeds,
-~20 tasks — minutes, enough to configure the harness. `robigo profile --full`
-runs all six at 10 seeds — overnight, and is the only mode whose numbers may
+~20 tasks: minutes, enough to configure the harness. `robigo profile --full`
+runs all six at 10 seeds, overnight, and is the only mode whose numbers may
 be published.
 
 **Grid ordering is by model residency**, not by stage: only one model fits at a
@@ -516,7 +516,7 @@ else**, and the reference patch makes the test pass.
 
 `robigo profile --replay` runs the whole pipeline against recorded model
 outputs and must reproduce a known profile exactly. The profiler is
-load-bearing, so it gets an instrument of its own — and this makes it testable
+load-bearing, so it gets an instrument of its own, and this makes it testable
 in CI with no GPU.
 
 ### 5.4 Profile → behaviour
@@ -548,20 +548,20 @@ instruction-following holding a write handle to a working tree.
 - **The anchor test file is read-only.** A small model will edit the failing
   test until it passes, and every layer above would report success.
   `--allow-test-edits` opts out for when the test really is wrong.
-- **Scope escape is refused structurally** — paths resolved and compared
+- **Scope escape is refused structurally**: paths resolved and compared
   against the scope root. No `..`, no absolutes, no symlink hop.
 - **`run` is the adapter's test command**, with a wall-clock cap, output
   truncated to the diagnostic budget before entering the window.
 - **Git is the undo.** Every run branches (`robigo/<slug>-<n>`), commits a
-  snapshot *before* the first patch — including a dirty tree, so nothing is
-  lost — then commits each applied patch. Not in a repo → refuse, unless
+  snapshot *before* the first patch (including a dirty tree, so nothing is
+  lost), then commits each applied patch. Not in a repo → refuse, unless
   `--no-git`, which prints what is being given up.
 - **Stalling is detected, not waited out.** Turn cap, wall-clock cap, and a
   no-progress check: unchanged test signature plus rejected patches for K
   turns ends the run as `stalled`.
 
 **A failing test is a hard input requirement.** `robigo` refuses to start
-without one and says why: *write the failing test first — that is the
+without one and says why: *write the failing test first: that is the
 interface.* v1 cannot do "add feature X", and turning that into a stated
 stance is more honest than letting every first attempt fail.
 
@@ -578,7 +578,7 @@ Infrastructure must never be reported as a model result, or the reverse.
 ### 6.2 Run records
 
 `.robigo/runs/<id>/` holds prompts, **raw model outputs verbatim**, patches,
-adapter output, and terminal state — the same format as `eval/results/`, so a
+adapter output, and terminal state: the same format as `eval/results/`, so a
 user's failing run is already a replayable corpus candidate.
 
 ---
@@ -590,7 +590,7 @@ The harness is a **deliberate fork** of black-oxide's `eval/`, marked
 different task shapes will drift; pretending to share produces two sets of
 numbers that disagree with no way to adjudicate.
 
-**Three isolated tables — the credible numbers**, each moving one thing:
+**Three isolated tables: the credible numbers**, each moving one thing:
 
 - codec landing rate per family, per file-size bucket
 - payload corruption, constrained vs unconstrained
@@ -598,8 +598,8 @@ numbers that disagree with no way to adjudicate.
 - (and, once §3.2 is run: fixed-VRAM-budget parameters vs precision)
 
 **One bundled table, labelled as bundled.** "This harness vs a generic
-harness" is the number people want, and it is legitimate as external validity
-— but it is six differences at once and must say so in the same breath. A
+harness" is the number people want, and it is legitimate as external validity.
+But it is six differences at once and must say so in the same breath. A
 bundle is not a mechanism.
 
 **`CORRECTIONS.md` exists from the first commit.** The most
@@ -618,8 +618,8 @@ frontier model; a single magnitude for anything.
 Deliberately sequenced so the first honest number arrives before the
 expensive features.
 
-1. `loop` + `action` + `adapters/python_` + `apply` — the edit→test loop
-2. `model/geometry` + `context/budget` — the arithmetic, with fixtures
+1. `loop` + `action` + `adapters/python_` + `apply`: the edit→test loop
+2. `model/geometry` + `context/budget`: the arithmetic, with fixtures
 3. profiler stages 0–2 + `--replay`
 4. mutation corpus generator
 5. profiler stages 3–5
@@ -633,7 +633,7 @@ were both wasted.
 
 **The first implementation plan covers steps 1–3 only.** That is the smallest
 increment that produces a running loop plus the arithmetic and the profiler
-that configures it — enough to be exercised on a real repo. Steps 4–5 are a
+that configures it, enough to be exercised on a real repo. Steps 4–5 are a
 second plan, and step 6 is a decision point, not work. Planning past a gate
 whose outcome could cancel the remaining steps is how the wasted-effort
 scenario above actually happens.
@@ -658,11 +658,11 @@ Adopted rather than re-derived. Each was paid for.
    session result, attempts preserved. Zero attempts → a loud abort with the
    cause recorded, because at a small window a zero-attempt "result" repeats
    identically across every seed and fabricates a whole grid.
-4. **Two overflow detectors, both kept** — a cheap client-side estimate and
+4. **Two overflow detectors, both kept**: a cheap client-side estimate and
    the server's real tokenizer. The decision does not depend on which fired;
    the record still says which did.
 5. **Ollama silently front-truncates by default.** `truncate: false` is
-   mandatory and **top-level** — nested in `options` it is ignored. Measured:
+   mandatory and **top-level**: nested in `options` it is ignored. Measured:
    a 3160-token prompt into a 256-token window returned 200 with
    `prompt_eval_count: 130`, head canary gone. Also measured: the crude
    4-chars-per-token estimate under-counted a real prompt by **3.6×**
@@ -688,9 +688,9 @@ Adopted rather than re-derived. Each was paid for.
 
 ## 10. Open questions
 
-- ~~The 40% kill threshold in §0.2 — the one number chosen rather than
+- ~~The 40% kill threshold in §0.2, the one number chosen rather than
   derived.~~ Resolved 2026-08-10: re-derived to 33.3% from the
-  attempts-to-success commitment (§0.2 footnote); and answered 2026-08-12 —
+  attempts-to-success commitment (§0.2 footnote); and answered 2026-08-12:
   the gate read **1.06%** and §0.2's consequence applies (see
   `docs/superpowers/evidence/2026-08-12-stage4-gate.md`).
 - Whether stage-4 tasks should be drawn from the user's own repo by default

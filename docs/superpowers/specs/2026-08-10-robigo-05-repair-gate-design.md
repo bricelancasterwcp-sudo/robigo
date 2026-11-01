@@ -1,4 +1,4 @@
-# robigo plan 05 — the repair gate (profiler stages 4 and 5)
+# robigo plan 05: the repair gate (profiler stages 4 and 5)
 
 Design for build-order step 5 (partial) and step 6. Written 2026-08-10, before
 any stage-4 measurement exists anywhere. That timing is load-bearing: this
@@ -25,8 +25,8 @@ Stage 3 is deferred on the spec's own reasoning (§8: *"Planning past a gate
 whose outcome could cancel the remaining steps is how the wasted-effort
 scenario above actually happens"*). Stage 3 feeds nothing the gate reads, and
 costs a separate measured pass with its own model calls. Stage 5, by contrast,
-is built now because it costs **zero** additional model calls — its two metrics
-are observations of the runs stage 4 already performs — and because it is the
+is built now because it costs **zero** additional model calls (its two metrics
+are observations of the runs stage 4 already performs) and because it is the
 data that makes a low number explicable rather than merely disappointing.
 
 ---
@@ -42,7 +42,7 @@ it.
 The original §0.2 said *"quick-profile stage 4"*. §5 says quick profile runs
 **stages 0–2** and `--full` runs all six at 10 seeds, and that `--full` is
 *"the only mode whose numbers may be published"*. As written, the gate
-therefore read a number from a mode that never ran stage 4 — and had stage 4
+therefore read a number from a mode that never ran stage 4, and had stage 4
 been added to quick mode, the spec's own honesty rules would have forbidden
 publishing the very number that decides the project's fate, while §0.2 calls a
 null result *"the most valuable artifact in the niche"*.
@@ -64,7 +64,7 @@ pass  ⇔  the recorded failing test (record.test_id) goes green
 
 `"pass"` is the literal string `loop.OUTCOMES` uses (`loop.py:257`). An earlier
 draft of this document said `"repaired"`, which exists nowhere in the codebase
-— caught while verifying externals for the plan. Recorded rather than silently
+(caught while verifying externals for the plan). Recorded rather than silently
 fixed, because plan 01's first process lesson is that plan text naming things
 that do not exist is this project's dominant defect source.
 
@@ -78,7 +78,7 @@ Two rejected alternatives, and why:
 - **Target test green only** would score a model that greens one test by
   breaking two others as a success, overstating the tool.
 - **Must match the stored reference patch** would fail genuinely correct
-  alternative fixes, measuring imitation rather than repair — understating the
+  alternative fixes, measuring imitation rather than repair, understating the
   tool against its own thesis.
 
 ### 1.3 The corpus is one external repo, frozen before any run
@@ -143,7 +143,7 @@ document's own history and in `CARRIED-DEBT.md`.
 
 ---
 
-## 3. Prerequisites — two CLI flags, both blockers
+## 3. Prerequisites: two CLI flags, both blockers
 
 ### P1 · `robigo profile --corpus PATH`
 
@@ -151,12 +151,12 @@ Known, recorded in `CARRIED-DEBT.md`. `stage2_codecs` already accepts a
 converted corpus and `fixtures_from_corpus` converts one; nothing selects a
 generated file from the CLI, so a live profile still measures `fixtures-v1`.
 
-**Invariant P1.1** — the corpus's identity travels with the profile.
+**Invariant P1.1**: the corpus's identity travels with the profile.
 `Profile.corpus` names the file actually used, never a default. `run_profile`
 already refuses a defaulted corpus name; the CLI must pass the loaded corpus's
 own `name`, not a literal.
 
-**Invariant P1.2 — the one that matters.** `fixtures_from_corpus` drops ~9.2%
+**Invariant P1.2: the one that matters.** `fixtures_from_corpus` drops ~9.2%
 of real records as unwrappable (measured: 91 of 986 from `src/robigo`). Those
 are **harness artifacts and are never scored as model failures.** Its `dropped`
 list must be carried into `Profile.dropped` verbatim, and dropped records must
@@ -165,7 +165,7 @@ be excluded from both the numerator and the denominator of **stage 2's** rate.
 **Scope correction (found while freezing the corpus, before any stage-4 run).**
 This originally said "every rate". It applies to stage 2 only. `fixtures_from_
 corpus` wraps a record's line into a small synthetic function body, and a line
-like a lone `(` cannot parse standing alone — that is a limitation of the
+like a lone `(` cannot parse standing alone. That is a limitation of the
 *wrapper*, not of the record. **Stage 4 writes `record.broken` into the real
 file at `record.path:record.line`, where the surrounding lines supply the
 context the wrapper lacks, so every record is usable there.** The two stages
@@ -177,7 +177,7 @@ stage-4 material.
 assert the resulting `Profile.repair_records` excludes it, that
 `Profile.dropped` names it, and that the rate computed is identical to the rate
 from a corpus with that record physically absent. If those two rates differ, a
-harness artifact is inside the gate's number — which is exactly the plan-03
+harness artifact is inside the gate's number, which is exactly the plan-03
 stage-2 defect (measuring the harness rather than the model), landing this time
 in the figure that decides the project.
 
@@ -186,7 +186,7 @@ in the figure that decides the project.
 Newly found while designing this plan; not previously recorded anywhere.
 
 `plan_window` already accepts a user cap. `cli.profile_main` passes `None`. So
-for `qwen2.5-coder:7b` — the best-measured family, at 100%/100% codec landing —
+for `qwen2.5-coder:7b` (the best-measured family, at 100%/100% codec landing)
 `plan.window` resolves to its full **32768** training context, because VRAM
 never binds on this box (~7.6 GiB weights + ~1.75 GiB KV against 14,558 MiB
 free). Stage 0's probe therefore targets 32768, and this box's Ollama returns a
@@ -197,12 +197,12 @@ free). Stage 0's probe therefore targets 32768, and this box's Ollama returns a
 **Consequence, stated plainly: without P2 the best available family cannot be
 profiled on this box at all, and the gate cannot be run.**
 
-**Invariant P2.1** — `--window N` is a *ceiling*, never a floor.
+**Invariant P2.1**: `--window N` is a *ceiling*, never a floor.
 `plan_window`'s existing `min(training_ctx, vram, user_cap)` semantics are
 unchanged; the flag only adds a fourth term. It can never raise a window above
 what geometry allows (spec §9 law 1).
 
-**Invariant P2.2** — a capped window is visible in the profile.
+**Invariant P2.2**: a capped window is visible in the profile.
 `window_limited_by` reads `user_cap` when the flag binds, so a profile produced
 under a cap can never be read as the family's full capability.
 
@@ -212,7 +212,7 @@ run and `window_limited_by` still names `training_ctx`.
 
 ---
 
-## 4. Stage 4 — repair
+## 4. Stage 4: repair
 
 ### 4.1 Shape
 
@@ -222,7 +222,7 @@ checked out at its recorded `source_sha`.
 **That phrasing is a trap, and it caught the first two implementations.** A plain
 `git checkout <sha>` leaves a **detached HEAD**, where `git branch
 --show-current` returns the empty string. A reset that assumes a branch name
-therefore runs `git checkout -f ''`, exits 128, and excludes *every* attempt — an
+therefore runs `git checkout -f ''`, exits 128, and excludes *every* attempt: an
 11-hour run that scores nothing. The reset must handle **both** shapes: restore
 by branch when attached, by SHA when detached. Whichever shape the clone is in,
 it must also refuse to start from a `robigo/*` branch, which is a corrupted
@@ -242,7 +242,7 @@ starting state, not a pristine one.
 6. pass  ⇔  outcome == "pass" ∧ step 4 clean ∧ step 5 unchanged
 ```
 
-Steps 2, 4 and 5 are plan 04's already-mutation-tested harness —
+Steps 2, 4 and 5 are plan 04's already-mutation-tested harness:
 `pytest_runner`'s sanitized environment and forced `PYTHONPATH`,
 `Baseline.executed`, `_assert_in_clone`'s `MODULE_UNDER_TEST=` marker. Stage 4
 substitutes "run the loop, *then* run pytest" for "run pytest". It is mostly
@@ -252,8 +252,8 @@ any of those three is the drift class this project has paid for repeatedly.
 **Step 1 was wrong in this document's first draft, and the error was
 project-killing.** It read `git checkout -- . && git clean -fdq`. That does not
 isolate an attempt, because §4.3.1 mandates `use_git=True`: the loop checks out
-a `robigo/*` branch and `git add -A` snapshots the tree — **committing the
-staged defect** — so `git checkout -- .` restores to *that branch's* index, not
+a `robigo/*` branch and `git add -A` snapshots the tree (**committing the
+staged defect**), so `git checkout -- .` restores to *that branch's* index, not
 to the pristine tree, and never returns to the original branch. Measured during
 task 4's review:
 
@@ -270,7 +270,7 @@ record 1's unrepaired defect would persist into every later record,
 first could pass. **The gate would have read a near-zero repair rate and killed
 the project on a harness bug.** The pristine branch and SHA must therefore be
 captured ONCE, before the first attempt, and never re-derived from a tree that
-may already be corrupted — re-deriving after attempt 1 captures the corruption
+may already be corrupted. Re-deriving after attempt 1 captures the corruption
 as the new "pristine".
 
 §4.3.3's falsification test below is what catches this, and in the first
@@ -282,17 +282,17 @@ did not say so.** The recipe above names `adapter=python_` for the repair and a
 bare `pytest_runner` for the judging, and never asks whether the two agree. They
 did not: `PythonAdapter` resolved `.venv` → `venv` → the bare string `"python"`,
 while `pytest_runner` hardcoded `sys.executable`. On any fresh third-party clone
-with no virtualenv of its own, the loop's very first action —
-`adapter.run(root, None)` — ran a `python` with no pytest, raised `AdapterError`,
+with no virtualenv of its own, the loop's very first action (
+`adapter.run(root, None)`) ran a `python` with no pytest, raised `AdapterError`,
 and every attempt was excluded as infrastructure **before the model was ever
 called**. Measured live against boltons: stage 2 landed 17% while **100% of
 stage-4 attempts were excluded**. A `--full` run would have spent ~12 hours and
-returned `repair_rate: None` — unmeasured, which §4.4 says is not a pass. The
+returned `repair_rate: None`, unmeasured, which §4.4 says is not a pass. The
 gate would have had nothing to read.
 
 **The default interpreter is `sys.executable`, and the reason is the corpus, not
 convenience.** A corpus's `baseline.executed` is measured by `robigo corpus`
-*through `pytest_runner`*, i.e. under `sys.executable` — the frozen corpus
+*through `pytest_runner`*, i.e. under `sys.executable`, the frozen corpus
 records `executed: 468`. Stage 4 then excludes any attempt whose `executed` total
 disagrees with that baseline (§4.3.4). So a judge running a different interpreter
 than the one that produced the baseline can diverge on the executed count and
@@ -308,7 +308,7 @@ It needs a test asserting the two sides cannot diverge, not a convention.
 
 Corpus records carry `path` and `line`, so handing the model the defect
 location is one line of code away. **The task names only the failing test id**
-— `"the test <test_id> fails; make it pass"` — and scope resolution must locate
+(`"the test <test_id> fails; make it pass"`) and scope resolution must locate
 the file the way it would for a real user. A number produced by telling the
 model where the bug is describes a tool nobody has.
 
@@ -318,7 +318,7 @@ edit away from silently inflating the headline figure.
 
 This originally said "the rendered stage-4 prompt", which is **unsatisfiable and
 was wrong**: scope resolution legitimately puts the defective file's contents in
-the prompt — that is what the tool does for a real user, who also does not say
+the prompt. That is what the tool does for a real user, who also does not say
 where the bug is. The property that matters is that *robigo* was never told the
 location, not that the file is absent from the context robigo assembled for
 itself. Corrected after task 4's review.
@@ -337,7 +337,7 @@ itself. Corrected after task 4's review.
   the first leaves a stray file; assert the second's baseline comparison is
   unaffected.
 - **4.3.4 An infrastructure failure is not a model failure.** A clone that
-  will not reset, a suite that will not collect, a daemon error — none of these
+  will not reset, a suite that will not collect, a daemon error. None of these
   is scored as a failed repair. Each is excluded from the denominator and named
   in `dropped`. This is invariant P1.2's rule applied to runtime rather than
   conversion: the gate's number counts only attempts where the model was
@@ -346,14 +346,14 @@ itself. Corrected after task 4's review.
 ### 4.4 Stage 4 is gated, like every stage before it
 
 Stages gate each other cheapest-first, and stage 4 is no exception. It runs
-only if `Profile.best_codec()` returns a codec — which already means stage 0
+only if `Profile.best_codec()` returns a codec, which already means stage 0
 verified a window, stage 1 cleared `ENVELOPE_FIDELITY_MIN`, and stage 2 landed
 something above 0%. If it returns `None`, **stage 4 does not run**,
 `repair_rate` stays `None`, and `dropped` names which upstream stage closed the
 gate.
 
 `repair_rate: None` and `repair_rate: 0.0` are different facts and must stay
-distinguishable in the written profile — "never measured" versus "measured and
+distinguishable in the written profile: "never measured" versus "measured and
 nothing was repaired". This is the same collapse `dropped` exists to prevent
 for `codecs`, one level further down.
 
@@ -373,7 +373,7 @@ compared against 33.3%.
 computed at **record** level, because attempts within a record are correlated
 and an attempt-level binomial interval would claim roughly √10 more precision
 than the design actually has. Reporting an attempt-level CI would be a value
-that looks like a measurement but is not — the exact defect class this project
+that looks like a measurement but is not. The exact defect class this project
 keeps finding. The per-record breakdown exists so the record-level interval can
 be computed at all.
 
@@ -386,7 +386,7 @@ runs**, because afterwards it can only be a rationalization.
 
 Criteria:
 
-- pure Python, no compiled extensions — clone and `pytest` must simply work
+- pure Python, no compiled extensions: clone and `pytest` must simply work
 - suite green at HEAD: `baseline.broken == 0`. §1.2's pass definition depends
   on it.
 - baseline wall clock under ~30 s. Plan 04 measured that ~15 s per verification
@@ -414,7 +414,7 @@ result. §8 records it.
 
 ### 6.1 Sample size, and an uncomfortable fact about precision
 
-Seeds within a record are correlated — the same defect, the same file, varying
+Seeds within a record are correlated: the same defect, the same file, varying
 only the sampling seed. Statistical power therefore comes from **records**, not
 attempts, and the interval is computed at record level for the reason given in
 §4.5:
@@ -429,13 +429,13 @@ Cost figures are estimates from ~45 s per loop run, not measurements; the CI
 figures are exact for a record-level binomial.
 
 **No feasible sample resolves 33% from 33%.** Stating otherwise would be this
-project's own recurring bug — a value that looks like a measurement but is not.
+project's own recurring bug: a value that looks like a measurement but is not.
 
-**Ruling:** N = **94 records × 10 seeds** — the frozen corpus (§5), 940 attempts,
+**Ruling:** N = **94 records × 10 seeds**: the frozen corpus (§5), 940 attempts,
 ~11.75 h. Records buy power; seeds buy reproducibility and are fixed at 10 by the
 `--full` contract (§1.1).
 
-#### 6.1.1 The record-level interval is itself optimistic — clustering
+#### 6.1.1 The record-level interval is itself optimistic: clustering
 
 The table above treats records as independent Bernoulli trials. **They are not.**
 The frozen corpus's 94 records span 19 files and 67 distinct tests, so up to 4
@@ -447,15 +447,15 @@ So a record-level binomial interval is an *upper bound on precision*, not the
 precision. The honest treatment, decided here before any number exists:
 
 - **Report the record-level interval, labelled as a lower bound on the true
-  width** — never as "the" confidence interval.
+  width**: never as "the" confidence interval.
 - **Report a cluster-aware interval alongside it**, clustering on `test_id` (67
-  clusters, the binding constraint — fewer than the 94 records and more than the
+  clusters, the binding constraint, fewer than the 94 records and more than the
   19 files). A cluster bootstrap over `test_id` is sufficient; nothing here needs
   a closed form.
 - **Report the per-operator breakdown** (§5), since operator is the other axis
   along which records resemble each other.
 
-This does not change §6.2's decision rule — the point estimate still decides, and
+This does not change §6.2's decision rule. The point estimate still decides, and
 it is pre-registered. It changes only what may be *claimed* about that estimate's
 precision. Quoting ±0.09 from the table as though records were independent would
 be the exact defect this section exists to prevent.
@@ -481,19 +481,19 @@ interval and the stage-5 diagnostics, not a re-run.
 ### 6.3 Verdict stays separate from the gate
 
 `verdict_for` is **not** changed. READY / LIMITED / UNUSABLE describe
-*instrument fitness* — window, envelope, codec landing. The gate is a separate
+*instrument fitness*: window, envelope, codec landing. The gate is a separate
 judgment on `repair_rate`. Conflating them would let a future tweak to a
 verdict threshold silently move the kill criterion.
 
 ---
 
-## 7. Stage 5 — loop discipline
+## 7. Stage 5: loop discipline
 
 Two metrics, both **observations of stage 4's runs**. Zero additional model
 calls.
 
 - **turns-to-green:** the turn count on passing attempts. Reported as a median
-  with its distribution, never a bare mean — a bimodal "lands on turn 1 or
+  with its distribution, never a bare mean: a bimodal "lands on turn 1 or
   never" is the interesting shape and a mean hides it.
 - **identical-failing-patch repeat rate:** the fraction of turns emitting a
   patch byte-identical to one already rejected in that same run.
@@ -504,11 +504,11 @@ one"*. The first is a capability result; the second is an instrument result,
 and an instrument result is fixable. A null number without them is merely
 negative.
 
-**Invariant 7.1** — stage 5 never causes a model call. *Falsification test:*
+**Invariant 7.1**: stage 5 never causes a model call. *Falsification test:*
 count client invocations across a stage-4-only run and a stage-4-plus-5 run
 against the same records and seeds; assert equality.
 
-**Invariant 7.2** — stage 5 metrics are `None`, not `0.0`, when no attempt
+**Invariant 7.2**: stage 5 metrics are `None`, not `0.0`, when no attempt
 produced the observation (no passes → no turns-to-green). The
 `max_file_tokens=None` collapse already recorded in `CARRIED-DEBT.md` is the
 shape to avoid: one value must not mean both "not applicable" and "measured
@@ -527,14 +527,14 @@ missed:
    *Falsification test:* assert no `dropped` entry mentions `repeat_rate` when
    `repeat_rate is not None`, and that one does when it is `None`.
 2. **`payload_corruption` keeps its `dropped` line**, with the text updated to
-   name plan 06 — stage 3 is deferred, not forgotten.
+   name plan 06. Stage 3 is deferred, not forgotten.
 3. **The corpus's provenance is reported with the number.** Source repo, source
    SHA, record count, dropped count, and the single-repo limitation from §5.
    A repair rate without the corpus it was measured on is not a result.
 
 `Profile` gains `repair_rate: float | None`, `repair_attempts: int`,
 `repair_records: int`, `turns_to_green_median: float | None`. `repeat_rate`
-finally gets a producer. `from_json`/`to_json` round-trip every new field —
+finally gets a producer. `from_json`/`to_json` round-trip every new field:
 this project's records are read by future tooling, so the sequence is stored,
 not a reduction of it.
 
@@ -550,7 +550,7 @@ Project law, restated because it is not optional here:
   raise.** Grep finds the stubs you thought of; the socket finds the rest.
 - **Sanitize the environment being measured in.** `PYTEST_ADDOPTS` exported as
   `-x` already turned a correctly-rejected mutant into a kept record once.
-- **Run the tool, not just the tests.** Twice, on separate invocations — the
+- **Run the tool, not just the tests.** Twice, on separate invocations: the
   worst user-facing defect of the project so far was invisible to 300 passing
   tests and appeared on the *second* consecutive run.
 - **Stage 4/5 transcripts are recorded for replay**, with the limitation stated
@@ -574,9 +574,9 @@ Project law, restated because it is not optional here:
 - **Stage 0's probe remains systematically pessimistic** (~0.55 of target token
   density, per `CARRIED-DEBT.md`). It bounds `usable_window`, which stage 4
   runs inside. The gate's number is therefore measured against a *conservative*
-  window — biasing against the thesis, which is the safe direction, but it
+  window, biasing against the thesis, which is the safe direction, but it
   should be stated when the number is published.
 - **~12 h of unattended GPU time** is the largest single compute commitment in
   the project. It should run once, correctly. That argues for a dry run at
-  small N to shake out harness defects before the real run — and for
+  small N to shake out harness defects before the real run, and for
   `--corpus`/`--window` being exercised end-to-end first.

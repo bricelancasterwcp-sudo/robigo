@@ -1,4 +1,4 @@
-# robigo 02 — Geometry and Budget Implementation Plan
+# robigo 02: Geometry and Budget Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -14,8 +14,8 @@
 - `requires-python = ">=3.12"`; `from __future__ import annotations` in every module. Type annotations on every **non-test** function signature; pytest test functions are exempt.
 - **Never return a window above the model's training context.** `llama-server` refuses a slot larger than the model was trained on, and Ollama accepts it silently and rope-degrades (spec §9 law 1).
 - **The advertised context length is never the usable window** (spec §3.1). It is one of three inputs, and not the binding one.
-- Window and quantization are recorded, per-family, as covariates — never pooled (spec §3.2, §9 law 9).
-- A prompt that cannot fit after all five degradation steps is a **refusal before turn 1**, printing the arithmetic — never a truncated attempt (spec §3, step 5).
+- Window and quantization are recorded, per-family, as covariates, never pooled (spec §3.2, §9 law 9).
+- A prompt that cannot fit after all five degradation steps is a **refusal before turn 1**, printing the arithmetic, never a truncated attempt (spec §3, step 5).
 - Commit messages: `<type>: <subject>`, single line, no body, no trailers.
 
 ---
@@ -24,11 +24,11 @@
 
 | File | Responsibility |
 |---|---|
-| `src/robigo/model/gguf.py` | GGUF header/metadata reader — `struct`-level, no deps |
+| `src/robigo/model/gguf.py` | GGUF header/metadata reader: `struct`-level, no deps |
 | `src/robigo/model/geometry.py` | `Geometry`, bytes-per-token, `usable_window`, free-VRAM probe |
 | `src/robigo/context/budget.py` | `Budget`, fixed-cost seating, the five-step degradation ladder |
-| `src/robigo/context/scope.py` | *modified* — `Scope.degrade(step)` |
-| `src/robigo/cli.py` | *modified* — `--window auto` becomes the default |
+| `src/robigo/context/scope.py` | *modified*: `Scope.degrade(step)` |
+| `src/robigo/cli.py` | *modified*: `--window auto` becomes the default |
 
 ## Verified before execution (2026-08-09)
 
@@ -39,14 +39,14 @@ not.
 
 **The GGUF reader (Task 2) is correct as written.** Transcribed verbatim and run
 against the blob store: 14 of 14 GGUF blobs parsed with zero failures, and it
-independently reproduced 5 of the 6 geometries `/api/show` reports — qwen2.5-coder:7b
+independently reproduced 5 of the 6 geometries `/api/show` reports: qwen2.5-coder:7b
 (56 KiB/tok), granite-code:8b (144), codegemma:7b (448), qwen3:14b (160),
 phi4:14b (200). The sixth simply is not among the largest blobs. It also
 confirmed the 192 KiB/token figure the design spec §3.1 estimated for the
 14B class.
 
 **`attention.key_length` is absent for `qwen2`**, so `from_model_info`'s
-`embedding_length / head_count` fallback is **load-bearing, not a nicety** —
+`embedding_length / head_count` fallback is **load-bearing, not a nicety**:
 without it the recommended model class yields no head dimension at all. Task 1's
 `test_head_dim_falls_back_to_embedding_over_heads` is therefore pinning real
 behaviour, not a hypothetical.
@@ -63,7 +63,7 @@ not.** Measured by loading each model at three context sizes and reading
 Two corrections follow.
 
 1. **The geometric figure is accurate at the margin** (1.01–1.04×). An earlier
-   two-point measurement suggested 1.24× and was wrong — an artifact of the
+   two-point measurement suggested 1.24× and was wrong, an artifact of the
    step described below. Keep the arithmetic exactly as Task 1 specifies.
 2. **On-disk size overstates VRAM residency**, so subtracting a further 700MB
    double-counts. Fitted intercepts against `/api/tags` `size`:
@@ -76,7 +76,7 @@ Two corrections follow.
    `weights_bytes` from `/api/tags` already carries ~480 MiB of slack.
    **`OVERHEAD_BYTES` becomes `256 * 1024 * 1024`**, and its docstring says
    why: it is a margin *on top of* that measured slack, sized to cover the
-   per-context-class step below and allocator fragmentation — not an estimate
+   per-context-class step below and allocator fragmentation, not an estimate
    of total overhead, which would double-count. Task 3's test that asserts on
    `OVERHEAD_BYTES` uses the constant rather than a literal, so it follows.
 
@@ -182,7 +182,7 @@ def test_geometry_is_frozen():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_geometry.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.model.geometry'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.model.geometry'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -269,8 +269,8 @@ git commit -m "feat: KV-cache geometry from model metadata"
 Three gaps, all in the reference code above.
 
 **1. Malformed-but-present fields raise the wrong exception type.** `need()`
-guards *absence*, but `int()` and `max()` on a present-and-broken value —
-`head_count_kv: null`, a non-numeric string — raise raw `TypeError`/`ValueError`.
+guards *absence*, but `int()` and `max()` on a present-and-broken value
+(`head_count_kv: null`, a non-numeric string) raise raw `TypeError`/`ValueError`.
 Task 5 catches `GeometryError` specifically to fall back to an explicit
 `--window`, so a malformed field produces an uncaught crash instead of the
 documented fallback. Wrap the conversions:
@@ -310,7 +310,7 @@ unlike every `need()` message. Make it consistent, and test it:
 regression conflating them would pass every existing test. Same shape as the
 six vacuous guarantees mutation testing found in plan 01.
 
-Four tests. The first is the one that matters — verify it fails if
+Four tests. The first is the one that matters: verify it fails if
 `(key_dim + value_dim)` is replaced by `2 * key_dim`:
 
 ```python
@@ -345,7 +345,7 @@ def test_a_malformed_field_raises_geometry_error_not_a_raw_type_error():
 
 #### Amendment 2 (ruled 2026-08-09): guard every conversion, and name the field
 
-Amendment 1's `try` block was placed wrong — it starts *after* `heads` and
+Amendment 1's `try` block was placed wrong: it starts *after* `heads` and
 `key_dim` are computed, so two conversions sit outside it. Three escapes
 reproduced, all still bypassing Task 5's `GeometryError` fallback:
 
@@ -455,11 +455,11 @@ def _kv_head_count(key: str, value: object) -> int:
     )
 ```
 
-with `kv_heads=kv_heads,` in the `Geometry(...)` call — the field is already
+with `kv_heads=kv_heads,` in the `Geometry(...)` call: the field is already
 an `int` by then, and a second `_as_int` on it would be dead.
 
 This also sharpens the empty-list message, which previously normalised `[]` to
-`None` and then reported `head_count_kv is malformed (None)` — telling a user
+`None` and then reported `head_count_kv is malformed (None)`, telling a user
 debugging an empty list that they had passed nothing at all.
 
 Two tests, and the existing valid-per-layer-list test must keep passing:
@@ -481,7 +481,7 @@ def test_an_empty_per_layer_kv_list_says_it_is_empty():
     assert "empty list" in str(e.value)
 ```
 
-**The four tests below belong to Amendment 2**, not to Amendment 3 above —
+**The four tests below belong to Amendment 2**, not to Amendment 3 above:
 Amendment 3 was inserted at the point it corrects, which split this block from
 its heading. They were already added in fix round 2; do not add them twice.
 The last of them, `test_an_empty_kv_head_list_is_geometry_error_not_a_max_failure`,
@@ -534,7 +534,7 @@ def test_an_empty_kv_head_list_is_geometry_error_not_a_max_failure():
 - Consumes: nothing.
 - Produces: `read_metadata(path: Path) -> dict[str, object]`; `GGUFError(Exception)`.
 
-Needed because `llama-server` does not expose KV head counts over HTTP — the file is the only source of truth on that path.
+Needed because `llama-server` does not expose KV head counts over HTTP. The file is the only source of truth on that path.
 
 GGUF layout: magic `b"GGUF"`, `uint32` version, `uint64` tensor count, `uint64` KV count, then KV pairs of `(string key, uint32 type, value)`. Type ids: 0 u8, 1 i8, 2 u16, 3 i16, 4 u32, 5 i32, 6 f32, 7 bool, 8 string, 9 array, 10 u64, 11 i64, 12 f64. Strings are `uint64` length then raw bytes. Arrays are `uint32` element type, `uint64` count, then elements.
 
@@ -619,7 +619,7 @@ def test_rejects_an_unknown_value_type(tmp_path: Path):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_gguf.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.model.gguf'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.model.gguf'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -696,7 +696,7 @@ git commit -m "feat: dependency-free GGUF metadata reader"
 
 The four tests above cover bad magic and an unknown type id. They do not cover
 a **short** read, and the parser as written handles it badly. Measured against
-the shipped module, not reasoned about — eight probes, five raw escapes:
+the shipped module, not reasoned about. Eight probes, five raw escapes:
 
 | input | result |
 |---|---|
@@ -750,9 +750,9 @@ def _read_exactly(handle: BinaryIO, n: int, what: str) -> bytes:
     return data
 ```
 
-Route **every** `handle.read(...)` in the module through it — the version,
+Route **every** `handle.read(...)` in the module through it: the version,
 the tensor count, the kv count, `_u32`, `_u64`, `_string`, and the scalar read
-in `_value` — passing a `what` that names the field being read. The magic
+in `_value`, passing a `what` that names the field being read. The magic
 check may stay as it is: a short read there already fails the `!= b"GGUF"`
 comparison and produces the right message, which the empty-file probe
 confirms.
@@ -821,21 +821,21 @@ def test_an_absurd_kv_count_ends_at_the_first_missing_byte(tmp_path):
 ```
 
 **Re-verified against real files after the rewrite** (controller, 2026-08-09).
-Exact reads touch every read path, so the parser's original evidence — "it
-parses real blobs" — had to be re-earned rather than assumed. Result: **20 of
+Exact reads touch every read path, so the parser's original evidence ("it
+parses real blobs") had to be re-earned rather than assumed. Result: **20 of
 20 real GGUF blobs parse, and `from_model_info` derives geometry for all 20**,
 reproducing every one of the six independently-known geometries. Nothing in
 `_read_exactly` or the 64 MiB `_MAX_READ` rejects a real file. Widest real
 spread observed, which is the case for `--window auto` later: 56 KiB/token
-(qwen2, 28×4×128) to **800 KiB/token** (a llama with `head_count_kv` 40 —
+(qwen2, 28×4×128) to **800 KiB/token** (a llama with `head_count_kv` 40,
 no GQA at all), a 14× range, and one model advertising `context_length`
 1024000.
 
 #### Amendment 2 (ruled 2026-08-09): the two remaining escapes, and a cost test that tests cost
 
 The task review reproduced three defects. All three are the same shape as the
-ones already fixed — malformed input escaping as something other than
-`GGUFError`, and a test that cannot fail — so they close here rather than
+ones already fixed (malformed input escaping as something other than
+`GGUFError`, and a test that cannot fail), so they close here rather than
 being deferred.
 
 **Both fixes were measured against all 32 real GGUF blobs before being
@@ -855,7 +855,7 @@ costs nothing real.
 branch with no depth limit. Each level costs 12 bytes on the wire (`u32`
 element type + `u64` count), so a ~24 KB file with 2000 levels exhausts the
 stack. Since no real blob nests arrays at all, refuse the construct instead of
-counting depth — a depth limit invites picking a number, and a clear refusal is
+counting depth. A depth limit invites picking a number, and a clear refusal is
 the honest bound:
 
 ```python
@@ -873,7 +873,7 @@ the honest bound:
 **2. `errors="replace"` absorbs corrupt bytes silently.** A string of the
 correct declared length holding invalid UTF-8 decodes to U+FFFD with no error,
 so a bit-flip inside a correctly-sized string yields a mangled value. That is
-the same silent corruption Amendment 1 exists to prevent — Amendment 1 only
+the same silent corruption Amendment 1 exists to prevent. Amendment 1 only
 guarded the *length*. A mangled `general.architecture` then surfaces
 downstream as `GeometryError: ... missing from model metadata`, which names
 absence when the truth is corruption:
@@ -891,8 +891,8 @@ def _string(handle: BinaryIO, what: str = "string") -> str:
 
 **3. `test_stops_reading_after_the_metadata_block` does not test cost.** It
 asserts only on the parsed dict, and the review demonstrated that a
-`path.open("rb").read()` implementation — the exact O(filesize) behaviour the
-brief forbids — passes it unchanged. Assert on **bytes actually read**, which
+`path.open("rb").read()` implementation (the exact O(filesize) behaviour the
+brief forbids) passes it unchanged. Assert on **bytes actually read**, which
 is the property the requirement is about. No large or sparse file is needed:
 
 ```python
@@ -943,7 +943,7 @@ def test_the_reader_stops_at_the_end_of_the_metadata(tmp_path, monkeypatch):
     )
 ```
 
-Keep the original equality test as well — it pins the parse, and this one pins
+Keep the original equality test as well. It pins the parse, and this one pins
 the cost.
 
 Tests for the first two, both of which must fail before the fix:
@@ -971,7 +971,7 @@ def test_a_string_of_the_right_length_holding_invalid_utf8_is_refused(tmp_path):
     assert "UTF-8" in str(e.value)
 ```
 
-After this lands, **re-run the real-blob check again** — `errors="strict"` and
+After this lands, **re-run the real-blob check again**: `errors="strict"` and
 the nested-array refusal both sit on the path every real file takes, and the
 20-of-20 result above was measured before them.
 
@@ -1062,7 +1062,7 @@ def test_free_vram_returns_none_when_the_tool_is_absent():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_geometry.py -v`
-Expected: FAIL — `ImportError: cannot import name 'usable_window'`
+Expected: FAIL, `ImportError: cannot import name 'usable_window'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1159,13 +1159,13 @@ git commit -m "feat: usable window from geometry, free VRAM, and training ctx"
 
 `nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits` was run on
 the target box before this task was dispatched. It exits 0 and prints a bare
-integer in MiB on one line — `14571` — so the parse in `free_vram_bytes` is
+integer in MiB on one line (`14571`), so the parse in `free_vram_bytes` is
 correct as written, and `nounits` does mean MiB.
 
 Two facts from that run that the code must reflect rather than discover later:
 
 - **The machine is the target hardware, and "16 GB" is not 16 GiB of headroom.**
-  Total is 16303 MiB, used 1269 MiB, **free 14571 MiB**, with no model loaded —
+  Total is 16303 MiB, used 1269 MiB, **free 14571 MiB**, with no model loaded:
   the desktop and compositor hold ~1.7 GiB before robigo asks for anything.
   This is precisely why the window comes from *measured free* VRAM and never
   from `memory.total`, and it is the number the degradation ladder in Task 4
@@ -1178,8 +1178,8 @@ Two facts from that run that the code must reflect rather than discover later:
 
 **`free_vram` must be read before the model is resident.** `usable_window`
 subtracts `weights_bytes` from `free_vram`, which is right only when the
-weights are not yet loaded. If the model is already resident — Ollama keeps
-one hot for five minutes by default — `memory.free` already excludes those
+weights are not yet loaded. If the model is already resident (Ollama keeps
+one hot for five minutes by default), `memory.free` already excludes those
 bytes and subtracting them again understates the window by roughly the size
 of the model. Task 5 owns that ordering; state the precondition in
 `usable_window`'s docstring here so the caller cannot get it wrong silently.
@@ -1244,7 +1244,7 @@ expression: they pin `OVERHEAD_BYTES` at its measured 256 MiB, so
 re-measuring that constant fails here loudly instead of quietly shifting every
 window the tool reports.
 
-**Keep the two supplementary tests the implementer added** — a frozen-`WindowPlan`
+**Keep the two supplementary tests the implementer added**: a frozen-`WindowPlan`
 check and the exhausted-VRAM zero-window case. Both cover constraints this plan
 states in prose and never tested, which is the gap that has cost this plan the
 most.
@@ -1258,7 +1258,7 @@ One of them is reachable from a **file**, which changes the calculus:
 `from_model_info({..., "qwen2.block_count": 0, ...})` returns a `Geometry`
 whose `kv_bytes_per_token` is `0`, because `_as_int` validates *type* and not
 *value*. `usable_window` then divides by it and raises an uncaught
-`ZeroDivisionError` — escaping the `except GeometryError` fallback that Task 5
+`ZeroDivisionError`, escaping the `except GeometryError` fallback that Task 5
 depends on, from ordinary malformed metadata rather than programmer error.
 Task 1 already guards `heads <= 0` for exactly this reason; it simply never
 generalised to the other fields.
@@ -1283,15 +1283,15 @@ def _positive(key: str, value: int) -> int:
     return value
 ```
 
-Apply it to every dimension `Geometry` carries — `block_count`,
-`head_count_kv`, `key_length`, `value_length`, `context_length` — by wrapping
+Apply it to every dimension `Geometry` carries (`block_count`,
+`head_count_kv`, `key_length`, `value_length`, `context_length`) by wrapping
 each `_as_int(...)` result at the constructor call. The existing `heads <= 0`
 guard stays where it is: it must fire *before* the division that derives
 `key_dim`, which is earlier than this check.
 
 Second, guard the division in `usable_window`. `kv_bits <= 0` is the worse of
 the two failures the review found, because a negative `kv_bits` yields a
-**negative window with no error at all** — observed `window=-126391,
+**negative window with no error at all**: observed `window=-126391,
 limited_by='vram'`. Silent wrong data beats a crash for damage:
 
 ```python
@@ -1308,7 +1308,7 @@ Two carried Minors close in the same pass, since both touch these files:
 - **`_as_int` does not catch `OverflowError`.** `int(float('inf'))` raises it,
   and stdlib `json.loads` accepts the `Infinity` token by default, so it is
   reachable from a hostile `/api/show` response. Add `OverflowError` to the
-  except tuple — one word, same message.
+  except tuple: one word, same message.
 - **Both `_string` call sites in `gguf.py` pass the default `what`**, so a
   corrupt-file message cannot say whether the key or the value was bad. Pass
   `"key"` at the key site and `"string value"` at the value site.
@@ -1320,7 +1320,7 @@ corrupt key versus a corrupt value produce distinguishable messages.
 
 **Re-run the real-blob check afterwards.** Positivity validation sits on the
 path every real file takes. All 20 blobs measured earlier derive geometry with
-positive dimensions throughout, so nothing real should be rejected — if
+positive dimensions throughout, so nothing real should be rejected. If
 something is, that is a finding, not a reason to loosen the guard.
 
 ---
@@ -1435,7 +1435,7 @@ def test_render_honours_the_anchor_window(scope: Scope, tmp_path: Path):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_budget.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.context.budget'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.context.budget'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1494,7 +1494,7 @@ def _window_text(text: str, span: tuple[int, int]) -> str:
 The implementer reported BLOCKED and was right on every count. I then measured
 each rung's cost against the fixture rather than deriving it, and the
 measurement found two defects worse than the one reported. **This amendment
-states invariants and the tests that falsify them, not code to transcribe** —
+states invariants and the tests that falsify them, not code to transcribe**:
 plan 01's first process lesson, which the last seven amendment errors ignored.
 
 Measured, fixture as specified above (`reserve_out=128, system=60,
@@ -1502,23 +1502,23 @@ diagnostic=60, history=0`, so 248 tokens of fixed cost):
 
 | rung | cost | saves vs previous | window band that lands `fit` here |
 |---|---|---|---|
-| 1 | 569 | — | ≥ 817 |
+| 1 | 569 | n/a | ≥ 817 |
 | 2 | 566 | **3** | 814 – 816 (**width 3**) |
 | 3 | 323 | 243 | 571 – 813 |
-| 4 | 323 | **0** | **empty — unreachable** |
+| 4 | 323 | **0** | **empty (unreachable)** |
 
-**Defect 1 — rung 4 is unreachable and rung 2 is untestable.** `cost(4)`
+**Defect 1: rung 4 is unreachable and rung 2 is untestable.** `cost(4)`
 equals `cost(3)`, so no window exists for which `fit` returns step 4: a scope
 falls from rung 3 straight to refusal, and a fixed five-step ladder is really
 four. Rung 2's band is 3 tokens wide because dropping hop-2 removes only its
-*signatures* — `def g():`, about 3 tokens. Both are fixture artifacts, and both
+*signatures*: `def g():`, about 3 tokens. Both are fixture artifacts, and both
 hid a real bug behind an untestable gap.
 
-**Defect 2 — the window is centred on the wrong thing, and the label says so
+**Defect 2: the window is centred on the wrong thing, and the label says so
 falsely.** `_window_text` centres on `len(lines) // 2`, the middle of the
 *file*, and `render` labels the result `" (windowed around the failure)"`. For a
-failure at line 350 of a 400-line file, rung 4 hands the model lines 140–260 —
-the failing code excluded — while asserting the opposite. That is the same
+failure at line 350 of a 400-line file, rung 4 hands the model lines 140–260
+(the failing code excluded) while asserting the opposite. That is the same
 category as a truncated prompt: the model answers about code it cannot see,
 and here it is additionally told it can. It also explains defect 1: a window
 of `(-60, 60)` around the middle of an 81-line file is the whole file, so
@@ -1529,13 +1529,13 @@ each with a test that fails when it is violated:
 
 1. **The window contains the failing line.** After `degrade(4)`, the rendered
    anchor includes the diagnostic's line whenever that line is in the file.
-   The diagnostic's line is available where the `Scope` is built — `resolve`
-   already receives `diag` — and is not available inside `degrade`, so carry it
+   The diagnostic's line is available where the `Scope` is built (`resolve`
+   already receives `diag`) and is not available inside `degrade`, so carry it
    on the `Scope` rather than recomputing it. Give it a default so every
    existing construction stays valid.
 2. **The estimate and the prompt agree exactly.** `budget`'s cost for a
    windowed scope and `render`'s output for the same scope must window
-   identically. Both must derive the centre from the `Scope` alone — if one
+   identically. Both must derive the centre from the `Scope` alone. If one
    uses the diagnostic and the other uses the file's middle, "it fits" becomes
    a lie in the direction that OOMs or truncates. The single-implementation
    plus thin-delegating-wrapper arrangement stays; that is what makes this
@@ -1547,19 +1547,19 @@ each with a test that fails when it is violated:
    and a test that pins it. Rung 4 must save real tokens against rung 3.
 
 **Fixture, so the bands are wide enough to test.** Make the anchor **400
-lines** — windowing to 120 lines then removes ~70% of it — and give `hop2.py`
+lines** (windowing to 120 lines then removes ~70% of it) and give `hop2.py`
 **40 separate `def`s** so its signatures cost something real. Measured with
 that fixture and middle-centred windowing:
 
 | rung | cost | saves | band | width |
 |---|---|---|---|---|
-| 1 | 1958 | — | ≥ 2206 | — |
+| 1 | 1958 | n/a | ≥ 2206 | n/a |
 | 2 | 1827 | 131 | 2075 – 2205 | 131 |
 | 3 | 1584 | 243 | 1832 – 2074 | 243 |
 | 4 | 476 | **1108** | 724 – 1831 | 1108 |
 
-**Re-measure after implementing invariant 1** — centring on the failure changes
-what rung 4 contains — and choose each test's window from the **middle** of its
+**Re-measure after implementing invariant 1** (centring on the failure changes
+what rung 4 contains) and choose each test's window from the **middle** of its
 measured band, not its edge. Report the measured table. A budget picked at a
 band edge is one estimator tweak away from testing the neighbouring rung, which
 is how the original numbers came to assert rung 2's shape while landing on
@@ -1567,7 +1567,7 @@ rung 3.
 
 **Corrected assertions for the test that failed.** Its name is right and its
 body described the wrong rung: at step 3, hop-1 has become a signature, so
-`signatures` is `(hop1,)` and `full` is `(anchor,)` — `== ()` is rung 2's
+`signatures` is `(hop1,)` and `full` is `(anchor,)`. `== ()` is rung 2's
 shape. Pin the exact rung, since the ladder is fixed rather than heuristic:
 
 ```python
@@ -1580,7 +1580,7 @@ def test_a_tight_window_reduces_hop_one_to_signatures(scope: Scope, tmp_path: Pa
 
 **And the anchor-window test must isolate windowing.** As written it compares
 `degrade(4)` against the undegraded scope, so it passes on the length drop from
-rung 3's hop-1 collapse — the implementer proved this by mutation: a
+rung 3's hop-1 collapse. The implementer proved this by mutation: a
 `_window_text` that returns its input unchanged leaves the test green. Compare
 against `degrade(3)` instead. Those two scopes differ *only* in
 `anchor_window`, so the difference can come from nothing else:
@@ -1599,7 +1599,7 @@ Task 4's review confirmed all four invariants and then found that invariant 2
 holds only for the *windowed file text*, which is narrower than the invariant
 was meant to be. Three of its findings share one root cause: `_cost` and
 `render` each build their own idea of the scope's text, so they can disagree.
-Measured against this fixture — `_cost` reports **445** where the rendered
+Measured against this fixture, `_cost` reports **445** where the rendered
 prompt costs **721**, a 276-token gap.
 
 Three concrete divergences, all verified live by the reviewer:
@@ -1613,7 +1613,7 @@ Three concrete divergences, all verified live by the reviewer:
 2. **`_cost` crashes where `render` degrades.** `_cost` calls bare
    `path.read_text(encoding="utf-8")`; `render` uses the guarded `_read` and
    substitutes `_UNREADABLE`. On a non-UTF-8 or deleted file, `render` produces
-   a clean prompt while `_cost` raises `UnicodeDecodeError` — so `fit` crashes
+   a clean prompt while `_cost` raises `UnicodeDecodeError`, so `fit` crashes
    instead of fitting or refusing with arithmetic, which is the one guarantee
    this task exists to provide.
 3. **The honest fallback label is untested.** The branch used when
@@ -1627,7 +1627,7 @@ files:
 
     _cost(scope) == estimate_tokens(<exactly what render emits for scope's files>)
 
-Satisfy it **structurally** — extract the scope's file section into one
+Satisfy it **structurally**: extract the scope's file section into one
 function that both call, rather than keeping two implementations in step by
 discipline. Two copies is what produced all three findings above, and the
 `_window_text`/`_window` delegation already in this task is the pattern to
@@ -1637,7 +1637,7 @@ Do not thread `diag`, `history` or `codec` into `_cost`. Those are the caller's
 fixed costs and are already seated in `Budget`; the scope's own text is what
 must agree.
 
-Falsification tests — each must fail if the two diverge:
+Falsification tests (each must fail if the two diverge):
 
 ```python
 def test_the_estimate_equals_the_cost_of_what_render_emits(scope, tmp_path):
@@ -1670,8 +1670,8 @@ Also give `degrade` an explicit upper bound. `step >= 5` currently returns
 rung 4's scope silently; `fit` never asks for it today, but a caller that
 miscomputes a step should get a `ValueError`, not a plausible-looking scope.
 
-**Re-measure the rung table afterwards** — adding header tokens raises every
-rung's cost — and re-pick each test's budget from the middle of its new band.
+**Re-measure the rung table afterwards** (adding header tokens raises every
+rung's cost) and re-pick each test's budget from the middle of its new band.
 Report the new table. Every existing test must stay green, including plan 01's
 render tests, which are the proof that extracting the shared section did not
 change what `render` emits.
@@ -1769,7 +1769,7 @@ def _window(text: str, span: tuple[int, int]) -> str:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_budget.py tests/test_scope.py tests/test_render.py -v`
-Expected: PASS — 9 budget tests, plus the 5 scope and 4 render tests from
+Expected: PASS, 9 budget tests, plus the 5 scope and 4 render tests from
 plan 01 still green
 
 - [ ] **Step 5: Commit**
@@ -1866,7 +1866,7 @@ def test_cli_accepts_the_word_auto(monkeypatch, tmp_path: Path):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_window_auto.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.model.detect'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.model.detect'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1999,7 +1999,7 @@ robigo --model codegemma:7b-instruct-q8_0 --window auto --root /tmp/x "fix" ; ec
 ```
 Expected: granite prints a window of 4096 limited by `training_ctx`; codegemma
 prints **below** its advertised 8192, limited by `vram`, at 448 KiB/token.
-That second line is the whole point of this plan — an advertised window the
+That second line is the whole point of this plan: an advertised window the
 card cannot actually hold.
 
 #### Amendment (ruled 2026-08-09): `/api/show` does not return `size`
@@ -2016,19 +2016,19 @@ return int(_show(model, host).get("size", 0))
 ```
 
 silently returns **0** for every Ollama model, and the `.get(..., 0)` default is
-what hides it — the same "plausible-looking default" this plan forbids
+what hides it: the same "plausible-looking default" this plan forbids
 elsewhere, in the same dangerous direction.
 
 Zero weights means `usable_window` believes the whole card is free. Measured on
 this box: free VRAM 14571 MiB, and `qwen2vl` weighs 14540 MiB. Correctly, spare
 is `14571 − 14540 − 256 < 0`, so the window is 0 and the run must refuse. With
 `weights_bytes` returning 0, spare becomes 14315 MiB and the window comes back
-as its full advertised **128000** — a request that cannot possibly be served.
+as its full advertised **128000**, a request that cannot possibly be served.
 The failure converts "this model does not fit" into the largest window in the
 table.
 
 `GET /api/tags` **does** carry `size`, per model, and needs no model load. Each
-entry has `capabilities, details, digest, model, modified_at, name, size` —
+entry has `capabilities, details, digest, model, modified_at, name, size`:
 confirmed `qwen2.5-coder:7b-instruct-q8_0` → 8,098,539,207 bytes (7.54 GiB).
 
 **Invariant: `weights_bytes` never guesses.** It returns a real measured size
@@ -2037,11 +2037,11 @@ until the server refuses the slot or the allocation OOMs.
 
 Take the size from `/api/tags`, matching the model by name. 12 of the 30 names
 on this box end in `:latest`, so a bare `model` argument may need that suffix
-appended to match — try the exact name first, then `f"{model}:latest"`. If
+appended to match. Try the exact name first, then `f"{model}:latest"`. If
 neither matches, raise `GeometryError` naming the model and listing what the
 daemon does know, rather than returning a number.
 
-Falsification tests, both offline with an injected responder — no test may
+Falsification tests, both offline with an injected responder. No test may
 contact a daemon:
 
 ```python
@@ -2056,8 +2056,8 @@ def test_an_unknown_model_raises_rather_than_reporting_zero_weights(...):
     ...  # /api/tags without the requested model; assert GeometryError naming it
 ```
 
-Add one `@pytest.mark.live` test — the marker already means "requires a running
-model daemon" (`pyproject.toml:19-20`) and is deselected by default — asserting
+Add one `@pytest.mark.live` test (the marker already means "requires a running
+model daemon" (`pyproject.toml:19-20`) and is deselected by default), asserting
 that the real `/api/show` response for a locally-present model still lacks
 `size`, so this regression is caught if Ollama ever adds the field back and the
 workaround becomes unnecessary.
@@ -2065,7 +2065,7 @@ workaround becomes unnecessary.
 #### Amendment 2 (ruled 2026-08-09): a zero window must refuse, and two messages are wrong
 
 Task 5 was exercised end to end against the live daemon on the target box. The
-window arithmetic is right — `--window auto` gives
+window arithmetic is right: `--window auto` gives
 `32768 (limited by training_ctx, 28 KiB/token)`, `--window 999999` clamps to
 `32768` by `training_ctx`, `--window 2048` reports `user_cap`, and the 14.2 GB
 model correctly reports `window 0 (limited by vram, 56 KiB/token)` where the
@@ -2077,21 +2077,21 @@ the margin already exceed free VRAM: not one token of context fits, and no
 degradation rung can help, because the ladder shrinks the *scope*, not the KV
 cache. The run must stop there. Today it prints the line and continues into
 adapter setup, so on a repo where the adapter succeeds it would go on to build
-a prompt against a 0-token budget. This is the plan's own law — a refusal
-before turn 1, printing the arithmetic, never an attempt — and `window 0` is
+a prompt against a 0-token budget. This is the plan's own law (a refusal
+before turn 1, printing the arithmetic, never an attempt), and `window 0` is
 the most clear-cut case of it.
 
 Refuse with `OUTCOMES["refused"]` (exit 3), not `infrastructure`: nothing is
 broken in the environment, the model simply does not fit this card, and exit 4
 is reserved for a harness that could not run at all. Print the arithmetic that
-produced it — free VRAM, the weights, the margin, and the per-token cost — so
+produced it (free VRAM, the weights, the margin, and the per-token cost), so
 the user can see which term to change. A bare `window 0` tells them nothing
 actionable; `free 14571 MiB − weights 14540 MiB − margin 256 MiB` tells them to
 pick a smaller quantisation.
 
 **2. The llama.cpp geometry message advises a flag the user already passed.**
 With `--backend llamacpp --window 4096` and no `--gguf`, the run aborts with
-*"Pass `--gguf <path>` so the window can be computed, or `--window <int>`."* —
+*"Pass `--gguf <path>` so the window can be computed, or `--window <int>`."*,
 recommending exactly what was just supplied. Same family as plan 01's messages
 naming flags that did not exist: the advice does not match the situation. Make
 the text depend on whether a cap was given. With an explicit `--window`, the
@@ -2100,7 +2100,7 @@ honest statement is that the training context cannot be verified without
 
 **3. The `codegemma` criterion below was never true on this hardware.** Measured:
 codegemma weighs 8.454 GiB, free VRAM is 14571 MiB, so spare is 5.525 GiB and
-buys 12931 tokens at 448 KiB each — comfortably above its 8192 training
+buys 12931 tokens at 448 KiB each, comfortably above its 8192 training
 context, which therefore binds. The example was miscalibrated: 8192 × 448 KiB
 is only 3.5 GiB, which fits beside 8.45 GiB of weights on a 16 GB card. It is
 replaced below with the case that does exercise a `vram`-bound result, taken
@@ -2114,8 +2114,8 @@ from a real run rather than constructed.
 - `--window auto` is the default and prints what bound it.
 - granite resolves to exactly 4096, attributed to `training_ctx`; codegemma to
   exactly 8192, also `training_ctx` (its 448 KiB/token still fits beside 8.45
-  GiB of weights on a 16 GB card — see amendment 2).
-- A model whose weights leave no room — the 14.2 GB one on this box — resolves
+  GiB of weights on a 16 GB card; see amendment 2).
+- A model whose weights leave no room (the 14.2 GB one on this box) resolves
   to `window 0` attributed to `vram`, **and refuses before turn 1 with the
   arithmetic printed**.
 - A window request above the training context is clamped, never granted.
@@ -2133,38 +2133,38 @@ as the invariant to restore.
 **1. `GGUFError` escapes the CLI contract (Critical).** `gguf.py` defines it
 independent of `GeometryError`, `detect.py` does not wrap it, and `cli.py`
 catches only `(GeometryError, OSError)`. Grep confirms no production caller
-catches it. A truncated `--gguf` — the interrupted-download shape
-`tests/test_gguf.py` itself names — escapes as a traceback and exit 1, outside
+catches it. A truncated `--gguf` (the interrupted-download shape
+`tests/test_gguf.py` itself names) escapes as a traceback and exit 1, outside
 the five contract codes.
 
 *Invariant:* every failure to determine geometry reaches the caller as
 `GeometryError`, whatever its source. Wrap at `detect.py`, the boundary that
-promises geometry, rather than coupling `gguf.py` to `geometry.py` — the GGUF
+promises geometry, rather than coupling `gguf.py` to `geometry.py`. The GGUF
 reader is deliberately standalone. Add a CLI test on a corrupt `--gguf`
 asserting a contract exit code.
 
 **2. Three raw exceptions escape `detect.py` (Critical).** All reproduced:
 `{"model_info": null}` → `AttributeError`, because `.get(k, {})` defaults only
-when the key is *absent*, never when its value is `null` — the same shape as
+when the key is *absent*, never when its value is `null`, the same shape as
 the `.get("size", 0)` bug one level up. `{"models": null}` → `TypeError`.
 `size: Infinity` → `OverflowError`, which `geometry.py:40` catches *with a
 comment explaining why* while its sibling does not.
 
 *Invariant:* a malformed daemon response raises `GeometryError`. Validate the
-envelope's shape — `/api/show` a `dict`, `/api/tags`'s `models` a `list` — and
+envelope's shape (`/api/show` a `dict`, `/api/tags`'s `models` a `list`) and
 catch `OverflowError` alongside `TypeError`/`ValueError`. Prefer one shared
 converter over three call sites drifting again.
 
 **3. `Budget.history = 200` under-reserves by 12x (Important).** Measured
 against `loop.py`'s `_READ_CAP = 4000` chars and two turns kept: two capped
 `read` results render to 2449 tokens. `fit()` therefore *accepts prompts that
-overflow* — at a comfortable window 4096 it returns rung 1 and the real prompt
+overflow*: at a comfortable window 4096 it returns rung 1 and the real prompt
 exceeds the window by 1095 tokens. That is the says-fits-then-truncates
 direction.
 
 *Invariant:* no fixed cost is a literal that a second module can contradict.
 Derive the default from the same constant `loop.py` caps reads with, times the
-turns it keeps, and round toward over-reserving — over-reserving costs scope,
+turns it keeps, and round toward over-reserving. Over-reserving costs scope,
 under-reserving costs the run. The exact figure belongs to the caller that
 knows its real turns; the *default* must be safe, not optimistic.
 
@@ -2173,7 +2173,7 @@ subtracted from `scope_budget` but never printed, so the printed terms do not
 produce the printed total: `window 800 / system 60 / reserve 128 /
 diagnostic 60` shown against `available for scope 352`, where those terms give
 552. The law is that a refusal prints *the arithmetic*; a number the user
-cannot reproduce is not that. The existing test cannot see it — it passes
+cannot reproduce is not that. The existing test cannot see it: it passes
 `history=0` and only asserts three substrings exist.
 
 *Invariant:* every term subtracted appears in the message, and the printed
@@ -2181,33 +2181,33 @@ terms reconcile to the printed total. Test with a non-zero `history`.
 
 **5. Invariant 2's own test cannot fail (Important).** `tests/test_budget.py`
 asserts `_cost(scope, root) == estimate_tokens(_scope_section(scope, root))`,
-but `_cost` *is* that expression — both sides are one call and `render` is
+but `_cost` *is* that expression: both sides are one call and `render` is
 never invoked. Proven by giving `render` a private copy of `_scope_section`
 differing only in the header delimiter: the whole suite stayed green. The
 delegation is real in shipped code, so this is a test defect, but it is the
 only thing holding the invariant the amendment was written for.
 
 *Invariant:* the test must relate the costed text to **`render`'s actual
-output** — assert the section appears verbatim inside `render(...)`. A test
+output**: assert the section appears verbatim inside `render(...)`. A test
 whose two sides are the same expression pins nothing.
 
 **6. `--kv-bits 8` doubles the window and is never sent to any server
 (Important).** Measured: codegemma with 896 MiB spare returns 2048 at 16 bits
 and 4096 at 8, but the server still allocates f16, so that window needs
-1792 MiB against 896 MiB — a 2.0x overcommit, OOM at load. Neither payload
+1792 MiB against 896 MiB, a 2.0x overcommit, OOM at load. Neither payload
 carries a cache-type field, and neither backend accepts one per request:
 Ollama takes `OLLAMA_KV_CACHE_TYPE` at server start, llama.cpp
 `--cache-type-k` at launch.
 
 *Ruling:* keep the flag, because robigo cannot set the server's KV type and
-should not pretend to — but it **describes** the server's existing
+should not pretend to, but it **describes** the server's existing
 configuration rather than requesting one. Say so in the flag's help, and say
 that a value the server does not match overcommits VRAM by that ratio. A flag
 whose help implies it changes the server is the defect; the arithmetic is
 correct given a truthfully-declared server.
 
 **7. Small ones in the same wave.** `degrade` raises for `step >= 5` but
-silently returns `self` for `0` and negatives — the reason given for the upper
+silently returns `self` for `0` and negatives. The reason given for the upper
 bound applies below the ladder too. And four added tests are not honest: a
 `pytest.raises(Exception)` broad enough to pass if the constructor itself
 raises; an `importorskip` on a module already imported at the top of the file,
@@ -2223,15 +2223,15 @@ found two escapes that both rounds missed. Both are inside invariants already
 stated above; neither is a new requirement.
 
 **8. `json.loads` is unguarded in `_show` and `_tags`.** A response body that is
-not JSON — the proxy or captive-portal case item 2's own docstring cites as its
-justification — raises `json.JSONDecodeError`, which is a `ValueError` and so
+not JSON (the proxy or captive-portal case item 2's own docstring cites as its
+justification) raises `json.JSONDecodeError`, which is a `ValueError` and so
 passes straight through `cli.main`'s `except (GeometryError, OSError)`.
 Reproduced through the real `main()` with an HTML body. Item 2's enumeration
 began one step too late: it traced everything downstream of those functions
 *returning* and never asked what happens when they raise.
 
 *Invariant, restated from item 2:* a malformed daemon response raises
-`GeometryError` **whatever its source** — including a body that never parses.
+`GeometryError` **whatever its source**, including a body that never parses.
 Wrap at the same boundary item 1 wraps `GGUFError`, and add a CLI-level test
 with a non-JSON body, mirroring the corrupt-`--gguf` test.
 
@@ -2240,7 +2240,7 @@ slice).** The `robigo.loop` import inside `_default_history_tokens()` is only
 *syntactically* deferred: the module-level `DEFAULT_HISTORY_TOKENS =
 _default_history_tokens()` calls it while `context.budget` is still importing,
 which defeats the stated purpose of keeping that direction from becoming a hard
-dependency. Silent today because nothing in `src/` imports `context.budget` —
+dependency. Silent today because nothing in `src/` imports `context.budget`,
 and reproduced as a hard failure the moment something does: adding
 `from robigo.context.budget import Budget, fit` to `loop.py`, which is the
 natural first line of the wiring slice, gives
@@ -2249,11 +2249,11 @@ module 'robigo.loop'`.
 
 *Invariant:* importing `context.budget` must not require `loop` to have finished
 importing. Compute the default when a `Budget` is constructed, not when the
-module loads — `field(default_factory=...)` — so the coupling stays a value
+module loads (`field(default_factory=...)`), so the coupling stays a value
 dependency rather than an import-order one.
 
 **10. Small one.** Several of item 2's new tests assert `"m" in str(e.value)`
-where `"m"` is the fixture's one-character model name — true of almost any
+where `"m"` is the fixture's one-character model name, true of almost any
 English error message, so the assertion adds nothing beyond the
 `pytest.raises(GeometryError)` beside it. Use a distinctive fixture name so the
 assertion means something.

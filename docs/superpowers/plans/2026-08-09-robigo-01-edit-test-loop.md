@@ -1,4 +1,4 @@
-# robigo 01 — Edit→Test Loop Implementation Plan
+# robigo 01: Edit→Test Loop Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -15,7 +15,7 @@
 - Package root is `src/robigo/`; import paths are `robigo.<module>`.
 - Files stay in the 200–400 line band; 800 is a hard ceiling.
 - Type annotations on every **non-test** function signature. pytest test functions are exempt: `-> None` there carries no information, and the constraint exists to pin production interfaces. `from __future__ import annotations` at the top of every module.
-- **Ollama requests MUST send `truncate: false` at the TOP level of the request body, never inside `options`** — nested there the daemon ignores it and silently front-truncates (spec §9 law 5).
+- **Ollama requests MUST send `truncate: false` at the TOP level of the request body, never inside `options`**. Nested there the daemon ignores it and silently front-truncates (spec §9 law 5).
 - **Never set a context window above the model's training context** (spec §9 law 1).
 - Infrastructure failures and model results are never conflated in either direction (spec §9 law 10).
 - Error messages raised by `verbs.parse`, `codec`, and `apply` are **prompt surface**: they are fed back to the model, so they name both ends of the problem and suggest the repair (spec §2.4).
@@ -38,7 +38,7 @@
 | `src/robigo/apply/safety.py` | git branch/snapshot/commit, path and anchor refusals |
 | `src/robigo/model/client.py` | `Generation`, Ollama and llama.cpp clients, overflow classification |
 | `src/robigo/loop.py` | the turn loop, terminal states, the evidence gate |
-| `src/robigo/record.py` | `.robigo/runs/<id>/` — verbatim prompts, replies, adapter output |
+| `src/robigo/record.py` | `.robigo/runs/<id>/`: verbatim prompts, replies, adapter output |
 | `src/robigo/cli.py` | argv, exit codes |
 
 Deferred to plan 02: `model/geometry.py`, `context/budget.py`. This plan takes the window as an explicit `--window` integer so the loop can be built and tested before the arithmetic exists.
@@ -48,8 +48,8 @@ Deferred to plan 03: `profile/`.
 Deferred deliberately, and named here so their absence is not mistaken for an omission:
 
 - **The `udiff` codec** (spec §2.2). It exists mainly so the profiler can demonstrate cheaply that it is bad, which is a plan-03 concern; `reserve_for("udiff", …)` in plan 02 is arithmetic for a codec not yet registered, and `--codec` does not offer it.
-- **Envelope Level 1, the two-step split** (spec §2.3). Plan 01 implements Level 0 — no grammar, stop sequences only. Plan 03 *measures* which level a family needs; consuming that measurement is plan 05.
-- **Payload-corruption measurement** (spec §2.3) — stage 3, plan 05.
+- **Envelope Level 1, the two-step split** (spec §2.3). Plan 01 implements Level 0 (no grammar, stop sequences only). Plan 03 *measures* which level a family needs; consuming that measurement is plan 05.
+- **Payload-corruption measurement** (spec §2.3): stage 3, plan 05.
 
 ---
 
@@ -160,7 +160,7 @@ def test_an_indented_fence_is_still_a_payload():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_verbs.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -388,7 +388,7 @@ def test_codecs_registry_exposes_search_replace():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_codec.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.action.codec'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.action.codec'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -515,7 +515,7 @@ def test_codecs_registry_exposes_whole_file():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_codec.py -v`
-Expected: FAIL — `ImportError: cannot import name 'apply_whole_file'`
+Expected: FAIL, `ImportError: cannot import name 'apply_whole_file'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -577,7 +577,7 @@ git commit -m "feat: whole-file codec, refusing an emptying payload"
 **Interfaces:**
 - Produces: `Diagnostic(passed: bool, file: str | None, line: int | None, message: str, raw: str)` (frozen); `Adapter` protocol with `name`, `test_command`, `run(root, filt) -> Diagnostic`, `imports(path, root) -> list[Path]`, `syntax_ok(text) -> bool`; `PythonAdapter`; `DIAGNOSTIC_CHAR_CAP: int`.
 
-`run` uses `pytest --tb=line -q --no-header`, whose failure lines are exactly `"/abs/path.py:42: AssertionError: msg"` — chosen over `--tb=short` because it is one deterministic line per failure with no block parsing.
+`run` uses `pytest --tb=line -q --no-header`, whose failure lines are exactly `"/abs/path.py:42: AssertionError: msg"`, chosen over `--tb=short` because it is one deterministic line per failure with no block parsing.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -643,7 +643,7 @@ def test_syntax_ok_distinguishes_valid_from_broken():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_adapter_python.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.adapters'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.adapters'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -778,7 +778,7 @@ git commit -m "feat: pytest adapter with deterministic tb=line diagnostics"
 #### Amendment (ruled 2026-08-09): the interpreter must be discovered, not assumed
 
 `argv = ["python", ...]` above is a defect. `"python"` resolves from the
-subprocess `PATH`, so the suite only passes with an activated venv — and in
+subprocess `PATH`, so the suite only passes with an activated venv, and in
 production it is worse: installed via `uv tool install`, robigo lives in its
 own isolated venv, so `sys.executable` cannot see the *target project's*
 pytest either. The interpreter that runs a project's tests is the project's,
@@ -839,7 +839,7 @@ discover it per-root, and probe it once:
 **The tests change accordingly.** Fixture repos under `tmp_path` have no
 venv, so they would fall through to PATH `python` and refuse. Every
 construction in `tests/test_adapter_python.py` becomes
-`PythonAdapter(python=sys.executable)` (add `import sys`) — the interpreter
+`PythonAdapter(python=sys.executable)` (add `import sys`). The interpreter
 running the suite always has pytest, so the suite passes with or without
 activation. Add two tests:
 
@@ -867,8 +867,8 @@ the `infrastructure` outcome for it.
 
 #### Amendment 2 (ruled 2026-08-09): the anchor must be inside the repo
 
-The brief's rationale for `--tb=line` — "one deterministic line per failure"
-— is **false for collection errors**. A broken import or a `SyntaxError` in an
+The brief's rationale for `--tb=line`, "one deterministic line per failure",
+is **false for collection errors**. A broken import or a `SyntaxError` in an
 imported module makes pytest print a full traceback, so "the first
 `path:line:` match anywhere" lands on framework internals. Reproduced:
 
@@ -880,7 +880,7 @@ SyntaxError         → .venv/.../_pytest/python.py:508
 Both discard the real failure, and broken imports and syntax errors are
 among the most common things a model produces mid-loop. Since Task 5 anchors
 scope on `diag.file`, a location outside the repo shows the model code it
-cannot edit — worse than no anchor at all.
+cannot edit (worse than no anchor at all).
 
 **The rule: an anchor must be a path inside the repo that is not under a
 virtualenv.** Filter candidates rather than guessing at traceback shape, and
@@ -936,7 +936,7 @@ paths in traceback frames, and `_in_repo` resolves them against the root.
 
 **A timeout is a model result.** The main subprocess had no
 `TimeoutExpired` handling, so a model-written infinite loop propagated an
-uncaught exception — neither a model result nor an infrastructure error,
+uncaught exception, neither a model result nor an infrastructure error,
 violating the classification rule outright. The cause is almost always the
 patch just applied, so it is fed back:
 
@@ -996,7 +996,7 @@ assert 1 == 2, "the real failure"
 ```
 
 The model authors the test code, so model output could steer where the tool
-believes the failure lives — attacking the property Amendment 2 restored. A
+believes the failure lives, attacking the property Amendment 2 restored. A
 second defect from the same code: `_error_summary` scanned all of `raw`, so a
 multi-failure run could staple one failure's message onto another's anchor.
 
@@ -1101,7 +1101,7 @@ Amendment 3's `_anchor` state machine is wrong and cannot be fixed by
 tuning. pytest emits its `--tb=line` one-liner **directly after** a
 `Captured ... call` section with **zero** separator lines when there is one
 line of captured content, so `captured` never resets and the real anchor is
-skipped — a false negative. Two layout-shaped heuristics have now failed, and
+skipped. That is a false negative. Two layout-shaped heuristics have now failed, and
 pytest offers no reliable delimiter for the end of captured output.
 
 The empirical finding that settles it: `_in_repo`'s existence check already
@@ -1109,7 +1109,7 @@ rejects the fabricated path on its own. The state machine was never what
 protected the anchor.
 
 **So: remove `_CAPTURED` and the captured tracking entirely**, and bound the
-location instead — a file the model merely *printed* is not a failure site,
+location instead: a file the model merely *printed* is not a failure site,
 so the file must exist and the line must be inside it. `_in_repo` takes the
 line number:
 
@@ -1221,7 +1221,7 @@ _FRAME_TAIL = re.compile(r"^in\s")
         return Diagnostic(False, rel, number, message, raw)
 ```
 
-`_error_summary` stays exactly as it is — it is now the collection-error path
+`_error_summary` stays exactly as it is. It is now the collection-error path
 only.
 
 **Delete `test_the_summary_is_paired_with_the_anchor_not_the_first_failure`.**
@@ -1325,7 +1325,7 @@ def test_signatures_of_keeps_definitions_and_drops_bodies():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_scope.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.context'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.context'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1414,13 +1414,13 @@ Three defects in the reference code above, two verified by reproduction:
 1. **`ast.walk` is breadth-first, so definitions come out scrambled.**
    `class Foo: method_a` / `class Bar: method_b` emits
    `Foo, Bar, method_a, method_b`. Any file with two top-level definitions
-   where one has nested content — the common case — gets a misleading outline.
+   where one has nested content (the common case) gets a misleading outline.
 2. **Decorators are dropped.** `node.lineno` points at `def`, not at the
    decorator, so `@property` reads as a plain method.
 3. **The missing-anchor `ScopeError` names the problem but not the remedy**,
    contradicting the plan's own constraint that these messages say what to do.
 
-Sort by position, carry decorator lines, and add a containment check — an
+Sort by position, carry decorator lines, and add a containment check: an
 anchor must never resolve outside the repo:
 
 ```python
@@ -1568,7 +1568,7 @@ def test_system_prompt_stays_small():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_render.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.context.render'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.context.render'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1668,7 +1668,7 @@ Two defects in the reference code above.
 `UnicodeDecodeError` on a non-UTF-8 file and `FileNotFoundError` on one
 deleted between scope resolution and rendering. Either is an uncaught
 exception, which the global constraints forbid. A file that cannot be read is
-neither a model result nor an infrastructure failure — so report it in place,
+neither a model result nor an infrastructure failure, so report it in place,
 in the prompt, and carry on.
 
 **2. `diag.file is None` renders the word "None".** The location line branches
@@ -1690,7 +1690,7 @@ def _read(path: Path) -> str | None:
 ```
 
 Both loops substitute the marker, and the signatures loop must do so
-*instead of* calling `signatures_of` — passing the marker through `ast.parse`
+*instead of* calling `signatures_of`. Passing the marker through `ast.parse`
 would swallow it and emit nothing:
 
 ```python
@@ -1745,7 +1745,7 @@ def test_a_diagnostic_with_no_file_never_renders_the_word_None(tmp_path: Path):
 
 ---
 
-### Task 7: Safety — path refusals and the git envelope
+### Task 7: Safety: path refusals and the git envelope
 
 **Files:**
 - Create: `src/robigo/apply/__init__.py`, `src/robigo/apply/safety.py`
@@ -1847,7 +1847,7 @@ def test_commit_all_records_each_applied_patch(repo: Path):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_safety.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.apply'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.apply'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1959,7 +1959,7 @@ Three defects in the reference code, all demonstrated:
    then stranded on the `robigo/*` branch and disappears from their tree.
 2. **"can never be lost" is false for gitignored files.** `git add -A` skips
    an ignored file, so its dirty state is in no commit. Worse, `check_target`
-   never consults ignore rules, so a *scope* file could be ignored — patched
+   never consults ignore rules, so a *scope* file could be ignored and patched
    with no recoverable pre-image.
 3. **`commit_all` on a clean tree raises `CalledProcessError`**, reachable
    whenever a patch parses but produces no net diff.
@@ -2138,7 +2138,7 @@ def test_a_patch_to_the_anchor_test_is_refused_before_any_write(repo: Path):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_apply_patch.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.apply.patch'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.apply.patch'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -2239,7 +2239,7 @@ def write_atomic(path: Path, text: str) -> None:
 **2. A read or write failure escapes as a bare `OSError`.** `check_target`
 verifies scope membership, not readability, so a file deleted or made
 unreadable between scope resolution and patching raises straight out of
-`apply_patch` — forbidden by the no-uncaught-exception constraint. It becomes
+`apply_patch`, which is forbidden by the no-uncaught-exception constraint. It becomes
 a `PatchError`, because the model chose this file and can recover by looking
 again; `_take_turn` already catches `PatchError`, so no loop change follows.
 
@@ -2417,7 +2417,7 @@ def test_a_malformed_200_is_infrastructure_not_an_empty_generation(monkeypatch):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_client.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.model'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.model'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -2629,15 +2629,15 @@ git commit -m "feat: model clients with mandatory top-level truncate:false"
 
 The test list above covers `OllamaClient` only. Two gaps follow from that:
 
-1. **`LlamaCppClient` has no test evidence at all** — not even offline, though
+1. **`LlamaCppClient` has no test evidence at all**, not even offline, though
    the same `_FakeHTTP` monkeypatch pattern would exercise it with no network.
    It is one of the two clients this task delivers.
 2. **The malformed-200 guard is an OR**, `not isinstance(content, str) or
    body.get("error")`, and only the first half is tested.
 
 The fixtures below are **captured verbatim from a real `llama-server`**
-(build `b1-4988f6e`) rather than invented, including the token counts — the
-shape and the `finish_reason` values were both confirmed against a live
+(build `b1-4988f6e`) rather than invented, including the token counts.
+The shape and the `finish_reason` values were both confirmed against a live
 daemon, `"stop"` normally and `"length"` when a generation is cut at
 `max_tokens`. That flag vetoes a patch, so it is load-bearing.
 
@@ -2870,7 +2870,7 @@ def test_a_run_is_branch_scoped_and_snapshots_first(repo: Path):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_loop.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.loop'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.loop'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -3077,7 +3077,7 @@ follow. Where this section and the code above disagree, this section governs.
 
 **2. `commit_all` takes the paths it is committing.** Staging the whole tree
 folds a user's concurrent hand-edit into a commit titled as the model's patch.
-So `_take_turn` returns a fourth element — the path it wrote, or `None`:
+So `_take_turn` returns a fourth element: the path it wrote, or `None`:
 
 ```python
         action_text, result_text, applied, target = _take_turn(
@@ -3092,14 +3092,14 @@ So `_take_turn` returns a fourth element — the path it wrote, or `None`:
 
 `_take_turn`'s returns become 4-tuples. Only the `patch` success path has a
 target; every other return passes `None`. `apply_patch` already returns the
-path it wrote — use it:
+path it wrote. Use it:
 
 ```python
         target = apply_patch(action, root, scope, adapter, codec, allow_test_edits)
         return label, "applied", True, target
 ```
 
-A `run` action reports `applied=True` with `target=None` — nothing was
+A `run` action reports `applied=True` with `target=None`: nothing was
 written, so nothing is committed, and `git add` is never called with an empty
 pathspec.
 
@@ -3152,7 +3152,7 @@ Four escape paths and one dishonest result field, all reproduced.
 `parse("read")` yields `arg=""` because the argument is optional, so
 `arg.split()[0]` raises `IndexError`; `read logo.png` raises
 `UnicodeDecodeError`; `_find` raises `OSError` on a broken symlink and also
-walks `.venv`. `render._read` already solved exactly this — loop's did not.
+walks `.venv`. `render._read` already solved exactly this. Loop's did not.
 
 ```python
 _READ_CAP = 4000
@@ -3197,12 +3197,12 @@ def _find(root: Path, symbol: str) -> str:
 **2. The mid-loop `adapter.run` must catch `AdapterError`.** Setup maps it to
 `infrastructure`; the per-turn handler catches only
 `(CalledProcessError, FileNotFoundError)`. `PythonAdapter._preflight` runs on
-every invocation and converts any `OSError`/`SubprocessError` — including a
-60s timeout — into `AdapterError`, which then escapes. Add it to that handler.
+every invocation and converts any `OSError`/`SubprocessError` (including a
+60s timeout) into `AdapterError`, which then escapes. Add it to that handler.
 
 **3. A refusal after `start_branch` must not claim `branch=None`.** Reproduced:
 `outcome=refused`, `RunResult.branch=None`, while git is actually on
-`robigo/fix-1` — so the CLI cannot report or clean up what it is told does not
+`robigo/fix-1`, so the CLI cannot report or clean up what it is told does not
 exist, and `git checkout -` no longer means what `commit_all`'s docstring says.
 
 Split the ignored-scope check out of `snapshot` so the common refusal happens
@@ -3411,7 +3411,7 @@ def test_live_one_real_repair(tmp_path: Path):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_cli.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.cli'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.cli'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -3496,7 +3496,7 @@ git commit -m "feat: cli with distinct exit codes and a live smoke test"
 
 The same defect as `--scope`, found the same way. `PythonAdapter._preflight`
 refuses with *"Activate the project's virtualenv, or pass `--python <path>` to
-name the interpreter that has the project's test dependencies"* — and the CLI
+name the interpreter that has the project's test dependencies"*, and the CLI
 never defined `--python`.
 
 It is not cosmetic. A fixture repo under `tmp_path` has no `.venv`, so the
@@ -3506,7 +3506,7 @@ pytest. Consequences observed:
 - `test_exit_code_is_3_when_the_suite_already_passes` fails with `4`, because
   the adapter refuses before the already-passing check is reached.
 - The live smoke test "passes" with exit `4` **without ever reaching the
-  model** — a false positive that would have shipped as evidence the loop works.
+  model**, a false positive that would have shipped as evidence the loop works.
 
 ```python
     parser.add_argument("--python", type=Path, default=None,
@@ -3522,15 +3522,15 @@ threaded through to the adapter:
 ```
 
 Every CLI test that runs against a `tmp_path` fixture repo passes
-`"--python", sys.executable`, including the live smoke test — which is what
+`"--python", sys.executable`, including the live smoke test, which is what
 makes that test exercise the model instead of the preflight refusal. With the
 interpreter supplied, the live run reaches the model and returns 0, 1, or 4 on
 its own merits.
 
 #### Amendment (ruled 2026-08-09): `--scope` must actually exist
 
-Three refusal messages — Task 5's two `ScopeError`s and the budget-exhaustion
-refusal in plan 02 — tell the user to pass `--scope`, and spec §3 and §6 both
+Three refusal messages (Task 5's two `ScopeError`s and the budget-exhaustion
+refusal in plan 02) tell the user to pass `--scope`, and spec §3 and §6 both
 reference it, but this task's CLI never defined it. A refusal that names a
 nonexistent flag is worse than one that names nothing.
 
@@ -3600,7 +3600,7 @@ model that simply cannot fix the bug returns exit 1 and the test still passes.
 - Consumes: `RunResult`.
 - Produces: `RunRecorder(root: Path, run_id: str)` with `turn(prompt: str, reply: str, adapter_raw: str) -> None` and `finish(result: RunResult, model: str, window: int, codec: str) -> None`; `next_run_id(root: Path, slug: str) -> str`.
 
-Required by spec §6.2. **Raw model outputs are stored verbatim**, which is what makes a user's bug report actionable — and per spec §5.1 these records double as corpus candidates for plan 04, so the format is not incidental.
+Required by spec §6.2. **Raw model outputs are stored verbatim**, which is what makes a user's bug report actionable, and per spec §5.1 these records double as corpus candidates for plan 04, so the format is not incidental.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3655,7 +3655,7 @@ def test_turns_are_numbered_in_order(tmp_path: Path):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_record.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.record'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.record'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -3731,7 +3731,7 @@ record each turn immediately after `_take_turn` returns:
         recorder.turn(prompt, gen.text, diag.raw)
 ```
 
-and call `recorder.finish(...)` on every return path by wrapping the body — simplest correct form is to compute the result into a local and finish once:
+and call `recorder.finish(...)` on every return path by wrapping the body. The simplest correct form is to compute the result into a local and finish once:
 
 ```python
     result = _run_turns(...)          # the existing loop body, extracted
@@ -3748,7 +3748,7 @@ has already been through two review rounds. Two things are settled here.
 
 **1. Extract, do not restructure.** `run` becomes a thin wrapper; the entire
 existing body moves to `_execute` **unchanged**, taking `recorder` as a
-parameter. Every `return _result(...)` inside it stays exactly where it is —
+parameter. Every `return _result(...)` inside it stays exactly where it is:
 the wrapper is what guarantees `finish` runs on every path, so no return
 statement needs touching.
 
@@ -3792,7 +3792,7 @@ def run(
 **2. A record that cannot be written must never fail the run.** The record is
 a diagnostic, not the product: a read-only `.robigo/`, a full disk, or a
 permission error must not turn a passing repair into a crash. But it must not
-vanish silently either — the first failure is remembered and surfaced.
+vanish silently either. The first failure is remembered and surfaced.
 
 ```python
 class RunRecorder:
@@ -3820,7 +3820,7 @@ class RunRecorder:
 `turn` and `finish` route every write through `_write`, so one failure
 disables the rest and keeps the first reason.
 
-The CLI surfaces it rather than swallowing it — in `cli.py`, after printing
+The CLI surfaces it rather than swallowing it. In `cli.py`, after printing
 the outcome:
 
 ```python
@@ -3860,7 +3860,7 @@ def test_an_unwritable_root_is_remembered_not_raised(tmp_path: Path):
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_record.py tests/test_loop.py -v`
-Expected: PASS — 6 record tests, every loop test still green
+Expected: PASS (6 record tests, every loop test still green)
 
 - [ ] **Step 5: Commit**
 
@@ -3874,7 +3874,7 @@ git commit -m "feat: verbatim run records that double as corpus candidates"
 **Critical.** `.robigo/runs/<id>/` is written inside the repo, and `snapshot`
 does `git add -A`. So from the second run onward, the commit whose whole
 purpose is preserving the *user's* pre-patch state contains robigo's own
-transcripts — and merging a `robigo/*` branch carries them into the user's
+transcripts, and merging a `robigo/*` branch carries them into the user's
 history. Reproduced. It is invisible in this repository because its own
 `.gitignore` covers `.robigo/`, the one place the leak cannot appear.
 
@@ -3955,11 +3955,11 @@ default; `cli.py` imports `new_recorder` only. The private cross-module
 import disappears.
 
 **`finish`'s `result` gets annotated** via a `TYPE_CHECKING` guard importing
-`RunResult` from `robigo.loop` — the runtime dependency is one-way
+`RunResult` from `robigo.loop`. The runtime dependency is one-way
 (`loop → record`), so no cycle appears.
 
 **The overflowing prompt gets recorded.** `recorder.turn(...)` sits after
-`_take_turn`, so the two handlers that return before it record nothing — and
+`_take_turn`, so the two handlers that return before it record nothing, and
 the prompt that blew the window is the single most useful artifact for exit
 code 2. Both handlers record it first:
 
@@ -3974,7 +3974,7 @@ code 2. Both handlers record it first:
 ```
 
 **`main` refuses a `--root` that does not exist**, before constructing
-anything — a typo'd path was being created from nothing and then refused:
+anything. A typo'd path was being created from nothing and then refused:
 
 ```python
     root = Path(args.root).resolve()
