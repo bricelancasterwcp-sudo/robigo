@@ -1,4 +1,4 @@
-# Second subject: qwen2.5-coder-14B-Q4 — 0/940, and the reason is geometry, not cognition
+# Second subject: qwen2.5-coder-14B-Q4, 0/940, and the reason is geometry, not cognition
 
 2026-08-14. A **new subject row** on the frozen `boltons-gate-v1`
 corpus under the identical apparatus that measured qwen2.5-coder-7B-Q8
@@ -9,7 +9,7 @@ reference.
 
 ## The number
 
-**Strict repair: 0.0% — 0 of 940 attempts** (94 records × 10 seeds,
+**Strict repair: 0.0% (0 of 940 attempts)** (94 records × 10 seeds,
 940/940 scored, zero exclusions). Record-level 95% upper bound: 4.0%.
 `repeat_rate` 39.1%; `turns_to_green_median` undefined (nothing went
 green). Same `--window 8192` request, same seeds, same corpus, same
@@ -22,25 +22,25 @@ The two rows did not run at the same effective context, and the
 transcript pins the mechanism:
 
 - Stage 0 verified a **1,783-token window for the 14B** against
-  **4,535 for the 7B** — 39% of the context, same requested cap.
+  **4,535 for the 7B**, 39% of the context, same requested cap.
 - The first stage-0 probes show why: at the fixed `num_ctx=8192`
   request shape this daemon serves 14B-Q4 prompts of ~1.2k and ~1.7k
   tokens and **errors** (empty, count-free replies) on everything
-  larger. Not truncation — refusal.
+  larger. Not truncation: refusal.
 - The same daemon serves the same 14B blob to **16,384 tokens clean**
-  when `num_ctx` is right-sized per request — measured independently
+  when `num_ctx` is right-sized per request, measured independently
   the same day by assay's ceiling probe, which widens `num_ctx` per
   call. The failure is the *request shape*, not the model or the
   hardware ceiling.
 - Stage 0 therefore did exactly its job: it refused to ship the
-  requested 8192 and verified the 1,783 that actually worked — the
+  requested 8192 and verified the 1,783 that actually worked: the
   window law ("computed, never read") converting a daemon quirk into a
   stated instrument condition instead of a silent one.
 
 At 1,783 tokens the degradation ladder sits at its lowest rungs almost
 everywhere: signatures-only context, anchor slices, no room for
-hop-context. The model's loop discipline was fine — envelope fidelity
-1.0, `whole_file` codec landing 97.3% on stage-2 probes — **it simply
+hop-context. The model's loop discipline was fine (envelope fidelity
+1.0, `whole_file` codec landing 97.3% on stage-2 probes). **It simply
 could not see the code it was asked to repair.** The higher repeat
 rate (39.1% vs 29.8%) is what looping on an unreadable task looks
 like.
@@ -52,23 +52,23 @@ vs 14B-Q4 as different subjects, never '14B vs 7B'"), and at fixed
 VRAM the answer is sharp: **the 14B's parameter count is paid for in
 KV geometry (192 vs 56 KiB/token) and serving fragility, and on this
 stack that tax zeroes the context an agentic repair loop needs.**
-Doubling parameters at half precision bought nothing here — not
+Doubling parameters at half precision bought nothing here, not
 because the model reasons worse, but because the loop never got to ask
 it a fair question.
 
 What this row does **not** answer is the capability-window question
 (whether 14B-class cognition clears what 7B cognition fell below):
 that requires the 14B at the 7B's effective window. The daemon can
-serve it (assay proved 16k works right-sized), so a third run — 14B
+serve it (assay proved 16k works right-sized), so a third run (14B
 with a window request this daemon honors, e.g. `--window 4096` or a
-right-sized `num_ctx` path — would isolate cognition from geometry.
+right-sized `num_ctx` path) would isolate cognition from geometry.
 ~5h GPU; queued for the owner's call, not run unilaterally.
 
 ## Provenance
 
 Fresh boltons clone at `580a9c2d` (branch `gate`); corpus
 `boltons-gate-v1` (the known name-collision means `repair_records`
-reads 93-for-94, both fused records passless, rate unaffected — see
+reads 93-for-94, both fused records passless, rate unaffected; see
 CARRIED-DEBT plan 05); interpreter = robigo's venv for loop and judge;
 run detached 17:55–01:25 (7h30m), wrapper
 `~/workspace/robigo-14b-run.sh`, exit 0. Profile preserved beside this
@@ -77,20 +77,20 @@ document as
 
 ## Erratum, 2026-08-14 (same day): the mechanism was narrower than claimed
 
-This document attributed the window collapse to "the request shape" —
+This document attributed the window collapse to "the request shape":
 fixed `num_ctx=8192`. Preparing the third run falsified that: with the
 identical options (`num_ctx=8192`, `num_predict=1024`, `/api/chat`),
 this daemon serves normal-density 3.2k-token prompts to this model
 cleanly, cold or warm. The failing prompts were **stage 0's own
-filler** — the single word "token " repeated thousands of times — and
+filler** (the single word "token " repeated thousands of times), and
 the failure reproduces on demand with that degenerate content (a
 stats-free 200: content present, `prompt_eval_count` absent,
 `done: false`) while word-list filler of the same size passes.
 
 So the corrected chain: **probe content × a daemon bug on degenerate
 repeated-token chat prompts**, tripping reliably above ~1.8k tokens
-for this model. The row's numbers stand unchanged — stage 0 verified
-1,783 tokens and the run was context-starved exactly as described —
+for this model. The row's numbers stand unchanged (stage 0 verified
+1,783 tokens and the run was context-starved exactly as described),
 but the cause was the instrument's own probe text, not the request
 shape in general. Both halves of this hazard were already on the books
 (this project's probe-density debt; assay's "one repeated token

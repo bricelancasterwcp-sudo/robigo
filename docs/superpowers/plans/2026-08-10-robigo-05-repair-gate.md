@@ -1,10 +1,10 @@
-# robigo plan 05 — the repair gate Implementation Plan
+# robigo plan 05: the repair gate Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build profiler stages 4 (repair) and 5 (loop discipline), plus the two CLI prerequisites they need, then read stage 4's number and apply the §0.2 kill criterion at 33.3%.
 
-**Architecture:** Stage 4 composes existing, already-mutation-tested parts rather than reimplementing them: plan 04's clone/baseline/pytest harness judges the result, and `loop.run` — the shipped tool, unmodified in behaviour — performs the repair. A new `profile/repair.py` owns one attempt and the aggregate over records × seeds. Stage 5 derives two metrics from stage 4's runs with zero extra model calls.
+**Architecture:** Stage 4 composes existing, already-mutation-tested parts rather than reimplementing them: plan 04's clone/baseline/pytest harness judges the result, and `loop.run` (the shipped tool, unmodified in behaviour) performs the repair. A new `profile/repair.py` owns one attempt and the aggregate over records × seeds. Stage 5 derives two metrics from stage 4's runs with zero extra model calls.
 
 **Tech Stack:** Python 3.12+, zero runtime dependencies, pytest, Ollama at `http://127.0.0.1:11434`.
 
@@ -18,11 +18,11 @@
 - **`PYTHONPATH` is forced and asserted in any subprocess that imports a clone.** This project is installed editable; without it a subprocess silently imports `~/workspace/robigo/src` and inverts the result. Measured: 8 of 8 mutants falsely surviving.
 - **Sanitize the environment being measured in.** `PYTEST_ADDOPTS=-x` exported once turned a correctly-rejected mutant into a kept record.
 - **Anything not measured is stated in `dropped`.** Never `None` with no explanation, never `0.0` standing in for "not measured".
-- **Do not use `timeout(1)` on this box** — the uutils build SIGSEGVs while reaping multithreaded children; exit 139 is the wrapper, not the program.
+- **Do not use `timeout(1)` on this box**. The uutils build SIGSEGVs while reaping multithreaded children; exit 139 is the wrapper, not the program.
 - **Baseline before you start:** 626 tests (625 passing + 1 skipped without `OLLAMA_MODELS`; 2 deselected are `live`). Every task must leave the suite green.
 - **Branch:** `feat/repair-gate`, already created, spec already committed at `6c635b1`.
 
-### Verified externals (checked 2026-08-10 — do not re-derive, do not assume beyond this list)
+### Verified externals (checked 2026-08-10: do not re-derive, do not assume beyond this list)
 
 ```python
 # robigo.model.detect
@@ -103,14 +103,14 @@ render_table(profile: Profile) -> str
 
 ### Task 1: `--window` on `robigo profile` (prerequisite P2)
 
-Without this the best available family cannot be profiled on this box at all: `qwen2.5-coder:7b` resolves to its full 32768 training context (VRAM never binds — ~7.6 GiB weights + ~1.75 GiB KV against 14,558 MiB free), stage 0 probes past this box's measured ~11.5k daemon ceiling, and the run dies before stage 0 finishes.
+Without this the best available family cannot be profiled on this box at all: `qwen2.5-coder:7b` resolves to its full 32768 training context (VRAM never binds: ~7.6 GiB weights + ~1.75 GiB KV against 14,558 MiB free), stage 0 probes past this box's measured ~11.5k daemon ceiling, and the run dies before stage 0 finishes.
 
 **Files:**
 - Modify: `src/robigo/cli.py` (`profile_main`, the `plan_window(...)` call passing `None`)
 - Test: `tests/test_cli_profile.py`
 
 **Interfaces:**
-- Consumes: `plan_window(backend, model, host, user_cap, *, kv_bits, gguf_path)` — `user_cap` is already the 4th positional parameter and already implements `min(training_ctx, vram, user_cap)`. This task only exposes it.
+- Consumes: `plan_window(backend, model, host, user_cap, *, kv_bits, gguf_path)`. `user_cap` is already the 4th positional parameter and already implements `min(training_ctx, vram, user_cap)`. This task only exposes it.
 - Produces: `robigo profile --window N`. Task 8 relies on it existing.
 
 - [ ] **Step 1: Write the failing tests**
@@ -156,7 +156,7 @@ def test_no_window_flag_still_passes_none(monkeypatch):
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_cli_profile.py -v`
-Expected: FAIL — `unrecognized arguments: --window`.
+Expected: FAIL, `unrecognized arguments: --window`.
 
 - [ ] **Step 3: Implement**
 
@@ -198,11 +198,11 @@ def test_window_above_training_ctx_does_not_raise_the_window():
     assert capped.limited_by == "training_ctx"
 ```
 
-Check `usable_window`'s real signature first (`src/robigo/model/geometry.py`) and adjust the constructor call to match it — do **not** transcribe the line above if it disagrees with the source. If it disagrees, report the true signature in your task report.
+Check `usable_window`'s real signature first (`src/robigo/model/geometry.py`) and adjust the constructor call to match it. Do **not** transcribe the line above if it disagrees with the source. If it disagrees, report the true signature in your task report.
 
 - [ ] **Step 6: Mutation-test**
 
-Invert the flag wiring (`args.window` → `None`) and re-run. The first test must fail. If it passes, the test is vacuous — fix it before committing.
+Invert the flag wiring (`args.window` → `None`) and re-run. The first test must fail. If it passes, the test is vacuous. Fix it before committing.
 
 - [ ] **Step 7: Commit**
 
@@ -230,7 +230,7 @@ only: plan_window's min() semantics are unchanged."
 
 **The invariant that matters (spec P1.2):** `fixtures_from_corpus` drops ~9.2% of real records as unwrappable (measured: 91 of 986 from `src/robigo`). Those are **harness artifacts and are never scored as model failures.** They must be excluded from both numerator and denominator, and named in `dropped`.
 
-- [ ] **Step 1: Write the failing test — the falsification test for P1.2**
+- [ ] **Step 1: Write the failing test: the falsification test for P1.2**
 
 ```python
 # tests/test_cli_profile.py
@@ -269,7 +269,7 @@ def test_unwrappable_records_leave_the_rate_identical_and_are_named(tmp_path):
 - [ ] **Step 2: Run it**
 
 Run: `.venv/bin/python -m pytest tests/test_cli_profile.py::test_unwrappable_records_leave_the_rate_identical_and_are_named -v`
-Expected: PASS — this behaviour already exists (plan 04 task 4 built it). **This step is a characterization test, deliberately.** If it FAILS, stop and report BLOCKED: the spec's P1.2 assumption about existing behaviour is wrong, and every rate in this plan is affected.
+Expected: PASS. This behaviour already exists (plan 04 task 4 built it). **This step is a characterization test, deliberately.** If it FAILS, stop and report BLOCKED: the spec's P1.2 assumption about existing behaviour is wrong, and every rate in this plan is affected.
 
 - [ ] **Step 3: Write the failing test for the CLI wiring**
 
@@ -305,7 +305,7 @@ def test_corpus_flag_routes_records_and_carries_dropped(tmp_path, monkeypatch):
 
 - [ ] **Step 4: Run to verify it fails**
 
-Expected: FAIL — `unrecognized arguments: --corpus`.
+Expected: FAIL, `unrecognized arguments: --corpus`.
 
 - [ ] **Step 5: Implement**
 
@@ -361,9 +361,9 @@ would put a harness artifact into the number the kill gate reads."
 
 ---
 
-### Task 3: `suite_state()` — the public judging primitive
+### Task 3: `suite_state()`: the public judging primitive
 
-Stage 4 must ask "is this suite green, and did the run actually complete?" Every parser it needs already exists in `verify.py` as a module-private. Reaching into privates from a new module would create a second, drifting copy of the same knowledge — the exact failure mode plan 01's process lesson 2 names. One new public function instead.
+Stage 4 must ask "is this suite green, and did the run actually complete?" Every parser it needs already exists in `verify.py` as a module-private. Reaching into privates from a new module would create a second, drifting copy of the same knowledge: the exact failure mode plan 01's process lesson 2 names. One new public function instead.
 
 **Files:**
 - Modify: `src/robigo/profile/verify.py`
@@ -432,7 +432,7 @@ def test_a_run_outside_the_clone_raises(tmp_path):
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_suite_state.py -v`
-Expected: FAIL — `cannot import name 'SuiteState'`.
+Expected: FAIL, `cannot import name 'SuiteState'`.
 
 - [ ] **Step 3: Implement in `verify.py`**
 
@@ -522,8 +522,8 @@ Task 5 and Task 6 rely on these exact names.
 
 **Read spec §4 before writing this.** Two rules decide whether the number is real:
 
-1. **§4.2 — the task string names only the failing test id.** Never `record.path`, `record.line`, or `record.fixed`. A number produced by telling the model where the bug is describes a tool nobody has.
-2. **§4.3.4 — an infrastructure failure is not a model failure.** It sets `excluded`, and Task 5 removes it from both numerator and denominator.
+1. **§4.2: the task string names only the failing test id.** Never `record.path`, `record.line`, or `record.fixed`. A number produced by telling the model where the bug is describes a tool nobody has.
+2. **§4.3.4: an infrastructure failure is not a model failure.** It sets `excluded`, and Task 5 removes it from both numerator and denominator.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -670,7 +670,7 @@ def test_a_stalled_run_is_a_real_model_failure_not_an_exclusion(tmp_path, monkey
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_repair.py -v`
-Expected: FAIL — no module `robigo.profile.repair`.
+Expected: FAIL, no module `robigo.profile.repair`.
 
 - [ ] **Step 3: Implement `repair.py`**
 
@@ -811,7 +811,7 @@ def attempt_repair(
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_repair.py -v`
-Expected: PASS. Note `run` and `suite_state` are imported into `repair`'s namespace so the tests' `monkeypatch.setattr(R, ...)` works — do not change to `from robigo import loop; loop.run(...)`.
+Expected: PASS. Note `run` and `suite_state` are imported into `repair`'s namespace so the tests' `monkeypatch.setattr(R, ...)` works. Do not change to `from robigo import loop; loop.run(...)`.
 
 - [ ] **Step 5: Mutation-test each rule**
 
@@ -864,7 +864,7 @@ def stage4_repair(records, repo, client, *, seeds, codec, base,
                   turn_cap=8, runner=pytest_runner) -> Stage4: ...
 ```
 
-Tasks 6 and 7 rely on these names. `per_record` is what makes the record-level confidence interval computable (spec §4.5) — without it the gate can only report an attempt-level interval, which would overclaim precision by roughly √10.
+Tasks 6 and 7 rely on these names. `per_record` is what makes the record-level confidence interval computable (spec §4.5). Without it the gate can only report an attempt-level interval, which would overclaim precision by roughly √10.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -917,7 +917,7 @@ def test_a_record_with_every_attempt_excluded_is_not_counted(monkeypatch, tmp_pa
 
 - [ ] **Step 2: Run to verify they fail**
 
-Expected: FAIL — `stage4_repair` not defined.
+Expected: FAIL, `stage4_repair` not defined.
 
 - [ ] **Step 3: Implement**
 
@@ -966,7 +966,7 @@ def stage4_repair(
     )
 ```
 
-Also store `attempts` on the module for Task 6 — return them by adding `all_attempts: tuple[Attempt, ...]` to `Stage4` and populating it with `tuple(attempts)`. Task 6 reads it; add the field now so no later task changes this dataclass's shape.
+Also store `attempts` on the module for Task 6. Return them by adding `all_attempts: tuple[Attempt, ...]` to `Stage4` and populating it with `tuple(attempts)`. Task 6 reads it; add the field now so no later task changes this dataclass's shape.
 
 - [ ] **Step 4: Run to verify they pass**
 
@@ -992,7 +992,7 @@ lives. rate is None (not 0.0) when nothing was scored."
 
 ### Task 6: `RunResult.repeats`, and stage 5
 
-The loop already detects repeats, but `stalls` is a **consecutive** counter that resets to zero on any non-repeat (`loop.py:280`), and it is local — never exposed. Stage 5 needs a **total**. This is a real, small change to production code, not a free read.
+The loop already detects repeats, but `stalls` is a **consecutive** counter that resets to zero on any non-repeat (`loop.py:280`), and it is local, never exposed. Stage 5 needs a **total**. This is a real, small change to production code, not a free read.
 
 **Files:**
 - Modify: `src/robigo/loop.py` (`RunResult`, `_result`, `_execute`)
@@ -1077,7 +1077,7 @@ def test_repeats_counts_every_repeat_not_just_consecutive_ones():
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_discipline.py tests/test_loop.py -v`
-Expected: FAIL — no module `robigo.profile.discipline`; `RunResult` has no `repeats`.
+Expected: FAIL, no module `robigo.profile.discipline`; `RunResult` has no `repeats`.
 
 - [ ] **Step 3: Implement `repeats` in `loop.py`**
 
@@ -1146,7 +1146,7 @@ Replace both `Attempt(...)` constructions' hardcoded `0` with `result.repeats` (
 Run: `.venv/bin/python -m pytest tests/ -q`
 Expected: all green.
 
-- [ ] **Step 7: Prove invariant 7.1 — stage 5 costs nothing**
+- [ ] **Step 7: Prove invariant 7.1: stage 5 costs nothing**
 
 ```python
 def test_stage5_never_calls_the_client():
@@ -1157,7 +1157,7 @@ def test_stage5_never_calls_the_client():
     stage5_discipline([_a(True, 1, 0), _a(False, 3, 1)])   # no client at all
 ```
 
-Note `stage5_discipline` takes no client by construction, which is the strongest possible form of this guarantee — state that in the task report.
+Note `stage5_discipline` takes no client by construction, which is the strongest possible form of this guarantee. State that in the task report.
 
 - [ ] **Step 8: Mutation-test**
 
@@ -1235,7 +1235,7 @@ def test_every_new_field_round_trips():
 
 - [ ] **Step 2: Run to verify they fail**
 
-Expected: FAIL — `Profile.__init__() got an unexpected keyword argument 'repair_rate'`.
+Expected: FAIL, `Profile.__init__() got an unexpected keyword argument 'repair_rate'`.
 
 - [ ] **Step 3: Implement**
 
@@ -1299,7 +1299,7 @@ plus a `discipline` row for the two stage-5 numbers, each printing `not measured
 
 - [ ] **Step 6: Mutation-test**
 
-Make `repeat_rate`'s dropped line unconditional again — `test_repeat_rates_dropped_line_disappears_once_it_is_measured` must fail. Make `repair_rate` default to `0.0` instead of `None` — the stage-4-gate test and the JSON-distinguishability test must both fail.
+Make `repeat_rate`'s dropped line unconditional again. `test_repeat_rates_dropped_line_disappears_once_it_is_measured` must fail. Make `repair_rate` default to `0.0` instead of `None`. The stage-4-gate test and the JSON-distinguishability test must both fail.
 
 - [ ] **Step 7: Commit**
 
@@ -1314,7 +1314,7 @@ payload_corruption's stays and names plan 06."
 
 ---
 
-### Task 8: CLI wiring — `--repo`, and end-to-end exercise
+### Task 8: CLI wiring: `--repo`, and end-to-end exercise
 
 **Files:**
 - Modify: `src/robigo/cli.py`
@@ -1346,7 +1346,7 @@ Thread `repo=args.repo` and the corpus's records/baseline (`read_corpus_baseline
 
 - [ ] **Step 3: Verify `--repo`'s SHA matches the corpus (a real trap)**
 
-Every record carries `source_sha`. A `--repo` at a *different* commit stages defects at line numbers that no longer mean what the corpus recorded — silently producing failures that are harness artifacts.
+Every record carries `source_sha`. A `--repo` at a *different* commit stages defects at line numbers that no longer mean what the corpus recorded, silently producing failures that are harness artifacts.
 
 ```python
 def test_a_repo_at_the_wrong_sha_is_refused_not_measured():
@@ -1359,7 +1359,7 @@ Implement: read `git rev-parse HEAD` in `--repo`, compare against the records' `
 
 - [ ] **Step 4: Run the tool, twice**
 
-Project law — the worst user-facing defect so far was invisible to 300 passing tests and appeared on the *second* consecutive run.
+Project law: the worst user-facing defect so far was invisible to 300 passing tests and appeared on the *second* consecutive run.
 
 ```bash
 .venv/bin/robigo profile --model qwen2.5-coder:7b-instruct-q8_0 --window 8192 --seeds 1
@@ -1380,7 +1380,7 @@ never recorded, manufacturing failures that are harness artifacts."
 
 ---
 
-### Task 9: Select and freeze the corpus — **RATIFICATION GATE**
+### Task 9: Select and freeze the corpus: **RATIFICATION GATE**
 
 **Stop and get Brice's sign-off before generating anything.** Spec §5: selection made after seeing a number can only be a rationalization.
 
@@ -1388,7 +1388,7 @@ never recorded, manufacturing failures that are harness artifacts."
 
 Pure Python, no compiled extensions; suite green at HEAD (`baseline.broken == 0`); baseline wall clock under ~30 s; no network in tests; permissive licence; enough source for ~100 records; not robigo.
 
-For each candidate actually clone it and measure — do not judge from reputation:
+For each candidate actually clone it and measure. Do not judge from reputation:
 
 ```bash
 git clone --no-hardlinks --depth 1 <url> /tmp/cand && cd /tmp/cand
@@ -1411,7 +1411,7 @@ Do not proceed to Step 3 without an explicit choice. This is a human gate, not a
 - [ ] **Step 4: Verify the generated corpus before trusting it**
 
 - every record's `source_sha` identical and equal to the clone's HEAD
-- `read_corpus_baseline(path).broken == 0` — spec §1.2's pass definition depends on it
+- `read_corpus_baseline(path).broken == 0`. Spec §1.2's pass definition depends on it
 - `fixtures_from_corpus(records).dropped` length recorded; report the conversion loss as a percentage
 - record count ≥ 100 after conversion loss
 
@@ -1445,7 +1445,7 @@ Spec §10: ~12 h of unattended GPU time should run once, correctly.
 - Does `repair_attempts` equal `5 × 2` minus exclusions, and do the exclusions appear in `dropped`?
 - Is `per_record` populated for every record that was scored?
 - Did the anchor test file survive every attempt?
-- Did the clone reset cleanly between attempts — is `git status` clean at the end?
+- Did the clone reset cleanly between attempts? Is `git status` clean at the end?
 - Is `turns_to_green_median` `None` if nothing passed, rather than `0.0`?
 - Time one attempt. Multiply by 100 × 10. **If the extrapolation exceeds 16 h, stop and report before the real run.**
 
@@ -1467,11 +1467,11 @@ Do not proceed to Task 11 with a known defect. The dry run exists precisely so t
     --record docs/transcripts/qwen7b-stage4.jsonl
 ```
 
-`--full` fixes seeds at 10 and mode at `full` — the only publishable mode, and the mode the gate reads (spec §1.1). Run it detached; it is ~12 h.
+`--full` fixes seeds at 10 and mode at `full`: the only publishable mode, and the mode the gate reads (spec §1.1). Run it detached; it is ~12 h.
 
 - [ ] **Step 2: Compute the record-level confidence interval**
 
-Spec §4.5 and §6.1: the point estimate is attempt-level, the interval is **record**-level. From `per_record`, take each record's pass proportion, then a 95% interval on the record-level mean. Do **not** compute a binomial interval over `repair_attempts` — that would claim roughly √10 more precision than this design has.
+Spec §4.5 and §6.1: the point estimate is attempt-level, the interval is **record**-level. From `per_record`, take each record's pass proportion, then a 95% interval on the record-level mean. Do **not** compute a binomial interval over `repair_attempts`. That would claim roughly √10 more precision than this design has.
 
 - [ ] **Step 3: Apply the gate**
 
@@ -1494,7 +1494,7 @@ Neither silently. The old value stays visible in history and in the debt file.
 
 - [ ] **Step 5: Write the result up honestly**
 
-Whatever the number is, report: the rate, the record-level interval, the corpus (repo, SHA, record count, conversion loss), the window cap and that it was a cap, stage 5's two diagnostics, and every `dropped` line. Spec §10's three biases all belong here — single-repo generality, the ~11.5k daemon ceiling, and stage 0's ~0.55 probe-density pessimism, which biases *against* the thesis.
+Whatever the number is, report: the rate, the record-level interval, the corpus (repo, SHA, record count, conversion loss), the window cap and that it was a cap, stage 5's two diagnostics, and every `dropped` line. Spec §10's three biases all belong here: single-repo generality, the ~11.5k daemon ceiling, and stage 0's ~0.55 probe-density pessimism, which biases *against* the thesis.
 
 A null result with its own precision stated is the publishable artifact §0.2 promises. A bare percentage is not.
 
@@ -1518,7 +1518,7 @@ gh pr create --title "Plan 05: the repair gate" --body "..."
 **Known gaps, stated rather than hidden:**
 
 - **Task 6's `test_repeats_counts_every_repeat_not_just_consecutive_ones` and Task 8's two tests are described, not written out.** They depend on fake-client/adapter helpers that already exist in `tests/test_loop.py` and `tests/test_cli_profile.py`, and transcribing invented versions here would produce exactly the "plan text as dominant defect source" failure this project has recorded twice. The implementer must read the existing helpers and follow them. Every *assertion* is specified.
-- **Task 7 step 3's `best` computation is deliberately not final code** — it says what must hold (one definition shared with `best_codec`, not two) and leaves the refactor shape to the implementer.
+- **Task 7 step 3's `best` computation is deliberately not final code**. It says what must hold (one definition shared with `best_codec`, not two) and leaves the refactor shape to the implementer.
 - **Task 9's repo is unnamed by design.** Naming it here would pre-empt the ratification gate.
 
 **Type consistency:** `Attempt` (7 fields incl. `repeats`) is created in Task 4, extended by Task 6, consumed by Tasks 5 and 6. `Stage4` gains `all_attempts` in Task 5 and is not reshaped later. `SuiteState` is defined in Task 3 and used unchanged in Task 4. `RunResult.repeats` is added in Task 6 with a default, so Task 4's construction of `RunResult(...)` in tests stays valid. `stage4_repair`/`stage5_discipline`/`suite_state`/`task_for` names are identical everywhere they appear.

@@ -1,8 +1,8 @@
-# robigo 03 — Profiler Stages 0–2 Implementation Plan
+# robigo 03: Profiler Stages 0–2 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** `robigo profile` measures a served model's real window, whether it can emit a parseable action at all, and which codec its patches actually land with — then writes a profile the loop configures itself from, reproducibly enough to re-run with no GPU.
+**Goal:** `robigo profile` measures a served model's real window, whether it can emit a parseable action at all, and which codec its patches actually land with, then writes a profile the loop configures itself from, reproducibly enough to re-run with no GPU.
 
 **Architecture:** Three staged probes, cheapest first, each able to stop the run. Every model call passes through a transcript layer that either records or replays, so the whole pipeline is exercisable from a fixture file. A reporter turns stage results into a `Profile` JSON plus a human table, carrying the seeds and mode that produced it so a quick run can never be quoted as a result.
 
@@ -16,7 +16,7 @@
 - **Stage 0 probes; it does not trust metadata.** The computed window from plan 02 is a *hypothesis* to be verified by an actual load (spec §5, stage 0).
 - **Every profile records `seeds` and `mode`.** Quick-mode numbers are never publishable; the reporter marks them (spec §5.5).
 - **Per-family only, never pooled.** Floors and ceilings are named as floors and ceilings.
-- **Anything dropped for time is stated as dropped** — no silent caps.
+- **Anything dropped for time is stated as dropped**: no silent caps.
 - Commit messages: `<type>: <subject>`, single line, no body, no trailers.
 
 ---
@@ -30,7 +30,7 @@
 | `src/robigo/profile/stages.py` | stage 0 window probe, stage 1 envelope, stage 2 codec landing |
 | `src/robigo/profile/fixtures/` | five tiny single-defect Python repos for stage 2 |
 | `src/robigo/profile/report.py` | orchestration, verdict, JSON + table output |
-| `src/robigo/cli.py` | *modified* — `robigo profile` subcommand |
+| `src/robigo/cli.py` | *modified*: `robigo profile` subcommand |
 
 The five bundled fixtures are a stopgap so stage 2 can be built and tested now. Plan 04 replaces them with mutation-generated corpora and this module's interface does not change when it does.
 
@@ -44,14 +44,14 @@ consumes was checked against the shipped code first. All present and compatible:
 
 **Correction (2026-08-10): the `WindowPlan` claim above was wrong.** This note
 originally said `WindowPlan` had "exactly the four fields this plan constructs".
-It has **six** — `weights_bytes` and `overhead_bytes` were added by plan 02b's fix
+It has **six**: `weights_bytes` and `overhead_bytes` were added by plan 02b's fix
 wave, so the window-0 refusal could print its terms honestly. I verified that the
 *names* this plan imports exist and did not check arity, which is the same
 not-quite-verified shape this project keeps finding. **Every `WindowPlan(...)`
-literal in this plan is therefore stale** — Tasks 3, 4, 5 and 6 all contain one.
+literal in this plan is therefore stale**: Tasks 3, 4, 5 and 6 all contain one.
 Add `weights_bytes=` and `overhead_bytes=` when you transcribe them; Task 3's
 implementer hit this and fixed it locally, and Tasks 4-6 will hit it too. `build_client(args)` reads exactly
-`backend, model, window, num_predict, host` — the five the plan's `Namespace`
+`backend, model, window, num_predict, host`: the five the plan's `Namespace`
 supplies. Nothing in this plan reads run records, so 02b's `rung` → `rungs`
 schema change does not touch it.
 
@@ -69,7 +69,7 @@ not `Recorder`/`Replayer`.** `record.py` already ships `RunRecorder` and
 to `.robigo/runs/<id>/` for a human to read. This plan's classes wrap a client to
 record and replay *model calls* for deterministic re-runs. Two different things
 both called "recorder" in one codebase is how this project has repeatedly ended
-up with two answers to one question — see `docs/CARRIED-DEBT.md`, where a
+up with two answers to one question: see `docs/CARRIED-DEBT.md`, where a
 five-way disagreement about unreadable files and three names for one output
 reservation are both recorded. Name them apart now, while it costs nothing.
 Everywhere this plan writes `Recorder`/`Replayer`, read `CallRecorder`/
@@ -169,7 +169,7 @@ def test_dropped_work_is_recorded_rather_than_silent():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_profile_schema.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.profile'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.profile'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -386,7 +386,7 @@ def test_recording_appends_one_line_per_call(tmp_path: Path):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_transcript.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.profile.transcript'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.profile.transcript'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -475,20 +475,20 @@ Found by Task 3 and reproduced: `CallRecorder` writes a transcript row only afte
 `generate` **returns**, so a call that *raises* leaves no row. Stage 0 bisects by
 deliberately provoking `ServerContextOverflowError`, so on a model whose planned
 window is wrong, 7 of 14 probes go unrecorded and replay dies on the very first
-call — the largest probe, which was rejected live.
+call: the largest probe, which was rejected live.
 
 The consequence is the feature inverted: `--replay` reproduces a profile run only
-when stage 0 found nothing wrong. The runs actually worth recording and sharing —
-a model whose computed window did not hold — are exactly the ones that cannot be
+when stage 0 found nothing wrong. The runs actually worth recording and sharing (
+a model whose computed window did not hold) are exactly the ones that cannot be
 replayed.
 
 *Invariant:* a transcript records the **outcome** of every call, reply or
-exception, and replay reproduces that outcome — re-raising the same exception
+exception, and replay reproduces that outcome: re-raising the same exception
 type with the recorded message. A recorded run replays identically whether or not
 it hit a rejection.
 
 Keep `TranscriptMiss` meaning what it now means: the call was never recorded, or
-its recorded outcomes are used up. A recorded *rejection* is not a miss — it is a
+its recorded outcomes are used up. A recorded *rejection* is not a miss. It is a
 faithful replay of a call that failed.
 
 Test it end to end at the stage level, not only at the wrapper: record a stage-0
@@ -500,16 +500,16 @@ record/replay layer, and it currently fails.
 
 Measured: against a client rejecting prompts over 6000 characters, stage 0
 returns `Stage0(window=2001, verified=True, ...)`. At 3 characters per token the
-largest *accepted* probe was 6000 chars — 2000 tokens — so a prompt for 2001
+largest *accepted* probe was 6000 chars (2000 tokens), so a prompt for 2001
 tokens (6003 chars) would have been rejected. The number reported as verified is
 one token above anything the server actually accepted.
 
-One token, in the direction that claims more capability than was demonstrated —
+One token, in the direction that claims more capability than was demonstrated:
 the same ±1 class that cost plan 02b a false refusal and a needless
 over-degradation. `verified=True` must mean "a probe of this size was accepted",
 so report the largest size that actually passed, not the boundary plus one.
 
-### Task 3: Stage 0 — probe the window rather than trust it
+### Task 3: Stage 0, probe the window rather than trust it
 
 **Files:**
 - Create: `src/robigo/profile/stages.py`
@@ -521,7 +521,7 @@ so report the largest size that actually passed, not the boundary plus one.
 
 The probe sends a prompt sized to fill the planned window and confirms the server accepts it. A planned window the server rejects is a computed hypothesis that was wrong, and the profile must carry the smaller verified number.
 
-#### Verified before execution (2026-08-10) — the rejection boundary, measured
+#### Verified before execution (2026-08-10): the rejection boundary, measured
 
 The probe design depends on how the server decides to reject, so it was measured
 against the live daemon before this task was dispatched
@@ -530,27 +530,27 @@ against the live daemon before this task was dispatched
 | prompt | num_ctx | num_predict | result |
 |---|---|---|---|
 | ~430 tok | 512 | 64 | accepted |
-| 530 tok | 512 | 64 | rejected — *"request (530 tokens) exceeds the available context size (512 tokens)"* |
+| 530 tok | 512 | 64 | rejected: *"request (530 tokens) exceeds the available context size (512 tokens)"* |
 | 535 tok | 512 | **256** | rejected, reporting **535** tokens, not 791 |
 
 Three facts follow, and the probe must be built on them rather than on
 assumption:
 
 1. **Rejection is on the prompt alone against `num_ctx`; `num_predict` is not
-   counted.** The third row proves it — raising `num_predict` fourfold did not
+   counted.** The third row proves it: raising `num_predict` fourfold did not
    change the reported figure. So a probe that fills the window entirely is
    legitimate and will not be rejected for leaving no room to generate. Without
    this, the natural worry is that stage 0 would report every model unverified.
 
 2. **The rejection names the real token count**, from the server's own
-   tokenizer. Use it. A rejection is therefore not merely a "no" — it is a
+   tokenizer. Use it. A rejection is therefore not merely a "no". It is a
    measurement of how far over the probe landed, and it is more trustworthy than
    any local estimate.
 
 3. **Aiming at exactly the window risks a false negative from the char→token
    estimate.** The probe sizes its prompt in characters via a chars-per-token
    ratio, and the real tokenizer will disagree by a few percent. At `num_ctx`
-   512 the boundary sat between 430 accepted and 530 rejected — a prompt aimed at
+   512 the boundary sat between 430 accepted and 530 rejected: a prompt aimed at
    "exactly 512" can land at 530 on a 3% error and be rejected, making stage 0
    report a *correct* planned window as wrong. Aim deliberately under the window,
    and treat a rejection as information to refine with (using the count from
@@ -559,7 +559,7 @@ assumption:
 
 Also confirmed: **`truncate: false` is working.** The oversized prompts were
 rejected rather than silently front-truncated, which is the precondition that
-makes this probe mean anything — a server that quietly drops the front of the
+makes this probe mean anything: a server that quietly drops the front of the
 prompt would accept every size and stage 0 would verify nothing.
 
 **Scope note:** the client sends `num_ctx` from its own `window`, so stage 0 can
@@ -642,7 +642,7 @@ def test_infrastructure_failures_propagate_rather_than_shrinking_the_window():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_stage0.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.profile.stages'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.profile.stages'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -706,7 +706,7 @@ git commit -m "feat: stage 0 verifies the planned window by filling it"
 
 ---
 
-### Task 4: Stage 1 — envelope fidelity
+### Task 4: Stage 1, envelope fidelity
 
 **Files:**
 - Modify: `src/robigo/profile/stages.py`
@@ -786,7 +786,7 @@ def test_the_prompt_names_exactly_one_expected_action():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_stage1.py -v`
-Expected: FAIL — `ImportError: cannot import name 'ENVELOPE_PROMPT'`
+Expected: FAIL, `ImportError: cannot import name 'ENVELOPE_PROMPT'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -864,7 +864,7 @@ git commit -m "feat: stage 1 envelope fidelity, gating the later stages"
 
 ---
 
-### Task 5: Stage 2 — codec landing rate and size ceiling
+### Task 5: Stage 2, codec landing rate and size ceiling
 
 **Files:**
 - Modify: `src/robigo/profile/stages.py`
@@ -958,7 +958,7 @@ def test_a_size_ceiling_is_recorded_for_whole_file(monkeypatch):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_stage2.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.profile.fixtures'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.profile.fixtures'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1106,7 +1106,7 @@ git commit -m "feat: stage 2 codec landing rate over bundled fixtures"
 
 ---
 
-### Task 6: `robigo profile` — orchestration, gating, and output
+### Task 6: `robigo profile`, orchestration, gating, and output
 
 **Files:**
 - Create: `src/robigo/profile/report.py`
@@ -1196,7 +1196,7 @@ def test_a_profile_replays_identically_from_a_transcript(tmp_path: Path):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_profile_report.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'robigo.profile.report'`
+Expected: FAIL, `ModuleNotFoundError: No module named 'robigo.profile.report'`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1406,19 +1406,19 @@ Measured after Task 6, against the live daemon
 
 **Stage 2's 0% landing rate across every roster model is an artifact of its own
 prompt, not a property of any family.** `landing_prompt` shows the SEARCH/REPLACE
-payload template but never states the *action* syntax — that the reply must be
+payload template but never states the *action* syntax: that the reply must be
 `patch <path>` on a line of its own with a fenced payload. So the model returns a
 unified diff in a code fence, `parse` finds no action, and the codec is never
 exercised. Every failure reads `no action found`.
 
 We already knew the model can do this: earlier the same model, at the same codec,
-landed a patch and repaired a real bug through the loop — because the loop's
+landed a patch and repaired a real bug through the loop, because the loop's
 prompt carries `SYSTEM`'s action list. Stage 1 scores 100% for the same reason:
 `ENVELOPE_PROMPT` lists the actions. Only stage 2 omits them.
 
 *Invariant:* **stage 2 presents the same envelope the loop presents.** The stage
 exists to predict what the loop will get, so it must reuse `render.SYSTEM` and
-`render._CODEC_HELP[codec]` rather than paraphrase them — the same principle that
+`render._CODEC_HELP[codec]` rather than paraphrase them: the same principle that
 already makes stage 1 use the real `parse` and stage 2 use the real `CODECS`. A
 parallel prompt is free to drift, and this is what drift looks like: a profiler
 that reports every model unusable.
@@ -1429,7 +1429,7 @@ comparing against a copied string would pass while the loop's own prompt changed
 underneath it.
 
 **Second, smaller finding from the same run.** With the envelope added, 2 of the 5
-parsed as `patch --- src/clamp.py ---` — the model copied the `--- path ---`
+parsed as `patch --- src/clamp.py ---`: the model copied the `--- path ---`
 decoration from the file header into the action argument, giving a parse success
 with an unusable path. The loop presents files with the same header and does not
 usually suffer this, so it is not fatal, but stage 2 should not be measuring the
@@ -1439,7 +1439,7 @@ once both are fixed.
 
 **Do not tune the fixtures to raise the number.** The point is to measure what the
 loop would get. If the rate is still low after the envelope is correct, that is a
-result — and `fixtures-v1` is a stopgap that plan 04 replaces with a
+result, and `fixtures-v1` is a stopgap that plan 04 replaces with a
 mutation-generated corpus anyway.
 
 ## Whole-branch review fix wave (ruled 2026-08-10)
@@ -1447,9 +1447,9 @@ mutation-generated corpus anyway.
 Three Criticals, all confirmed against this branch's own committed data. Two are
 mine.
 
-**C1 — stage 0 reports a window twice what any probe demonstrated.** The filler
+**C1: stage 0 reports a window twice what any probe demonstrated.** The filler
 is `"token "`, which tokenizes at ~6 chars/token, while `_default_probe` sizes at
-3. Measured from `tests/transcripts/codegemma7b.jsonl` row 0 — the stage-0 probe
+3. Measured from `tests/transcripts/codegemma7b.jsonl` row 0: the stage-0 probe
 aimed at 8192 tokens:
 
 | aimed at | chars sent | robigo's estimator | **the server counted** | reported |
@@ -1463,8 +1463,8 @@ the one-token version, and the ~4000-token version was in the same function.
 
 The fix was already written down and dropped. Measured fact 2 of Task 3's
 pre-execution section says the rejection **names the real token count** and to
-*use it*. `stages.py` discards the `Generation`, so `tokens_in` — present on every
-accepted probe, from the server's own tokenizer — is never read. Read it. Bisect
+*use it*. `stages.py` discards the `Generation`, so `tokens_in` (present on every
+accepted probe, from the server's own tokenizer) is never read. Read it. Bisect
 and report on the server's count, not on a character estimate. And reconcile
 `_CHARS_PER_TOKEN = 3` with `budget.CHARS_PER_TOKEN = 3.3`: two ratios 10% apart,
 one of them sizing the probe.
@@ -1473,14 +1473,14 @@ Delete the docstring claim that the estimate "can never cause an incorrect windo
 to be reported right". It is false as written, and a comment asserting the
 opposite of the behaviour is worse than the behaviour.
 
-**C2 — all three committed replay fixtures are dead, and the plan's replay
-criterion is false at HEAD.** `68da8c2` recorded them; `8a3ddc9` — my envelope fix
-— changed `landing_prompt` and nothing was re-recorded. **0 of 30** stage-2 keys
+**C2: all three committed replay fixtures are dead, and the plan's replay
+criterion is false at HEAD.** `68da8c2` recorded them; `8a3ddc9` (my envelope fix)
+changed `landing_prompt` and nothing was re-recorded. **0 of 30** stage-2 keys
 match. No test loads a committed transcript, so nothing caught it. My fix was
 right and its blast radius was not checked.
 
 Re-record all three against HEAD. Then add a test that actually replays a
-committed transcript, so this cannot go stale silently again — a fixture nothing
+committed transcript, so this cannot go stale silently again: a fixture nothing
 loads is a fixture nothing protects.
 
 `granite8b.jsonl` is also **two runs appended into one file**: 67 rows, windows
@@ -1488,22 +1488,22 @@ loads is a fixture nothing protects.
 reports the last row's window while handing back the first run's replies. Cause:
 `CallRecorder` opens `"a"`. Truncate, or refuse an existing path.
 
-**C3 — `Profile.training_ctx` is not the training context.** It is assigned
+**C3: `Profile.training_ctx` is not the training context.** It is assigned
 `plan.window`, which is `min(training_ctx, vram, user_cap)`. Whenever VRAM binds,
 the field reports the VRAM-derived window as the model's training context, and
-`training_ctx == usable_window` — a state no real model can be in. The live
+`training_ctx == usable_window`, a state no real model can be in. The live
 granite run wrote `training_ctx: 0`. Verbatim plan text, pinned by nothing:
 mutating it to `999999` leaves all 90 profile tests green. Thread the real
 `Geometry.training_ctx` through, or drop the field and state that it was dropped.
 
-**I1 + I4 — two absences that read as measurements.** A profile that verified no
+**I1 + I4: two absences that read as measurements.** A profile that verified no
 window at all returns `LIMITED`, the same verdict a working 4096-token model gets,
-and stages 1 and 2 still run — at `num_ctx: 0`, where the daemon substitutes its
-own default — so the profile ships `usable_window: 0` beside `envelope 100%` and
+and stages 1 and 2 still run (at `num_ctx: 0`, where the daemon substitutes its
+own default), so the profile ships `usable_window: 0` beside `envelope 100%` and
 `lands 100%`. Stage 0 must be able to stop the run, per the architecture's own
 "each able to stop the run". And `payload_corruption`/`repeat_rate` are hardcoded
-`None` with no `dropped` entry: mutating both to `0.0` — "measured, no corruption"
-— leaves all 90 tests green. Anything not measured is stated as dropped.
+`None` with no `dropped` entry: mutating both to `0.0` ("measured, no corruption")
+leaves all 90 tests green. Anything not measured is stated as dropped.
 
 Everything else in that review is carried debt with rulings. Two items go to
 `CARRIED-DEBT.md` addressed to plan 04 specifically, because both sit on its first
@@ -1525,9 +1525,9 @@ mislabel every profile it produces.
 
 Note what this plan does **not** do: nothing reads the written profile yet.
 `robigo run` still takes `--codec` and `--window` from the command line.
-Wiring `Profile.best_codec()` and `usable_window` into the loop — spec §5.4's
+Wiring `Profile.best_codec()` and `usable_window` into the loop (spec §5.4's
 `READY`/`LIMITED`/`UNUSABLE`/unprofiled behaviour, including the
-announce-conservative-defaults rule — is the first task of plan 04, where a
+announce-conservative-defaults rule) is the first task of plan 04, where a
 real corpus makes the codec choice worth trusting.
 
 ---

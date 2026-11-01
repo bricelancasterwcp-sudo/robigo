@@ -13,17 +13,17 @@ back clean.
 
 Three honesty gaps on rarely-taken paths. Each is real; none blocks.
 
-- **`loop.py` — the escape record claims `branch=None` even when a branch
+- **`loop.py`: the escape record claims `branch=None` even when a branch
   exists.** `run`'s `except BaseException` handler hardcodes `branch`, so an
   escape after `start_branch` writes a `meta.json` naming no branch while a
-  `robigo/*` branch is on disk — the same dishonesty `_execute`'s own comment
+  `robigo/*` branch is on disk, the same dishonesty `_execute`'s own comment
   forbids. `branch` is not in scope there without threading it out of
   `_execute`.
-- **`loop.py` — a user's Ctrl-C is recorded as `outcome: "infrastructure",
+- **`loop.py`: a user's Ctrl-C is recorded as `outcome: "infrastructure",
   exit_code: 4`.** The process behaves correctly: `KeyboardInterrupt` is
   re-raised past `cli.main`'s `except Exception`. Only the transcript
   misattributes the interrupt.
-- **`cli.py` — on a detached or unborn HEAD, no undo instruction prints at
+- **`cli.py`: on a detached or unborn HEAD, no undo instruction prints at
   all**, even though the snapshot SHA was captured and the user's dirty work
   is inside that commit. Strictly better than what preceded it, which also
   failed there.
@@ -35,7 +35,7 @@ pass rather than opportunistic fixes:
 
 `_preflight`'s `OSError` branch and the `-k` filter; a test-file `SyntaxError`
 producing a refused run (unpinned in both directions); `signatures_of`
-truncating a multi-line `def` to its first physical line — the model reads that
+truncating a multi-line `def` to its first physical line. The model reads that
 outline; regression tests for the sweep-in, gitignored and zero-commit git
 cases; `write_atomic`'s cleanup path under failure injection;
 `parse_http_error`'s `None` arm and the generic retry arm; the `done` verb arm
@@ -49,8 +49,8 @@ Two notes that make this slice worth doing properly:
   only llamacpp's top-level `stop` is covered.
 - **Mutation testing is the tool that found most of these.** Two traps: this
   project is installed editable, so naive in-place mutation silently tests the
-  original source — force `PYTHONPATH=src` or mutate a `git archive` copy and
-  assert `robigo.__file__` — and the mutations worth injecting are the
+  original source (force `PYTHONPATH=src` or mutate a `git archive` copy and
+  assert `robigo.__file__`), and the mutations worth injecting are the
   thresholds and predicates the fix rounds were spent on (`stall_cap - 1`,
   `lines[start:]`, `add -A`), not arbitrary operators.
 
@@ -66,15 +66,15 @@ semantics; the `SYSTEM` size bound is slack at 3× the actual length; `codec:
 str` could be a `Literal`; `if diag.line` treats line 0 as falsy; `--scope`'s
 `nargs="+"` is argparse-greedy and swallows a trailing positional task.
 
-## Inherited law gaps — for plan 02's preamble
+## Inherited law gaps, for plan 02's preamble
 
 Two of the spec's §9 laws are not fully enforced, and both land in plan 02's
 territory (`model/geometry.py`, `context/budget.py`). They are carried debt,
 not new findings:
 
 - **Law 4 wants two overflow detectors; there is one.** The client-side
-  pre-request estimate does not exist — `ContextOverflowError` is never raised,
-  only its `ServerContextOverflowError` subclass — so nothing catches an
+  pre-request estimate does not exist (`ContextOverflowError` is never raised,
+  only its `ServerContextOverflowError` subclass), so nothing catches an
   oversized prompt before the request, and the record does not say which check
   fired.
 - **Law 1 is unenforced.** `--window` defaults to 8192 with nothing comparing
@@ -98,8 +98,8 @@ From the whole-branch review, and borne out by the execution record:
    resolvers where one guarded `ValueError`; three modules giving three
    different answers about one unreadable file; two truncation conventions;
    three copies of the codec list. Every one passed twelve reviews because each
-   review saw one diff. A mechanical whole-branch sweep for repeated shapes —
-   `.resolve()`, `read_text(`, every `except` — is twenty minutes and catches
+   review saw one diff. A mechanical whole-branch sweep for repeated shapes
+   (`.resolve()`, `read_text(`, every `except`) is twenty minutes and catches
    this class.
 3. **Verify external contracts; never declare the last one verified.** The
    `--tb=line` output format was assumed twice and wrong twice. The llama.cpp
@@ -126,18 +126,18 @@ three-round fix wave.
 ## Deferred with rulings, all judged non-blocking by the whole-branch review
 
 - **`Geometry.kv_bytes` truncates for `kv_bits` outside {8, 16}.** Effectively a
-  dead method — no production caller; `usable_window` does its own arithmetic
+  dead method. No production caller; `usable_window` does its own arithmetic
   and `--kv-bits` is `choices=(16, 8)`.
 - **`free_vram_bytes` wraps its runner in a bare `except Exception`**, so a
   caller-injected runner's own bug reads as "no GPU"; and a runner *returning* a
-  non-`str` escapes as `AttributeError`. `runner` is a test-only seam — the
+  non-`str` escapes as `AttributeError`. `runner` is a test-only seam. The
   production path calls it with no argument.
 - **`min()` attributes an exact `vram`/`training_ctx` tie to `training_ctx`** by
   list order. The window value is identical either way; only the label differs.
   Undocumented.
 - **The real-blob GGUF test samples the largest 10 blobs.** Four of the 32 real
-  blobs here are legitimately not causal LMs — three CLIP projectors and a
-  nomic-bert embedder — for which `GeometryError` is the *correct* answer. They
+  blobs here are legitimately not causal LMs (three CLIP projectors and a
+  nomic-bert embedder), for which `GeometryError` is the *correct* answer. They
   pass only because they sort below the sample window, so a vision- or
   embedding-heavy store would fail this test spuriously. The fix is skipping
   non-causal architectures, not loosening the assertion.
@@ -156,7 +156,7 @@ three-round fix wave.
 
 Found by plan 02's whole-branch review, but living in plan 01's code:
 
-- **`python_.imports` crashes on a non-UTF-8 `.py`** — `ast.parse(read_text(...))`
+- **`python_.imports` crashes on a non-UTF-8 `.py`.** `ast.parse(read_text(...))`
   guarded for `(OSError, SyntaxError)`, and `UnicodeDecodeError` is a
   `ValueError`. This is the **fifth** answer this codebase gives about an
   unreadable file, and the only one that crashes. Reachable from
@@ -164,7 +164,7 @@ Found by plan 02's whole-branch review, but living in plan 01's code:
   *after* patches have landed.
 - **`record.py` catches `OSError` but not `UnicodeDecodeError`**, so a
   `.robigo/.gitignore` holding invalid UTF-8 surfaces as exit 4 *after* a
-  successful repair — the outcome `_write`'s docstring exists to prevent,
+  successful repair: the outcome `_write`'s docstring exists to prevent,
   through a different door.
 - **Three unlinked names for one output reservation**: `--num-predict`,
   `Budget.reserve_out`, `reserve_for`. Nothing makes them agree, `reserve_for`
@@ -187,7 +187,7 @@ Found by plan 02's whole-branch review, but living in plan 01's code:
   cap × turns kept) and errs toward over-reserving, but a caller that computes
   it from real content will do better. Before that derivation, `fit()` accepted
   a prompt that overflowed a 4096 window by 1095 tokens.
-- **`Budget.history`'s default is lazy on purpose** — `field(default_factory=…)`.
+- **`Budget.history`'s default is lazy on purpose:** `field(default_factory=…)`.
   An eager module-level call made `loop.py` fail to import with a circular
   `ImportError` the moment it imported `context.budget`, which is that slice's
   natural first line. Do not "simplify" it back to a constant.
@@ -199,33 +199,33 @@ Found by plan 02's whole-branch review, but living in plan 01's code:
    then applied: every one of those eight was a defect in *my* text, and the two
    amendments written as invariants produced correct implementations first try.
 2. **Measure before specifying, and never hand-derive a number that a test will
-   assert.** Two amendments shipped arithmetic that could not hold — a rung-2
+   assert.** Two amendments shipped arithmetic that could not hold: a rung-2
    assertion against a rung-3 budget, and a `free_vram` figure that made
    `training_ctx` bind where the test claimed `vram`. Both were caught by
    implementers reporting BLOCKED. Three BLOCKED reports on this plan were all
    correct.
 3. **Mutation-test every new test; a passing suite is not evidence.** Seven
-   vacuous tests were found — including one that stayed green with a completely
+   vacuous tests were found, including one that stayed green with a completely
    broken helper, one whose `skipif` could never fire, one whose assertions sat
    inside `except Exception: pass`, one asserting `"m" in str(e.value)` where
-   `"m"` is a substring of the word "model", and — worst placed — the test
+   `"m"` is a substring of the word "model", and (worst placed) the test
    guarding the estimate/render agreement, whose two sides were the same
    expression so `render` was never called.
 4. **Prove offline-ness at the socket, not by grep.** Running the suite with
    `socket.socket.connect` patched to raise found a test that POSTed to a real
    daemon. Grep finds the stubs you thought of.
-5. **`.get(key, default)` substitutes only when the key is absent — never when
+5. **`.get(key, default)` substitutes only when the key is absent, never when
    its value is `null`.** This shape produced the plan's worst bug
    (`.get("size", 0)` reporting every model as weightless, returning the largest
    window in the table) and then produced it twice more, one level up, in the
    fix for the first instance.
 6. **An enumeration of a function's outputs is not an enumeration of its
    behaviours.** The `detect.py` audit traced everything downstream of `_show`
-   returning and never asked what happens when it raises — leaving
+   returning and never asked what happens when it raises, leaving
    `json.JSONDecodeError` escaping the CLI contract through two rounds of fixes.
-7. **Run the thing.** Three defects in the last task — a zero window that
+7. **Run the thing.** Three defects in the last task (a zero window that
    printed and then proceeded, a message advising a flag the user had just
-   passed, and a completion criterion that was never true on this hardware —
+   passed, and a completion criterion that was never true on this hardware)
    were invisible to 239 passing tests and obvious within one CLI invocation.
 
 ---
@@ -242,7 +242,7 @@ walks the fixed order from rung 1, renders each candidate, and takes the first
 whose rendered prompt satisfies `estimate_tokens(prompt) + num_predict <=
 window`. `fit()` remains the module's arithmetic API and supplies the refusal
 message, but it no longer decides where the ladder stops. Two defects forced
-that design — a seated decomposition that under-counts by 1 token at ~5% of
+that design: a seated decomposition that under-counts by 1 token at ~5% of
 length residues, and an arithmetic-only refusal that rejected a run whose
 smallest rung fit exactly.
 
@@ -255,7 +255,7 @@ correctness property rather than a preference.
 ## Deferred with rulings
 
 - **`usable_window`'s docstring still states the precondition this slice
-  removed** — "`free_vram` must be measured BEFORE the model is loaded … Callers
+  removed:** "`free_vram` must be measured BEFORE the model is loaded … Callers
   own that ordering." `plan_window` now handles residency itself, so two
   docstrings answer one question two ways.
 - **Three duplications.** The exact-name-then-`:latest` matching rule and its
@@ -267,13 +267,13 @@ correctness property rather than a preference.
 - **Neither refusal message names `--num-predict`, which is often the binding
   term.** With the default 1024 against a small auto-computed window, the reserve
   alone can exceed what the fixed costs leave, and no amount of `--scope`
-  narrowing helps — yet `--scope` is the only lever named. Same family as plan
+  narrowing helps, yet `--scope` is the only lever named. Same family as plan
   01's messages naming the wrong flag, inverted.
 - **`SYSTEM_TOKENS`, `DIAGNOSTIC_TOKENS` and `_default_history_tokens` now have
   no production caller.** `measure` always passes all three, so the dataclass
   defaults are unreachable from `src/`, and their docstrings describe a caller
   that exists only in tests. `_default_history_tokens`'s 25-line circular-import
-  warning now guards a test-only path — **do not delete it without reading that
+  warning now guards a test-only path. **Do not delete it without reading that
   warning**, since the import-order hazard it documents is real.
 - **`/api/ps` has no captured contract for its *resident* shape.** The idle shape
   (`{"models": []}`, never `null`) was verified live; the `name`/`size_vram`
@@ -283,8 +283,8 @@ correctness property rather than a preference.
   escapes as `OSError` printing "HTTP Error 404: Not Found" with no endpoint
   named and no `--window` escape.
 - **Free VRAM and residency are read at different times and combined as if
-  simultaneous.** A model loading in the gap over-credits by up to its full size
-  — the direction that overcommits. Needs a sub-second race, so rare; the
+  simultaneous.** A model loading in the gap over-credits by up to its full size.
+  That is the direction that overcommits. Needs a sub-second race, so rare; the
   opposite race merely reproduces the old under-count.
 - **None of the three HTTP endpoints guards HTTP status or `URLError` by
   endpoint**; all surface as `OSError` to a CLI message that names no endpoint.
@@ -302,14 +302,14 @@ correctness property rather than a preference.
    that imprecision before calling it done.
 2. **A criterion that correct code cannot satisfy is a bad criterion.** "A real
    run completes a repair" depended on whether a 7B model lands a fix, which no
-   amount of correct wiring changes. State what the system owns — that
+   amount of correct wiring changes. State what the system owns: that
    degradation happens, is recorded, and yields a prompt the server accepts.
 3. **Record the sequence, not the summary.** `meta.json` kept the last turn's
    rung while its own comment claimed the field distinguished a degraded run from
    one that never degraded. A run measured `[2, 2, 3]` recorded as `3`. When a
    consumer is a future analysis tool, store what happened, not a reduction of it.
-4. **Run it twice.** The single worst user-facing defect in two plans —
-   `window 0` and a refusal on every second consecutive run — was invisible to
+4. **Run it twice.** The single worst user-facing defect in two plans
+   (`window 0` and a refusal on every second consecutive run) was invisible to
    300 passing tests, to five reviews, and to running the tool once.
 
 ---
@@ -324,10 +324,10 @@ beside fabricated 100% numbers; two unmeasured fields shipping as `null` with
 no `dropped` entry) were fixed. Everything below was found by the same review,
 consciously not fixed, and ruled on.
 
-## For plan 04 specifically — both sit on its first code path
+## For plan 04 specifically: both sit on its first code path
 
 **Both items below are RESOLVED, in plan 04 itself (task 4) and confirmed
-still fixed by its whole-branch fix wave (I7, ruled 2026-08-10) — this
+still fixed by its whole-branch fix wave (I7, ruled 2026-08-10). This
 section previously listed them as open, which would have stated two
 falsehoods about the code plan 05 builds on. Kept here, marked, rather than
 deleted, so the record of what was found and when is not lost.**
@@ -335,27 +335,27 @@ deleted, so the record of what was found and when is not lost.**
 - ~~**`best_codec()` has no landing floor.**~~ **Fixed.**
   `Profile.best_codec()` (`src/robigo/profile/schema.py`) now requires
   `lands > _LANDING_MIN` before naming a codec "best", returning `None`
-  when every codec landed at or below the floor — a 0%-landing codec is
+  when every codec landed at or below the floor. A 0%-landing codec is
   never quoted as best.
 - ~~**`corpus` is a kwarg default (`"fixtures-v1"`).**~~ **Fixed.**
   `run_profile`'s `corpus: str` parameter (`src/robigo/profile/report.py`)
   carries no default; every caller must name the corpus explicitly.
-  `cli.profile_main` passes `robigo.profile.fixtures.CORPUS_NAME` — one
-  definition, not a second literal — and `robigo corpus`'s own output
+  `cli.profile_main` passes `robigo.profile.fixtures.CORPUS_NAME` (one
+  definition, not a second literal), and `robigo corpus`'s own output
   (`cli.corpus_main`) derives its `name` from `--repo`, never a fixed
   string.
 
 ## Deferred with rulings, non-blocking
 
 - **`verdict_for` cannot express "not measured".** It only ever returns
-  READY/LIMITED/UNUSABLE — there is no verdict for "stage 0 never ran" versus
+  READY/LIMITED/UNUSABLE. There is no verdict for "stage 0 never ran" versus
   "stage 0 ran and found nothing", so a totally unverified window's UNUSABLE
   (via `envelope_fidelity=0.0`, which this fix wave's I1 gate now forces) reads
   identically to a family that genuinely cannot drive the envelope. `dropped`
   is the only place the two are told apart today.
 - **`max_file_tokens=None` carries two facts.** It means both "not tracked for
   this codec" (`search_replace`, always) and "tracked, but nothing landed"
-  (`whole_file`, when `lands == 0`) — the same collapse `dropped` exists to
+  (`whole_file`, when `lands == 0`): the same collapse `dropped` exists to
   prevent for `codecs` as a whole, one level down.
 - **Stage 2 re-implements `render._preamble`'s composition** (assembling
   `SYSTEM` + codec help + trailer by hand in `landing_prompt`) rather than
@@ -364,7 +364,7 @@ deleted, so the record of what was found and when is not lost.**
   presents") that argues for calling the real function, not a parallel
   assembly of its three pieces.
 - **Stage 1's `ENVELOPE_PROMPT` paraphrases `render.SYSTEM`** rather than
-  building on it — the same drift class the stage-2 amendment fixed for
+  building on it, the same drift class the stage-2 amendment fixed for
   `landing_prompt`, not yet applied to stage 1.
 - **`run_profile` does not check `client.window` against `plan.window`.**
   Nothing asserts the client it was handed was actually built with
@@ -373,23 +373,23 @@ deleted, so the record of what was found and when is not lost.**
   silently.
 - **The seeds↔mode invariant is only enforced at the CLI.** `run_profile`
   itself accepts any `(seeds, mode)` pair, including `mode="full"` with
-  `seeds=1` — only `profile_main`'s `--full` flag keeps the two in lockstep.
+  `seeds=1`. Only `profile_main`'s `--full` flag keeps the two in lockstep.
   A caller of `run_profile` directly (as this fix wave's own
   `test_committed_transcripts_replay.py` and the pre-existing
   `test_profile_report.py` both are) can produce a "full" profile that never
   ran ten seeds.
 - **The codec tuple `("search_replace", "whole_file")` is hand-written** at
   `stage2_codecs`'s default and in `_CODEC_HELP`'s keys, rather than derived
-  from `action.codec.CODECS`'s own keys — a third codec added to `CODECS`
+  from `action.codec.CODECS`'s own keys. A third codec added to `CODECS`
   would silently never get profiled.
 - **`_KNOWN_ERRORS` lookup (`transcript.py`) is unguarded.** `CallReplayer`
   looks up `row["error_type"]` with `_KNOWN_ERRORS[...]`, a bare `KeyError` if
   a transcript ever named an exception class outside the three currently
-  recordable — unreachable from `CallRecorder` today, but a hand-edited or
+  recordable. It is unreachable from `CallRecorder` today, but a hand-edited or
   future-format transcript would raise a `KeyError` rather than a message
   naming what happened.
 
-- **Stage 0's verified window is honest but systematically pessimistic — roughly
+- **Stage 0's verified window is honest but systematically pessimistic: roughly
   half the model's real capability.** C1's fix made stage 0 report the server's own
   `tokens_in` for the largest accepted probe, which removed a 2× overclaim. But the
   probe is still *generated* from a fixed 3-chars-per-token estimate while its
@@ -397,7 +397,7 @@ deleted, so the record of what was found and when is not lost.**
   roughly 0.55N. Measured on the committed fixtures: codegemma's `plan.window` is
   8192 and stage 0 verifies **4528**; granite's is 4096 and it verifies **2262**.
 
-  Nothing false is claimed — those token counts really were accepted — but the
+  Nothing false is claimed (those token counts really were accepted), but the
   reported `usable_window` is bounded by *how densely the probe packs tokens*, not
   by what the model can hold. A reader, and the loop that configures itself from
   this field, will under-use the window by ~45%.
@@ -405,7 +405,7 @@ deleted, so the record of what was found and when is not lost.**
   The remedy is in the plan's own measured fact 2, one step further than it was
   taken: the server's count is feedback, so the probe should grow until its
   *reported* `tokens_in` reaches the target rather than being sized once from a
-  character estimate. Note the daemon threshold above interacts with this — on this
+  character estimate. Note the daemon threshold above interacts with this. On this
   box a probe cannot exceed ~11.5k tokens at all, so a 32768-token window is not
   verifiable here regardless of filler density, and any fix must report that as
   "could not verify to the plan's window" rather than silently settling lower.
@@ -447,14 +447,14 @@ deleted, so the record of what was found and when is not lost.**
   **Consequence for the committed transcripts**: `codegemma7b.jsonl` and
   `granite8b.jsonl` are both re-recorded and clean (every "reply" row has
   `tokens_in > 0`, pinned by `test_no_committed_row_encodes_an_unmeasured_
-  reply`). `qwen7b.jsonl` could NOT be re-recorded as a full run — every
+  reply`). `qwen7b.jsonl` could NOT be re-recorded as a full run. Every
   attempt at its real training-context window fails before stage 0 even
   finishes, now as a loud, immediate `ModelError` rather than a silent
   false zero. Its committed shape is deliberately one row (`outcome:
   "error"`), the honest artifact of what happens right now, pinned by
   `test_qwen_transcript_documents_a_real_unmeasurable_probe` (replay
   reproduces the exact same error). The underlying daemon defect itself
-  remains unfixed — fixing Ollama, or working around it by changing the
+  remains unfixed. Fixing Ollama, or working around it by changing the
   fixed `_PROBE_SEED` or the CLI's fixed `num_predict=1024`, is out of this
   wave's scope either way.
 
@@ -474,7 +474,7 @@ break, and a `MODULE_UNDER_TEST=` marker obtained from the runner's own subproce
 proves the tests exercised the clone rather than the installed package.
 
 **The measurement that shaped the design, and its answer.** Mutating well-covered
-central code almost never breaks exactly one test — measured twice
+central code almost never breaks exactly one test, measured twice
 independently, 0 of 7 and 0 of 10 on `context/scope.py`. On a narrow-test repo the
 same operators keep 4 of 5 and 6 of 10, at ~0.1 s per verification against ~15 s.
 So target selection is the whole game, and `--repo` is what makes the corpus
@@ -486,14 +486,14 @@ feasible rather than a convenience.
   candidates from `src/robigo`). A single physical line cut from a multi-line
   expression cannot form a complete statement at any indent, so no wrapping
   strategy recovers it. These are now **caught and stated** in the conversion's
-  `dropped` list — misattribution to the model went from 20.9% to **0.0%** — but a
+  `dropped` list. Misattribution to the model went from 20.9% to **0.0%**, but a
   real 1-in-11 yield loss remains. Closing it needs multi-line mutants, which is a
   design change, not a fix.
 - **Target discovery drops files silently.** `_source_files` prefers `repo/src`
   when it exists, so a repo with both `src/` and a top-level package loses the
   latter, and test-shaped paths are filtered. None of the exclusions is enumerated
   in the corpus file or the report, so a reader cannot tell "this repo has 12
-  source files" from "it has 52 and 40 were filtered by a heuristic" — which
+  source files" from "it has 52 and 40 were filtered by a heuristic", which
   changes how a 0-kept keep rate should be read.
 - **`--target` still relies on `_is_test_path`'s conventions** (a `tests`/`test`
   directory, or `test_*.py`/`*_test.py`). A test file matching neither still slips
@@ -505,8 +505,8 @@ feasible rather than a convenience.
 - **`corpus.reverse()` has no production caller**, though its docstring claims "a
   verifier restoring a clone" uses it. `_apply_and_run` restores from a saved
   string instead.
-- **`broken` means two things** — a line of text on `CorpusRecord`, a count on
-  `Baseline`/`_broken_count` — and `Verdict.failures` holds failures **plus**
+- **`broken` means two things** (a line of text on `CorpusRecord`, a count on
+  `Baseline`/`_broken_count`), and `Verdict.failures` holds failures **plus**
   errors. All documented; plan 05 reads both artifacts.
 - **`_module_path` resolves a relative marker value against the verifier's cwd**,
   not the clone, so a namespace package printing `None` yields `<cwd>/None`. Fails
@@ -523,11 +523,11 @@ feasible rather than a convenience.
 
 - **There is no `--corpus` flag on `robigo profile`.** `stage2_codecs` accepts a
   converted corpus, and `fixtures_from_corpus` converts one, but nothing selects a
-  generated file from the CLI — so a live profile run still measures
+  generated file from the CLI, so a live profile run still measures
   `fixtures-v1`. This is the wiring plan 05 needs first, and it is small.
 - **Read the I4 note above before wiring it.** Scoring an unwrappable record as a
-  model failure is the plan-03 stage-2 defect again — measuring the harness rather
-  than the model — and it would land directly in the number the kill criterion is
+  model failure is the plan-03 stage-2 defect again (measuring the harness rather
+  than the model), and it would land directly in the number the kill criterion is
   read off.
 
 ## Process lessons, added to the earlier lists
@@ -535,13 +535,13 @@ feasible rather than a convenience.
 1. **Ambient state is a defect class, not a test smell.** Four instances in this
    plan: three tests that passed with the code deleted because they leaned on an
    environment variable or filesystem ordering, and then the same shape **in
-   production** — `pytest_runner` inheriting `PYTEST_ADDOPTS`, where exporting
+   production:** `pytest_runner` inheriting `PYTEST_ADDOPTS`, where exporting
    `-x` turned a correctly-rejected 2-failure mutant into a kept record asserting
    "exactly one net new failure". Sanitize the environment you measure in; do not
    merely document that you depend on it.
 2. **A tool that reports a count must check the run finished.** A mutant breaking a
    module's import made pytest report `1 error`, which scored as exactly one while
-   three tests never ran — and the runner's own `Interrupted` line and non-zero
+   three tests never ran, and the runner's own `Interrupted` line and non-zero
    exit code were both discarded. Read the exit code, and require the executed-test
    total to match the baseline's.
 3. **Verify both halves of a rule, or record which half you assumed.** The spec's
@@ -551,13 +551,13 @@ feasible rather than a convenience.
    not record. It now requires `baseline.broken == 0` and stores it.
 4. **Hand-written fixtures have accidental properties real data lacks.** All five
    bundled fixtures sat at exactly 4 spaces of indent, in distinct files, with
-   distinct content. Generated records break every one of those assumptions —
+   distinct content. Generated records break every one of those assumptions,
    which surfaced a 21% harness artifact and an ambiguous matching heuristic that
    I then reproduced myself, minutes after reading the report describing it.
 
 ---
 
-# Plan 05 — the repair gate (stages 4–5, and the number)
+# Plan 05: the repair gate (stages 4–5, and the number)
 
 ## What this slice settled
 
@@ -570,8 +570,8 @@ feasible rather than a convenience.
   repository; the agent is not shipped as a tool. Protocol, biases, and
   artifacts: `docs/superpowers/evidence/2026-08-12-stage4-gate.md`.
 - The Task 10 dry run earned its place: it surfaced that `Stage4.per_record`
-  — the only input the record-level confidence interval can be computed from
-  — was never serialized. Fixed (`72f3210`, `Profile.repair_per_record`,
+  (the only input the record-level confidence interval can be computed from)
+  was never serialized. Fixed (`72f3210`, `Profile.repair_per_record`,
   mutation-tested in three directions) BEFORE the 12-hour run; without the
   dry run, the gate number would have arrived with an uncomputable interval.
 - Spec §0.2 amended non-silently: quick→full wording, 40%→33.3% with the
@@ -587,10 +587,10 @@ feasible rather than a convenience.
   file/operator/line); `per_record` fuses them into one `[0, 20]` entry and
   `repair_records` reads 93 for 94 attempted. Rate and interval unaffected
   (both fused records passed nothing). Ruling: fix only if a corpus is ever
-  regenerated — key records by content identity (e.g. mutant source hash),
+  regenerated. Key records by content identity (e.g. mutant source hash),
   never by description. Recorded here rather than patched because the
   frozen corpus must not change post-hoc (spec §6.2).
-- **The killed first launch.** Task 11's first run died at 2h55m (~79%) —
+- **The killed first launch.** Task 11's first run died at 2h55m (~79%):
   the orchestrating session's background-task lifetime, not robigo. No
   numbers were read from it; the partial transcript stays local-only
   (`qwen7b-stage4.killed-20260812-1615.partial.jsonl`, uncommitted).
@@ -610,7 +610,7 @@ feasible rather than a convenience.
    it because every consumer in-process saw the in-memory value. "Is the
    value in the FILE a later step reads?" is the question that caught it.
 2. **A name that describes is not a key that identifies.** file+operator+line
-   reads unique and is not — two mutants can differ only in payload. The
+   reads unique and is not. Two mutants can differ only in payload. The
    duplicate survived corpus freeze, gate verification, and 940 attempts
    before a divisibility check (940/93 not integer) exposed it.
 3. **Session-tracked background work has a lifetime.** A ~3h GPU run was

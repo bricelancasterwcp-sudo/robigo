@@ -3,14 +3,14 @@
 A coding agent for local models, designed against a VRAM budget.
 
 robigo repairs one failing test at a time using a model running on your own
-hardware. It is built for the case where context is genuinely scarce — a single
-consumer GPU — so it computes how much context actually fits before it writes a
+hardware. It is built for the case where context is genuinely scarce (a single
+consumer GPU), so it computes how much context actually fits before it writes a
 prompt, and shrinks what it sends until it does fit. If it cannot fit, it refuses
 and prints the arithmetic rather than sending a prompt the server will truncate.
 
 **Status: early.** The edit→test loop, the context budget and the degradation
 ladder work and are covered by 302 tests. The measurement harness that will
-decide whether the whole approach is worth pursuing is not built yet — see
+decide whether the whole approach is worth pursuing is not built yet. See
 [Honest status](#honest-status).
 
 ## Why a VRAM budget
@@ -35,7 +35,7 @@ That is a **14× spread** at comparable parameter counts. A 32k context costs
 and one of them cannot hold a tenth of the other's window.
 
 **A 16 GB card does not have 16 GB free.** Measured on an idle desktop: 16,303
-MiB total, **14,558 MiB free** — the compositor and desktop hold the rest before
+MiB total, **14,558 MiB free**. The compositor and desktop hold the rest before
 anything is asked for.
 
 So robigo takes the smallest of three numbers: what free VRAM allows once the
@@ -47,14 +47,14 @@ $ robigo --model qwen2.5-coder:7b-instruct-q8_0 "fix the failing test"
 window 32768 (limited by training_ctx, 56 KiB/token)
 ```
 
-Ask for more than the model was trained on and it clamps rather than obliging —
+Ask for more than the model was trained on and it clamps rather than obliging.
 `llama-server` refuses an oversized slot outright, and Ollama accepts it silently
 and degrades the rope scaling, which is worse.
 
 ## The degradation ladder
 
-When the prompt does not fit, the scope shrinks in a fixed order — fixed so a run
-is reproducible, not heuristic:
+When the prompt does not fit, the scope shrinks in a fixed order. The order is
+fixed so a run is reproducible, not heuristic:
 
 1. two-hop dependencies as signatures only
 2. two-hop dependencies dropped
@@ -65,7 +65,7 @@ is reproducible, not heuristic:
 The rung is chosen by **measurement, not arithmetic**: each candidate is rendered
 and checked against the real window, and the first that fits is sent. This is not
 fussiness. The token estimate is not additive, so a decomposed budget can
-under-count the assembled prompt by a token, and a token is enough — on a real
+under-count the assembled prompt by a token, and a token is enough. On a real
 run in a 1100-token window, the worst turn used **1097**.
 
 Windowing centres on the failing line, not the middle of the file, and the prompt
@@ -86,14 +86,14 @@ reply, and the test output.
 
 Work happens on a `robigo/*` branch with a snapshot commit taken before the first
 patch, so the undo instruction printed at the end is one the tool can actually
-honour — including when your tree was dirty to begin with.
+honour, including when your tree was dirty to begin with.
 
 Exit codes are the outcome: `0` pass, `1` stalled, `2` budget exhausted, `3`
 refused, `4` infrastructure.
 
 ## Install
 
-Python 3.12+, and no runtime dependencies — the standard library only.
+Python 3.12+, and no runtime dependencies. The standard library only.
 
 ```bash
 git clone https://github.com/<you>/robigo && cd robigo
@@ -102,8 +102,8 @@ pip install -e .
 
 You need a local model server. Either:
 
-- **Ollama** — geometry is read over HTTP, nothing else needed.
-- **llama.cpp** — `llama-server` does not expose KV head counts over HTTP, so
+- **Ollama:** geometry is read over HTTP, nothing else needed.
+- **llama.cpp:** `llama-server` does not expose KV head counts over HTTP, so
   pass `--gguf /path/to/model.gguf` and robigo reads the file directly.
 
 ## Usage
@@ -124,7 +124,7 @@ robigo --scope src/thing.py tests/test_thing.py "fix the rounding"
 
 `--window auto` is the default. `--kv-bits {16,8}` **describes** the precision
 your server is already running (Ollama's `OLLAMA_KV_CACHE_TYPE`, llama.cpp's
-`--cache-type-k`, both set at server launch) — robigo cannot change it over the
+`--cache-type-k`, both set at server launch). robigo cannot change it over the
 API, and telling it 8 when the server runs 16 will overcommit VRAM by 2×.
 
 ## Design rules
@@ -133,7 +133,7 @@ API, and telling it 8 when the server runs 16 will overcommit VRAM by 2×.
   answer about code it cannot see. Refusing is honest; truncating is not.
 - **Measure, never guess.** Where a number can be read from the system it is
   read. A plausible default that stands in for a measurement is treated as a
-  defect — one such default reported every model as weighing zero bytes and
+  defect. One such default reported every model as weighing zero bytes and
   handed back the largest window in the table.
 - **Refuse before turn 1, with the arithmetic printed.** A user whose window came
   back small gets the terms, not a summary.
@@ -146,7 +146,7 @@ API, and telling it 8 when the server runs 16 will overcommit VRAM by 2×.
 
 What works: the edit→test loop, the action surface, patch application and safety,
 scope resolution, geometry from Ollama or a GGUF file, the window budget, and the
-degradation ladder — 302 tests, no runtime dependencies.
+degradation ladder: 302 tests, no runtime dependencies.
 
 What is verified against real models: geometry parsed from all 20 real GGUF blobs
 on one machine; a 7B model repairing a real bug inside an 1100-token window at a
@@ -156,16 +156,16 @@ alone.
 **The question this project existed to answer now has a number.** The
 pre-registered gate (spec §0.2: below 33.3% strict repair on a fixed corpus,
 robigo becomes a benchmark-and-findings repo) was read on 2026-08-12:
-**qwen2.5-coder:7b-instruct-q8_0 repaired 1.06% strictly** — 10 of 940
+**qwen2.5-coder:7b-instruct-q8_0 repaired 1.06% strictly**: 10 of 940
 attempts (94 boltons mutants × 10 seeds), record-level 95% CI [0%, 3.2%],
 every attempt scored, all ten passes from a single record. The gate applies:
 **this is a benchmark-and-findings repository, and the agent is not shipped
 as a tool.** The full protocol, diagnostics, biases, and artifacts are in
 [`docs/superpowers/evidence/2026-08-12-stage4-gate.md`](docs/superpowers/evidence/2026-08-12-stage4-gate.md);
 the run is replayable from `docs/transcripts/qwen7b-stage4.jsonl`. The
-systems-side findings this project produced — the KV geometry spread,
+systems-side findings this project produced (the KV geometry spread,
 the transient serving-path ceiling, instrument-defined edit landing, and
-what the null was made of — are written up as a standalone document:
+what the null was made of) are written up as a standalone document:
 [`docs/findings/2026-08-12-the-instrument-fails-first.md`](docs/findings/2026-08-12-the-instrument-fails-first.md).
 
 Only a Python adapter exists. Only `search_replace` and `whole_file` codecs are
